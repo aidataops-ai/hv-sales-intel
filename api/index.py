@@ -23,7 +23,7 @@ log = logging.getLogger("hvsi.api")
 
 from src.analyzer import analyze_practice
 from src.auth import get_admin_client, get_current_user, require_admin
-from src.call_log import append_call_note
+from src.call_log import append_call_note, update_last_call_note
 from src.clay import trigger_enrichment
 from src.email_gen import generate_email_draft
 from src.email_poll import poll_replies
@@ -692,6 +692,34 @@ async def call_log_endpoint(
         "[api.call_log.response] place_id=%s call_count=%s lead_id=%s warning=%s",
         place_id, practice.get("call_count"),
         practice.get("salesforce_lead_id"), warning,
+    )
+    return {"practice": practice, "sf_warning": warning}
+
+
+@app.put("/api/practices/{place_id}/call/last-note")
+async def update_last_call_note_endpoint(
+    place_id: str,
+    body: CallLogRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Update the most recent call_notes line's text + resync to SF.
+
+    Called by the post-call notes modal: the call entry was already
+    created when the rep clicked Call, so this replaces its note text
+    rather than appending a new line.
+    """
+    log.info(
+        "[api.update_last_note] place_id=%s user=%s note_len=%d",
+        place_id, user.get("email"), len(body.note or ""),
+    )
+    try:
+        practice, warning = await update_last_call_note(place_id, body.note, user)
+    except LookupError:
+        log.warning("[api.update_last_note.404] place_id=%s", place_id)
+        raise HTTPException(404, "Practice not found")
+    log.info(
+        "[api.update_last_note.response] place_id=%s lead_id=%s warning=%s",
+        place_id, practice.get("salesforce_lead_id"), warning,
     )
     return {"practice": practice, "sf_warning": warning}
 

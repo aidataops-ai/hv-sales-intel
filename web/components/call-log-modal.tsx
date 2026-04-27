@@ -1,10 +1,9 @@
 "use client"
 
 import { useState } from "react"
-import { Loader2, Phone, X } from "lucide-react"
+import { Loader2, Save, X } from "lucide-react"
 import type { Practice } from "@/lib/types"
-import { logCall, type CallLogResponse } from "@/lib/api"
-import { openRingCentralCall } from "@/lib/ringcentral"
+import { updateLastCallNote, type CallLogResponse } from "@/lib/api"
 
 interface CallLogModalProps {
   practice: Practice
@@ -25,17 +24,19 @@ export default function CallLogModal({
 
   if (!open) return null
 
-  async function handleSaveAndCall() {
+  async function handleSaveNotes() {
     setSubmitting(true)
     setError(null)
     try {
-      const response = await logCall(practice.place_id, note)
+      // The Lead + placeholder log line already exist (created when the
+      // rep clicked Call). This rewrites the last line's text portion
+      // and resyncs Call_Notes__c on Salesforce.
+      const response = await updateLastCallNote(practice.place_id, note)
       onLogged(response)
       setNote("")
       onClose()
-      if (practice.phone) openRingCentralCall(practice.phone)
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to log call")
+      setError(e instanceof Error ? e.message : "Failed to save notes")
     } finally {
       setSubmitting(false)
     }
@@ -52,7 +53,7 @@ export default function CallLogModal({
       >
         <div className="flex items-center justify-between">
           <h3 className="font-serif text-base font-bold text-gray-900">
-            Log call — {practice.name}
+            Call notes — {practice.name}
           </h3>
           <button
             onClick={onClose}
@@ -61,10 +62,14 @@ export default function CallLogModal({
             <X className="w-4 h-4" />
           </button>
         </div>
+        <p className="text-xs text-gray-500">
+          Lead created + dialer opened. Add notes about what happened — they&apos;ll
+          replace the placeholder on this Lead&apos;s <span className="font-semibold">Call_Notes__c</span>.
+        </p>
         <textarea
           value={note}
           onChange={(e) => setNote(e.target.value)}
-          placeholder="What happened? (we'll polish this for Salesforce)"
+          placeholder="What happened on the call?"
           className="w-full h-32 text-sm p-3 rounded-lg border border-gray-200 bg-white resize-none focus:outline-none focus:ring-2 focus:ring-teal-500/40"
           disabled={submitting}
           autoFocus
@@ -79,16 +84,16 @@ export default function CallLogModal({
             Cancel
           </button>
           <button
-            onClick={handleSaveAndCall}
+            onClick={handleSaveNotes}
             disabled={submitting}
             className="inline-flex items-center gap-1 text-xs px-4 py-2 rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50"
           >
             {submitting ? (
               <Loader2 className="w-3 h-3 animate-spin" />
             ) : (
-              <Phone className="w-3 h-3" />
+              <Save className="w-3 h-3" />
             )}
-            {submitting ? "Saving..." : "Save & Call"}
+            {submitting ? "Saving..." : "Save Notes"}
           </button>
         </div>
       </div>
