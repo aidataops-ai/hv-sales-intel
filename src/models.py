@@ -41,6 +41,7 @@ class Practice(BaseModel):
 
     # Salesforce integration + call log
     salesforce_lead_id: str | None = None
+    salesforce_lead_url: str | None = None
     salesforce_owner_id: str | None = None
     salesforce_owner_name: str | None = None
     salesforce_synced_at: str | None = None

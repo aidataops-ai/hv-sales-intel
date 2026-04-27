@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     # Salesforce integration (Apex REST endpoint + x-api-key)
     sf_apex_url: str = ""
     sf_api_key: str = ""
+    # Lightning base URL used to construct the Lead view link returned
+    # to the frontend after a Lead is created. Override per-org.
+    sf_lead_view_base_url: str = "https://healthandgroup.lightning.force.com/lightning/r/Lead"
     # Legacy OAuth fields (no longer used; kept for backwards compatibility with existing .env files)
     sf_client_id: str = ""
     sf_client_secret: str = ""

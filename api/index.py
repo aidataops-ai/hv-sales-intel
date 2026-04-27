@@ -24,6 +24,20 @@ log = logging.getLogger("hvsi.api")
 from src.analyzer import analyze_practice
 from src.auth import get_admin_client, get_current_user, require_admin
 from src.call_log import append_call_note, update_last_call_note
+from src.salesforce import lead_view_url
+
+
+def _attach_lead_url(practice: dict | None) -> dict | None:
+    """Compute salesforce_lead_url from lead_id so the frontend always has it.
+
+    Even if the DB column doesn't exist on this deployment, the URL is
+    derivable from the lead id alone.
+    """
+    if not practice:
+        return practice
+    if not practice.get("salesforce_lead_url") and practice.get("salesforce_lead_id"):
+        practice["salesforce_lead_url"] = lead_view_url(practice["salesforce_lead_id"])
+    return practice
 from src.clay import trigger_enrichment
 from src.email_gen import generate_email_draft
 from src.email_poll import poll_replies
@@ -460,6 +474,7 @@ def list_practices(
     user: dict = Depends(get_current_user),
 ):
     rows = query_practices(city=city, category=category, min_rating=min_rating, limit=limit)
+    rows = [_attach_lead_url(r) for r in rows]
     return {"practices": rows, "count": len(rows)}
 
 
@@ -479,7 +494,7 @@ async def search(body: SearchRequest, user: dict = Depends(get_current_user)):
     enriched: list[dict] = []
     for p in practices:
         row = get_practice(p.place_id)
-        enriched.append(row if row else p.model_dump())
+        enriched.append(_attach_lead_url(row) if row else p.model_dump())
 
     return {
         "practices": enriched,
@@ -493,7 +508,7 @@ def get_single(place_id: str, user: dict = Depends(get_current_user)):
     row = get_practice(place_id)
     if not row:
         raise HTTPException(status_code=404, detail="Practice not found")
-    return row
+    return _attach_lead_url(row)
 
 
 class AnalyzeRequest(BaseModel):
@@ -693,7 +708,7 @@ async def call_log_endpoint(
         place_id, practice.get("call_count"),
         practice.get("salesforce_lead_id"), warning,
     )
-    return {"practice": practice, "sf_warning": warning}
+    return {"practice": _attach_lead_url(practice), "sf_warning": warning}
 
 
 @app.put("/api/practices/{place_id}/call/last-note")
@@ -721,7 +736,7 @@ async def update_last_call_note_endpoint(
         "[api.update_last_note.response] place_id=%s lead_id=%s warning=%s",
         place_id, practice.get("salesforce_lead_id"), warning,
     )
-    return {"practice": practice, "sf_warning": warning}
+    return {"practice": _attach_lead_url(practice), "sf_warning": warning}
 
 
 @app.get("/api/debug/env")

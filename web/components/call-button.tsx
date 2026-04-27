@@ -4,7 +4,6 @@ import { useState } from "react"
 import { Loader2, Phone } from "lucide-react"
 import type { Practice } from "@/lib/types"
 import { logCall, type CallLogResponse } from "@/lib/api"
-import { openRingCentralCall } from "@/lib/ringcentral"
 import CallLogModal from "./call-log-modal"
 
 interface CallButtonProps {
@@ -25,6 +24,7 @@ export default function CallButton({
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [latest, setLatest] = useState<Practice>(practice)
 
   if (!practice.phone) return null
 
@@ -33,21 +33,17 @@ export default function CallButton({
     setBusy(true)
     setError(null)
     try {
-      // 1. Create or update the SF Lead immediately (empty note → backend
-      //    appends a placeholder line and increments call_count). Returns
-      //    the practice with salesforce_lead_id populated.
+      // 1. Create or update the SF Lead. Backend returns the practice with
+      //    salesforce_lead_id + salesforce_lead_url populated.
       const response = await logCall(practice.place_id, "")
       onLogged?.(response)
-
-      // 2. Open the RingCentral dialer right away.
-      if (practice.phone) openRingCentralCall(practice.phone)
-
-      // 3. Open the post-call notes modal so the rep can record what
-      //    happened. Save in the modal updates the last line's note text
-      //    via PUT /api/practices/{id}/call/last-note.
+      // 2. Show the popup with the SF Lead link. RingCentral is integrated
+      //    inside Salesforce, so dialing happens after the rep clicks
+      //    "Take me there" — no separate dialer popup from us.
+      setLatest(response.practice)
       setOpen(true)
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to start call")
+      setError(e instanceof Error ? e.message : "Failed to create Lead")
     } finally {
       setBusy(false)
     }
@@ -60,10 +56,10 @@ export default function CallButton({
         onClick={handleClick}
         disabled={busy}
         className={className}
-        title={`Log call + dial via RingCentral: ${practice.phone}`}
+        title={`Create Salesforce Lead for ${practice.name}`}
       >
         {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Phone className="w-3 h-3" />}
-        {busy ? "Starting..." : label}
+        {busy ? "Creating..." : label}
       </button>
       {error && (
         <span
@@ -75,10 +71,9 @@ export default function CallButton({
         </span>
       )}
       <CallLogModal
-        practice={practice}
+        practice={latest}
         open={open}
         onClose={() => setOpen(false)}
-        onLogged={(response) => onLogged?.(response)}
       />
     </>
   )

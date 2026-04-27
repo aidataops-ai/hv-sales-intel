@@ -76,6 +76,8 @@ async def append_call_note(
         if not sync_result.get("skipped"):
             updates["salesforce_lead_id"] = sync_result["sf_lead_id"]
             updates["salesforce_synced_at"] = sync_result["synced_at"]
+            if sync_result.get("sf_lead_url"):
+                updates["salesforce_lead_url"] = sync_result["sf_lead_url"]
             if "sf_owner_id" in sync_result:
                 updates["salesforce_owner_id"] = sync_result["sf_owner_id"]
             if "sf_owner_name" in sync_result:

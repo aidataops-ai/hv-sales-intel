@@ -1,11 +1,9 @@
 "use client"
 
-import { useState } from "react"
-import { Phone } from "lucide-react"
 import type { Practice } from "@/lib/types"
 import type { CallLogResponse } from "@/lib/api"
 import { timeAgo } from "@/lib/utils"
-import CallLogModal from "./call-log-modal"
+import CallButton from "./call-button"
 
 interface CallLogTabProps {
   practice: Practice
@@ -13,7 +11,6 @@ interface CallLogTabProps {
 }
 
 export default function CallLogTab({ practice, onLogged }: CallLogTabProps) {
-  const [modalOpen, setModalOpen] = useState(false)
   const entries = (practice.call_notes ?? "").split("\n").filter(Boolean)
 
   return (
@@ -35,14 +32,12 @@ export default function CallLogTab({ practice, onLogged }: CallLogTabProps) {
             "No calls logged yet."
           )}
         </div>
-        <button
-          onClick={() => setModalOpen(true)}
-          disabled={!practice.phone}
+        <CallButton
+          practice={practice}
+          label="Log call"
+          onLogged={onLogged}
           className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50 shrink-0"
-          title={practice.phone ? "Log a call" : "No phone number"}
-        >
-          <Phone className="w-3 h-3" /> Log call
-        </button>
+        />
       </div>
 
       {entries.length === 0 ? (
@@ -59,16 +54,6 @@ export default function CallLogTab({ practice, onLogged }: CallLogTabProps) {
           ))}
         </ul>
       )}
-
-      <CallLogModal
-        practice={practice}
-        open={modalOpen}
-        onClose={() => setModalOpen(false)}
-        onLogged={(response) => {
-          onLogged(response)
-          setModalOpen(false)
-        }}
-      />
     </div>
   )
 }
