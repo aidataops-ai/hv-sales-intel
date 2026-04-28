@@ -293,7 +293,7 @@ export default function PracticeCard({
               </ul>
             ) : (
               <p className="text-[11px] text-gray-400 italic">
-                Legacy score — click "Re-analyze" to populate the ICP breakdown.
+                Legacy score — click &quot;Re-analyze&quot; to populate the ICP breakdown.
               </p>
             )}
           </div>
