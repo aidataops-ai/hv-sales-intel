@@ -99,6 +99,7 @@ create index if not exists idx_email_messages_message_id
 
 alter table practices
   add column if not exists salesforce_lead_id     text,
+  add column if not exists salesforce_lead_url    text,
   add column if not exists salesforce_owner_id    text,
   add column if not exists salesforce_owner_name  text,
   add column if not exists salesforce_synced_at   timestamptz,

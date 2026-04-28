@@ -1,45 +1,23 @@
 "use client"
 
-import { useState } from "react"
-import { Loader2, Phone, X } from "lucide-react"
+import { ExternalLink, X } from "lucide-react"
 import type { Practice } from "@/lib/types"
-import { logCall, type CallLogResponse } from "@/lib/api"
-import { openRingCentralCall } from "@/lib/ringcentral"
 
-interface CallLogModalProps {
+interface SfLeadCreatedModalProps {
   practice: Practice
   open: boolean
   onClose: () => void
-  onLogged: (response: CallLogResponse) => void
 }
 
 export default function CallLogModal({
   practice,
   open,
   onClose,
-  onLogged,
-}: CallLogModalProps) {
-  const [note, setNote] = useState("")
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
+}: SfLeadCreatedModalProps) {
   if (!open) return null
 
-  async function handleSaveAndCall() {
-    setSubmitting(true)
-    setError(null)
-    try {
-      const response = await logCall(practice.place_id, note)
-      onLogged(response)
-      setNote("")
-      onClose()
-      if (practice.phone) openRingCentralCall(practice.phone)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to log call")
-    } finally {
-      setSubmitting(false)
-    }
-  }
+  const leadUrl = practice.salesforce_lead_url
+  const leadId = practice.salesforce_lead_id
 
   return (
     <div
@@ -52,7 +30,7 @@ export default function CallLogModal({
       >
         <div className="flex items-center justify-between">
           <h3 className="font-serif text-base font-bold text-gray-900">
-            Log call — {practice.name}
+            Lead created — {practice.name}
           </h3>
           <button
             onClick={onClose}
@@ -61,35 +39,49 @@ export default function CallLogModal({
             <X className="w-4 h-4" />
           </button>
         </div>
-        <textarea
-          value={note}
-          onChange={(e) => setNote(e.target.value)}
-          placeholder="What happened? (we'll polish this for Salesforce)"
-          className="w-full h-32 text-sm p-3 rounded-lg border border-gray-200 bg-white resize-none focus:outline-none focus:ring-2 focus:ring-teal-500/40"
-          disabled={submitting}
-          autoFocus
-        />
-        {error && <p className="text-xs text-rose-600">{error}</p>}
-        <div className="flex justify-end gap-2">
+
+        {leadUrl ? (
+          <>
+            <p className="text-xs text-gray-500">
+              Salesforce Lead ID:&nbsp;
+              <span className="font-mono text-gray-700">{leadId}</span>
+            </p>
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+              <p className="text-xs text-gray-500 mb-1">Lead link</p>
+              <a
+                href={leadUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-teal-700 break-all hover:underline"
+              >
+                {leadUrl}
+              </a>
+            </div>
+          </>
+        ) : (
+          <p className="text-xs text-rose-600">
+            Lead was not created in Salesforce. Check the call log response for the error.
+          </p>
+        )}
+
+        <div className="flex justify-end gap-2 pt-1">
           <button
             onClick={onClose}
-            disabled={submitting}
-            className="text-xs px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+            className="text-xs px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-100"
           >
-            Cancel
+            Close
           </button>
-          <button
-            onClick={handleSaveAndCall}
-            disabled={submitting}
-            className="inline-flex items-center gap-1 text-xs px-4 py-2 rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50"
-          >
-            {submitting ? (
-              <Loader2 className="w-3 h-3 animate-spin" />
-            ) : (
-              <Phone className="w-3 h-3" />
-            )}
-            {submitting ? "Saving..." : "Save & Call"}
-          </button>
+          {leadUrl && (
+            <a
+              href={leadUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-xs px-4 py-2 rounded-lg bg-teal-600 text-white hover:bg-teal-700"
+            >
+              <ExternalLink className="w-3 h-3" />
+              Take me there
+            </a>
+          )}
         </div>
       </div>
     </div>

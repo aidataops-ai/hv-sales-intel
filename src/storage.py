@@ -138,21 +138,41 @@ def update_practice_analysis(
     return result.data[0] if result.data else None
 
 
+# Optional columns that may not exist on older deployments. We retry the
+# UPDATE without these fields if PostgREST rejects them as missing columns.
+_OPTIONAL_COLUMNS = {"salesforce_lead_url"}
+
+
 def update_practice_fields(
     place_id: str,
     fields: dict,
     touched_by: str | None = None,
 ) -> dict | None:
-    """Update arbitrary fields. Stamps attribution when touched_by set."""
+    """Update arbitrary fields. Stamps attribution when touched_by set.
+
+    If an optional column doesn't exist in the DB yet, retries the update
+    without that column instead of failing the whole write.
+    """
     client = _get_client()
     if not client:
         return None
-    result = (
-        client.table("practices")
-        .update(_with_attribution(fields, touched_by))
-        .eq("place_id", place_id)
-        .execute()
-    )
+    payload = _with_attribution(fields, touched_by)
+    try:
+        result = (
+            client.table("practices").update(payload)
+            .eq("place_id", place_id).execute()
+        )
+    except Exception as e:
+        msg = str(e)
+        retry_payload = {k: v for k, v in payload.items() if k not in _OPTIONAL_COLUMNS}
+        # Only retry if the error mentions one of the optional columns
+        if any(c in msg for c in _OPTIONAL_COLUMNS) and len(retry_payload) < len(payload):
+            result = (
+                client.table("practices").update(retry_payload)
+                .eq("place_id", place_id).execute()
+            )
+        else:
+            raise
     return result.data[0] if result.data else None
 
 

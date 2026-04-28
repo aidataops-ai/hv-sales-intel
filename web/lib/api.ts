@@ -263,6 +263,20 @@ export async function logCall(
   )
 }
 
+export async function updateLastCallNote(
+  placeId: string,
+  note: string,
+): Promise<CallLogResponse> {
+  return await apiFetch<CallLogResponse>(
+    `/api/practices/${placeId}/call/last-note`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ note }),
+    },
+  )
+}
+
 export async function getPractice(placeId: string): Promise<Practice> {
   return await apiFetch<Practice>(`/api/practices/${placeId}`)
 }

@@ -39,6 +39,7 @@ export interface Practice {
 
   // Salesforce integration + call log
   salesforce_lead_id: string | null
+  salesforce_lead_url: string | null
   salesforce_owner_id: string | null
   salesforce_owner_name: string | null
   salesforce_synced_at: string | null

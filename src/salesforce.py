@@ -160,10 +160,18 @@ async def update_lead_description(sf_lead_id: str, description: str) -> dict:
     return resp.json()
 
 
+def lead_view_url(sf_lead_id: str | None) -> str | None:
+    """Build the Lightning Lead view URL from a lead id."""
+    if not sf_lead_id:
+        return None
+    base = settings.sf_lead_view_base_url.rstrip("/")
+    return f"{base}/{sf_lead_id}/view"
+
+
 async def sync_practice(practice: Practice, polished_line: str) -> dict:
     """Create or update the SF Lead for this practice via the Apex endpoint.
 
-    Returns dict with sf_lead_id + synced_at on success, or
+    Returns dict with sf_lead_id + sf_lead_url + synced_at on success, or
     {'skipped': True, 'reason': ...} when SF is not configured. Raises on
     network/API failures so the caller can surface a warning.
     """
@@ -188,6 +196,7 @@ async def sync_practice(practice: Practice, polished_line: str) -> dict:
         )
         return {
             "sf_lead_id": practice.salesforce_lead_id,
+            "sf_lead_url": lead_view_url(practice.salesforce_lead_id),
             "sf_owner_name": practice.owner_name or "",
             "synced_at": now_iso,
         }
@@ -201,6 +210,7 @@ async def sync_practice(practice: Practice, polished_line: str) -> dict:
     log.info("[sf.sync.created] lead_id=%s", sf_lead_id)
     return {
         "sf_lead_id": sf_lead_id,
+        "sf_lead_url": lead_view_url(sf_lead_id),
         "sf_owner_name": practice.owner_name or "",
         "synced_at": now_iso,
     }
