@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Loader2, Phone } from "lucide-react"
 import type { Practice } from "@/lib/types"
 import { logCall, type CallLogResponse } from "@/lib/api"
@@ -26,20 +26,33 @@ export default function CallButton({
   const [error, setError] = useState<string | null>(null)
   const [latest, setLatest] = useState<Practice>(practice)
 
+  // Keep `latest` in sync with the parent's practice prop (e.g. after the
+  // home page refreshes a card) so the duplicate-Lead check below sees
+  // freshly-stored salesforce_lead_id values.
+  useEffect(() => {
+    setLatest(practice)
+  }, [practice])
+
   if (!practice.phone) return null
 
   async function handleClick(event: React.MouseEvent<HTMLButtonElement>) {
     onClick?.(event)
+
+    // Lead already exists in Salesforce — skip the API round-trip, just
+    // open the popup with the existing Lightning link from our DB.
+    if (latest.salesforce_lead_id) {
+      setError(null)
+      setOpen(true)
+      return
+    }
+
     setBusy(true)
     setError(null)
     try {
-      // 1. Create or update the SF Lead. Backend returns the practice with
-      //    salesforce_lead_id + salesforce_lead_url populated.
+      // No Lead yet — create one via the call/log endpoint. Backend
+      // returns the practice with salesforce_lead_id + salesforce_lead_url.
       const response = await logCall(practice.place_id, "")
       onLogged?.(response)
-      // 2. Show the popup with the SF Lead link. RingCentral is integrated
-      //    inside Salesforce, so dialing happens after the rep clicks
-      //    "Take me there" — no separate dialer popup from us.
       setLatest(response.practice)
       setOpen(true)
     } catch (e) {
@@ -49,6 +62,8 @@ export default function CallButton({
     }
   }
 
+  const hasExistingLead = Boolean(latest.salesforce_lead_id)
+
   return (
     <>
       <button
@@ -56,10 +71,14 @@ export default function CallButton({
         onClick={handleClick}
         disabled={busy}
         className={className}
-        title={`Create Salesforce Lead for ${practice.name}`}
+        title={
+          hasExistingLead
+            ? "Open the Salesforce Lead for this practice"
+            : `Create Salesforce Lead for ${practice.name}`
+        }
       >
         {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Phone className="w-3 h-3" />}
-        {busy ? "Creating..." : label}
+        {busy ? "Creating..." : hasExistingLead ? "Open Lead" : label}
       </button>
       {error && (
         <span
