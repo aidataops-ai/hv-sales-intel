@@ -32,18 +32,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         // In prod, empty API_URL means same-origin (Vercel rewrite handles /api/*).
         if (!API_URL && !IS_PROD) return
         const res = await fetch(`${API_URL}/api/me`, { credentials: "include" })
-        if (res.ok && !cancelled) {
-          setUser(await res.json())
-        }
+        if (cancelled) return
+        if (res.ok) setUser(await res.json())
+        else setUser(null)
       } catch {
-        // Backend unreachable — leave user null; UI degrades gracefully.
+        // Backend unreachable — leave user as-is; UI degrades gracefully.
       } finally {
         if (!cancelled) setLoading(false)
       }
     }
     hydrate()
+
+    // Re-hydrate on sign-in / sign-out / token refresh. Without this, a
+    // client-side `router.push` right after login leaves the provider with
+    // its stale pre-login state (loading=false, user=null) until a hard
+    // refresh, which hides UserMenu.
+    const supabase = getSupabaseBrowserClient()
+    const { data: sub } = supabase.auth.onAuthStateChange((event: string) => {
+      if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") hydrate()
+      else if (event === "SIGNED_OUT") setUser(null)
+    })
+
     return () => {
       cancelled = true
+      sub.subscription.unsubscribe()
     }
   }, [])
 
