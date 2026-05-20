@@ -36,15 +36,6 @@ function PageContent() {
   const [practices, setPractices] = useState<Practice[]>(mockPractices)
   const [hydratedFromDb, setHydratedFromDb] = useState<boolean>(false)
 
-  useEffect(() => {
-    const snap = readSnapshot()
-    if (snap?.practices && snap.practices.length > 0) {
-      setPractices(snap.practices)
-      captureSortScores(snap.practices)
-      setHydratedFromDb(true)
-    }
-  }, [captureSortScores])
-
   const [isLoading, setIsLoading] = useState(false)
   const [isRescanning, setIsRescanning] = useState(false)
   const [analyzingIds, setAnalyzingIds] = useState<Set<string>>(new Set())
@@ -56,12 +47,25 @@ function PageContent() {
   // analyzed keeps its position in the sidebar instead of jumping to
   // the top. Sort falls back to live lead_score for practices not in
   // the snapshot yet.
+  //
+  // NOTE: declare captureSortScores BEFORE the effects that depend on it.
+  // TypeScript / Next.js builds reject "used before declaration" even
+  // though the closure works at runtime.
   const [sortScores, setSortScores] = useState<Record<string, number>>({})
   const captureSortScores = useCallback((list: Practice[]) => {
     const next: Record<string, number> = {}
     for (const p of list) next[p.place_id] = p.lead_score ?? -1
     setSortScores(next)
   }, [])
+
+  useEffect(() => {
+    const snap = readSnapshot()
+    if (snap?.practices && snap.practices.length > 0) {
+      setPractices(snap.practices)
+      captureSortScores(snap.practices)
+      setHydratedFromDb(true)
+    }
+  }, [captureSortScores])
 
   // DB hydrate when no snapshot. Always fetches the full DB on first
   // login — no owner / search filters applied at fetch time so the user
