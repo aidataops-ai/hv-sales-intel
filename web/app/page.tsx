@@ -72,12 +72,17 @@ function PageContent() {
     async function hydrate() {
       try {
         const dbRows = await listPractices({ limit: 2000 })
-        if (!cancelled && dbRows.length > 0) {
-          setPractices(dbRows)
-          captureSortScores(dbRows)
-        }
+        if (cancelled) return
+        // Always reflect what the API returned — including the empty list.
+        // Without this, wiping the DB + clicking Refresh leaves stale
+        // React state from the previous session in the sidebar.
+        // (listPractices already falls back to mock data when the backend
+        // is unreachable, so there's no risk of blanking the UI on a
+        // transient network error.)
+        setPractices(dbRows)
+        captureSortScores(dbRows)
       } catch {
-        /* keep mock fallback */
+        /* keep current */
       } finally {
         if (!cancelled) setHydratedFromDb(true)
       }
@@ -117,10 +122,12 @@ function PageContent() {
     const timer = setTimeout(async () => {
       try {
         const dbRows = await listPractices({ limit: 2000 })
-        if (!cancelled && dbRows.length > 0) {
-          setPractices(dbRows)
-          captureSortScores(dbRows)
-        }
+        if (cancelled) return
+        // Mirror the main hydrate: always reflect the API response,
+        // including the empty list, so wiping the DB takes effect on
+        // the next filter change without needing a hard reload.
+        setPractices(dbRows)
+        captureSortScores(dbRows)
       } catch {
         /* keep current */
       }
