@@ -150,6 +150,12 @@ create index if not exists idx_practices_icp_tier on practices (icp_tier);
 -- AI-driven score noise.
 alter table practices add column if not exists analysis_input_hash text;
 
+-- AI-extracted decision-maker contacts from the website (owner, manager,
+-- lead provider, etc.). Stored as a JSON string for consistency with
+-- pain_points / sales_angles: [{"name","title","phone","email"}].
+-- Used to personalize the cold-call playbook.
+alter table practices add column if not exists website_contacts text;
+
 -- Search query cache (avoid re-billing Google for repeated queries)
 create table if not exists searches (
   id bigserial primary key,

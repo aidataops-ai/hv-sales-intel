@@ -61,6 +61,14 @@ Also return:
 - summary: 1-2 sentence overview from H&V's perspective (what's the staffing/admin opportunity here?)
 - pain_points: 2-4 concrete pain points (quote evidence from the reviews/website where possible)
 - sales_angles: 2-3 pitch angles tied to specific H&V roles (Virtual Scheduler, Virtual Dental Assistant, Virtual Wellness/Hospitality Assistant, Patient Care Coordinator, Executive Assistant, HR & Payroll Assistant, SDR, Medical Billing Coordinator).
+- website_contacts: a JSON array (0-6 entries) of decision-maker contacts identified from the website. Each entry is
+    {"name": "...", "title": "...", "phone": "...", "email": "..."}
+  where `name` is required and the other three are best-effort (use "" or null if not visible on the site). Prioritize:
+    * the owner / founder / managing partner
+    * the practice manager / office administrator / GM / director
+    * lead doctor(s) / lead provider(s)
+    * named billing or scheduling leads if listed
+  Skip generic staff lists, photos without names, and pure bios. Each `name` should be a real person (e.g. "Dr. Sarah Smith" or "Jane Doe"), NOT the practice name. Use the exact phone format shown on the site; combine country code + number if both are present. Return an empty array if no individuals are identifiable from the website text.
 
 Return ONLY valid JSON with this exact structure:
 {
@@ -69,6 +77,9 @@ Return ONLY valid JSON with this exact structure:
   "summary": "...",
   "pain_points": ["...", "..."],
   "sales_angles": ["...", "..."],
+  "website_contacts": [
+    {"name": "Dr. Sarah Smith", "title": "Owner & Lead Dentist", "phone": "(555) 555-0100", "email": "ssmith@example.com"}
+  ],
   "operational_pain_score": 0,
   "decision_maker_access_score": 0,
   "remote_readiness_score": 0,
@@ -77,7 +88,7 @@ Return ONLY valid JSON with this exact structure:
   "compliance_boundary_score": 0
 }
 
-All scores are integers 0-100. No prose outside the JSON."""
+All scores are integers from the bucket set above. No prose outside the JSON."""
 
 
 async def analyze_practice(
@@ -186,6 +197,7 @@ def _build_analysis_record(
         "compliance_boundary_score": compliance,
     })
 
+    contacts = _clean_contacts(result.get("website_contacts"))
     return {
         "summary": result.get("summary", ""),
         "pain_points": json.dumps(result.get("pain_points", [])),
@@ -204,7 +216,44 @@ def _build_analysis_record(
         "email_draft_updated_at": None,
         "website_doctor_name": website_doctor_name,
         "website_doctor_phone": website_doctor_phone,
+        # AI-extracted decision-maker contacts from the website. Stored as
+        # a JSON string so the existing analysis-payload path (dict update)
+        # works without a JSONB-aware serializer.
+        "website_contacts": json.dumps(contacts),
     }
+
+
+def _clean_contacts(raw: Any) -> list[dict]:
+    """Validate the AI's contacts list. Each entry must have a non-empty
+    name; other fields are coerced to strings (or dropped if blank).
+    Caps at 6 contacts to keep the playbook readable.
+    """
+    if not isinstance(raw, list):
+        return []
+    cleaned: list[dict] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            continue
+        # Drop entries that are obviously the practice name, not a person.
+        if name.lower().startswith(("the ", "our ")):
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append({
+            "name": name,
+            "title": str(entry.get("title") or "").strip() or None,
+            "phone": str(entry.get("phone") or "").strip() or None,
+            "email": str(entry.get("email") or "").strip() or None,
+        })
+        if len(cleaned) >= 6:
+            break
+    return cleaned
 
 
 def _norm_vertical(value: Any) -> str | None:
@@ -390,4 +439,5 @@ def _mock_analysis(
         "email_draft_updated_at": None,
         "website_doctor_name": None,
         "website_doctor_phone": None,
+        "website_contacts": json.dumps([]),
     }

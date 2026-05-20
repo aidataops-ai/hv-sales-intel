@@ -132,6 +132,7 @@ def upsert_practices(
         "icp_vertical",
         "icp_tier",
         "analysis_input_hash",
+        "website_contacts",
         "status",
         "notes",
         "last_touched_by_name",  # derived from join

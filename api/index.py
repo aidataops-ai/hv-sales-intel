@@ -785,10 +785,19 @@ async def analyze(
         "city": city,
         "state": state,
     })
+    # Backfill bypass: if the cached row has no website_contacts but the
+    # practice has a website, force a fresh AI run so the contact list
+    # gets populated. After backfill, subsequent re-analyzes are cached.
+    needs_contacts_backfill = (
+        current_record is not None
+        and current_record.get("website")
+        and not current_record.get("website_contacts")
+    )
     if (
         current_record
         and current_record.get("lead_score") is not None
         and current_record.get("analysis_input_hash") == fingerprint
+        and not needs_contacts_backfill
     ):
         return current_record
 
@@ -879,6 +888,18 @@ async def _build_personalized_script(practice: dict) -> dict:
         [r["text"] for r in (reviews or []) if r.get("text")],
         key=len,
     )[:3]
+    # website_contacts is stored as a JSON string (or jsonb) — accept either.
+    raw_contacts = practice.get("website_contacts")
+    if isinstance(raw_contacts, str):
+        try:
+            website_contacts = json.loads(raw_contacts) or []
+        except json.JSONDecodeError:
+            website_contacts = []
+    elif isinstance(raw_contacts, list):
+        website_contacts = raw_contacts
+    else:
+        website_contacts = []
+
     return await generate_script(
         name=practice["name"],
         category=practice.get("category"),
@@ -893,6 +914,7 @@ async def _build_personalized_script(practice: dict) -> dict:
         owner_name=practice.get("owner_name"),
         owner_title=practice.get("owner_title"),
         review_excerpts=review_excerpts,
+        website_contacts=website_contacts,
     )
 
 

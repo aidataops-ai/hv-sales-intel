@@ -30,6 +30,8 @@ class Practice(BaseModel):
     icp_tier: str | None = None      # A | B | C | D
     # Hash of analyzer inputs — used to short-circuit Re-analyze when nothing changed.
     analysis_input_hash: str | None = None
+    # AI-extracted decision-maker contacts from the website (JSON string).
+    website_contacts: str | None = None
 
     # Phase 3 (CRM)
     status: str = "NEW"

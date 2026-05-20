@@ -6,7 +6,7 @@ from src.settings import settings
 
 SYSTEM_PROMPT = """You are a cold call script writer for Health & Virtuals, a healthcare staffing and talent acquisition company.
 
-Given information about a healthcare practice (name, category, location, lead doctor, owner, analysis summary, pain points, sales angles, review excerpts), generate a personalized cold call playbook tailored to THIS specific practice.
+Given information about a practice (name, category, location, lead doctor, owner, analysis summary, pain points, sales angles, review excerpts, and a list of decision-maker contacts pulled from the practice's website), generate a personalized cold call playbook tailored to THIS specific practice.
 
 Return ONLY valid JSON with this exact structure:
 {
@@ -20,13 +20,13 @@ Return ONLY valid JSON with this exact structure:
 }
 
 Personalization requirements:
-- Opening: If a lead doctor name is provided, ask for them by name ("Hi, may I speak with Dr. Smith?"). Otherwise greet the practice. Reference the city if provided.
+- Opening: When website_contacts contains a decision-maker (owner / practice manager / GM / lead doctor), ask for that person BY NAME AND TITLE — e.g., "Hi, may I speak with Sarah Smith, the practice manager?" or "Hi, is Dr. Patel, the owner, available?". If a direct phone is listed for that person, mention it in a parenthetical so the rep can dial it next time ("(direct line on file: 555-555-0100)"). If website_contacts has more than one name, name the primary in the greeting and list the others in a short "Other contacts on file" bullet line beneath the opening greeting so the rep has fallbacks. If no contacts are available, fall back to the legacy lead doctor field, then to a generic practice greeting. Reference the city if provided.
 - Discovery Questions: Reference 1-2 specific items from the provided pain_points by name (not generic). 3-4 numbered questions total.
-- Pitch: If review_excerpts are provided, quote ONE excerpt verbatim with leading attribution ("One of your patient reviews mentioned, '...'") and tie it to a Health & Virtuals staffing solution. Mention Health & Virtuals by name.
-- Objection Handling: Cover "We already have a recruiter", "We can't afford it", "We're not hiring right now", and one objection specific to this category.
-- Closing: Reference the city when present ("we've placed staff at multiple [city]-area clinics"). Suggest a 15-minute meeting and a free staffing assessment.
+- Pitch: If review_excerpts are provided, quote ONE excerpt verbatim with leading attribution ("One of your patient reviews mentioned, '...'") and tie it to a Health & Virtuals staffing solution. Mention Health & Virtuals by name. If website_contacts indicates the decision-maker's title (e.g. "Owner & Lead Dentist"), tailor the pitch to that role.
+- Objection Handling: Cover "We already have a recruiter", "We can't afford it", "We're not hiring right now", and one objection specific to this category. If a secondary contact is available (a manager other than the primary), include one objection-recovery line of the form "If [Name] isn't available, could you point me to [secondary name / role]?".
+- Closing: Reference the city when present ("we've placed staff at multiple [city]-area clinics"). Suggest a 15-minute meeting and a free staffing assessment. If an email is listed for the primary contact, offer to send a follow-up to that exact email address.
 
-Keep each section 3-6 sentences. Be conversational, not robotic. Use the rep's perspective ("I", "we at Health & Virtuals")."""
+Keep each section 3-6 sentences. Be conversational, not robotic. Use the rep's perspective ("I", "we at Health & Virtuals"). When you mention a name or phone number from website_contacts, use the EXACT spelling and formatting given — do not paraphrase or guess."""
 
 
 async def generate_script(
@@ -44,6 +44,7 @@ async def generate_script(
     owner_name: str | None = None,
     owner_title: str | None = None,
     review_excerpts: list[str] | None = None,
+    website_contacts: list[dict] | None = None,
 ) -> dict:
     """Generate a cold call playbook personalized to the practice."""
     if not settings.openai_api_key:
@@ -52,6 +53,7 @@ async def generate_script(
             category=category,
             website_doctor_name=website_doctor_name,
             city=city,
+            website_contacts=website_contacts,
         )
 
     excerpts = review_excerpts or []
@@ -61,6 +63,7 @@ async def generate_script(
     excerpts_block = (
         "\n".join(f'- "{ex}"' for ex in excerpts) if excerpts else "(none available)"
     )
+    contacts_block = _format_contacts_for_prompt(website_contacts)
     user_prompt = f"""Generate a personalized cold call playbook for this practice:
 
 Practice: {name}
@@ -69,6 +72,9 @@ Location: {location}
 Rating: {rating if rating is not None else 'unknown'} ({review_count or 0} reviews)
 Lead Doctor: {website_doctor_name or 'Unknown'}
 Owner Contact: {owner_name or 'Unknown'} ({owner_title or 'no title'})
+
+Decision-maker contacts from the practice's website (use these names + numbers VERBATIM where the prompt instructs):
+{contacts_block}
 
 Analysis Summary: {summary or 'No analysis available'}
 Pain Points: {pain_points or '[]'}
@@ -101,7 +107,25 @@ Verbatim Patient Review Excerpts:
         category=category,
         website_doctor_name=website_doctor_name,
         city=city,
+        website_contacts=website_contacts,
     )
+
+
+def _format_contacts_for_prompt(contacts: list[dict] | None) -> str:
+    """Render the website_contacts list as a numbered block for the GPT prompt."""
+    if not contacts:
+        return "(none extracted from the website)"
+    lines = []
+    for i, c in enumerate(contacts, start=1):
+        bits = [c.get("name") or "Unknown"]
+        if c.get("title"):
+            bits.append(f"— {c['title']}")
+        if c.get("phone"):
+            bits.append(f"· direct: {c['phone']}")
+        if c.get("email"):
+            bits.append(f"· email: {c['email']}")
+        lines.append(f"{i}. " + " ".join(bits))
+    return "\n".join(lines)
 
 
 def _mock_script(
@@ -109,14 +133,42 @@ def _mock_script(
     category: str | None,
     website_doctor_name: str | None = None,
     city: str | None = None,
+    website_contacts: list[dict] | None = None,
 ) -> dict:
     """Return a category-appropriate mock playbook with optional personalization."""
     cat_label = (category or "healthcare").replace("_", " ")
-    doctor_greeting = (
-        f"Hi, may I speak with {website_doctor_name}?"
-        if website_doctor_name
-        else f"Hi, this is [Your Name] calling from Health & Virtuals about {name}."
+    # Prefer a contact from website_contacts over the legacy lead-doctor field.
+    primary = (website_contacts or [None])[0]
+    if primary and primary.get("name"):
+        title_part = f", the {primary['title']}" if primary.get("title") else ""
+        phone_part = (
+            f" (direct line on file: {primary['phone']})"
+            if primary.get("phone")
+            else ""
+        )
+        doctor_greeting = (
+            f"Hi, may I speak with {primary['name']}{title_part}?{phone_part}"
+        )
+    elif website_doctor_name:
+        doctor_greeting = f"Hi, may I speak with {website_doctor_name}?"
+    else:
+        doctor_greeting = f"Hi, this is [Your Name] calling from Health & Virtuals about {name}."
+
+    # Build an "other contacts on file" line for the rep's reference.
+    secondary_lines = []
+    for c in (website_contacts or [])[1:4]:  # up to 3 fallbacks
+        bits = [c["name"]]
+        if c.get("title"):
+            bits.append(f"({c['title']})")
+        if c.get("phone"):
+            bits.append(f"— {c['phone']}")
+        secondary_lines.append(" ".join(bits))
+    other_contacts_line = (
+        f"\nOther contacts on file: {'; '.join(secondary_lines)}."
+        if secondary_lines
+        else ""
     )
+
     city_phrase = f" in the {city} area" if city else ""
 
     return {
@@ -127,7 +179,7 @@ def _mock_script(
                 "content": (
                     f"{doctor_greeting} I'm reaching out because Health & Virtuals "
                     f"helps {cat_label} practices{city_phrase} with staffing solutions. "
-                    "Do you have a quick moment?"
+                    f"Do you have a quick moment?{other_contacts_line}"
                 ),
             },
             {
