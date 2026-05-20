@@ -107,21 +107,66 @@ def find_duplicate_place_ids(practices: list[Practice]) -> dict[str, str]:
     return mapping
 
 
+# Optional columns that may not exist on older deployments. We retry the
+# UPSERT/UPDATE without these fields if PostgREST rejects them as missing
+# columns. These are columns added by later migrations that operators may
+# not have run yet — failing the whole write because a migration hasn't
+# been applied would break search / analyze with a 500.
+_OPTIONAL_COLUMNS = {
+    "salesforce_lead_url",
+    "salesforce_lead_id",
+    "salesforce_owner_id",
+    "salesforce_owner_name",
+    "salesforce_synced_at",
+    "icp_vertical",
+    "icp_tier",
+    "icp_breakdown",
+    "analysis_input_hash",
+    "website_contacts",
+    "website_doctor_name",
+    "website_doctor_phone",
+    "call_count",
+    "call_notes",
+    "call_script",
+    "email",
+    "email_draft",
+    "email_draft_updated_at",
+    "owner_name",
+    "owner_email",
+    "owner_phone",
+    "owner_title",
+    "owner_linkedin",
+    "enrichment_status",
+    "enriched_at",
+    "assigned_to",
+    "assigned_at",
+    "assigned_by",
+    "tags",
+}
+
+
 def upsert_practices(
     practices: list[Practice],
     touched_by: str | None = None,
 ) -> int:
     """Upsert practices. Returns count. Stamps attribution when touched_by set.
 
-    Only core Google Places fields + attribution are written. Analysis columns,
-    status, and notes are NEVER included — upserting with None would clobber
-    existing analysis when a search/rescan hits a previously-analyzed row.
+    Only core Google Places fields + attribution are written. Every other
+    column is owned by a downstream write path (analyze, call log, enrich,
+    email, etc.) and would be clobbered by sending None here when a search
+    hits an already-worked row.
+
+    Defense in depth: if PostgREST rejects a column that doesn't exist on
+    the deployed schema (half-applied migrations), retry without that
+    column instead of 500-ing the entire search.
     """
     client = _get_client()
     if not client or not practices:
         return 0
-    # Derived/analysis/CRM columns are managed by their own write paths.
+    # Every non-Google-Places field. (last_touched_by_name is derived from a
+    # read-time join, not a stored column.)
     preserved = {
+        # Phase 2 analysis
         "summary",
         "pain_points",
         "sales_angles",
@@ -129,13 +174,24 @@ def upsert_practices(
         "lead_score",
         "urgency_score",
         "hiring_signal_score",
+        "icp_breakdown",
         "icp_vertical",
         "icp_tier",
         "analysis_input_hash",
         "website_contacts",
+        "website_doctor_name",
+        "website_doctor_phone",
+        # Phase 3 CRM + script
         "status",
         "notes",
-        "last_touched_by_name",  # derived from join
+        "call_script",
+        # Email outreach
+        "email",
+        "email_draft",
+        "email_draft_updated_at",
+        # Read-time join
+        "last_touched_by_name",
+        # Clay enrichment
         "owner_name",
         "owner_email",
         "owner_phone",
@@ -143,12 +199,43 @@ def upsert_practices(
         "owner_linkedin",
         "enrichment_status",
         "enriched_at",
+        # Salesforce integration
+        "salesforce_lead_id",
+        "salesforce_lead_url",
+        "salesforce_owner_id",
+        "salesforce_owner_name",
+        "salesforce_synced_at",
+        "call_count",
+        "call_notes",
+        # Assignment (admin-only)
+        "assigned_to",
+        "assigned_at",
+        "assigned_by",
+        "assigned_to_name",
     }
     rows = []
     for p in practices:
         row = p.model_dump(exclude=preserved)
         rows.append(_with_attribution(row, touched_by))
-    result = client.table("practices").upsert(rows, on_conflict="place_id").execute()
+
+    try:
+        result = client.table("practices").upsert(rows, on_conflict="place_id").execute()
+    except Exception as e:
+        msg = str(e)
+        # Drop any column the schema doesn't have yet and retry once.
+        # This survives half-applied migrations (e.g. salesforce_lead_url
+        # missing on older deployments).
+        missing = [c for c in _OPTIONAL_COLUMNS if c in msg]
+        if not missing:
+            raise
+        filtered_rows = [
+            {k: v for k, v in r.items() if k not in missing} for r in rows
+        ]
+        result = (
+            client.table("practices")
+            .upsert(filtered_rows, on_conflict="place_id")
+            .execute()
+        )
     return len(result.data) if result.data else 0
 
 
@@ -187,20 +274,6 @@ def get_practice(place_id: str) -> dict | None:
     except Exception:
         return None
     return _flatten_attribution(result.data) if result and result.data else None
-
-
-# Optional columns that may not exist on older deployments. We retry the
-# UPDATE without these fields if PostgREST rejects them as missing columns.
-# These are columns added by later migrations that operators may not have
-# run yet — failing the whole UPDATE because the migration hasn't been
-# applied would break Analyze / Re-analyze with a 500.
-_OPTIONAL_COLUMNS = {
-    "salesforce_lead_url",
-    "icp_vertical",
-    "icp_tier",
-    "analysis_input_hash",
-    "website_contacts",
-}
 
 
 def _update_with_optional_retry(
