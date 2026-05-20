@@ -1,10 +1,13 @@
 import json
+import logging
 from pathlib import Path
 
 import httpx
 
 from src.models import Practice
 from src.settings import settings
+
+log = logging.getLogger("hvsi.places")
 
 MOCK_PATH = Path(__file__).parent / "mock_practices.json"
 
@@ -28,9 +31,12 @@ async def _google_search(query: str) -> list[Practice]:
 
     Google caps maxResultCount at 20 per request but supports up to 60 total
     via nextPageToken (3 pages). Each page is a separate billable call.
+
+    On API failure, falls back to mock_practices.json with a logged error so
+    the search endpoint stays available and the operator can diagnose via
+    Vercel logs.
     """
     url = "https://places.googleapis.com/v1/places:searchText"
-    # nextPageToken is returned only when fieldMask explicitly requests it.
     headers = {
         "X-Goog-Api-Key": settings.google_maps_api_key,
         "X-Goog-FieldMask": f"{FIELD_MASK},nextPageToken",
@@ -39,19 +45,34 @@ async def _google_search(query: str) -> list[Practice]:
 
     all_places: list[dict] = []
     page_token: str | None = None
-    async with httpx.AsyncClient(timeout=15) as client:
-        for _ in range(3):  # cap at 3 pages = 60 results
-            body: dict = {"textQuery": query, "maxResultCount": 20}
-            if page_token:
-                body["pageToken"] = page_token
-            resp = await client.post(url, json=body, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-            all_places.extend(data.get("places", []))
-            page_token = data.get("nextPageToken")
-            if not page_token:
-                break
+    log.info("[places.google.start] query=%r", query)
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            for page in range(3):  # cap at 3 pages = 60 results
+                body: dict = {"textQuery": query, "maxResultCount": 20}
+                if page_token:
+                    body["pageToken"] = page_token
+                resp = await client.post(url, json=body, headers=headers)
+                if resp.status_code != 200:
+                    log.error(
+                        "[places.google.error] status=%s page=%s body=%s",
+                        resp.status_code,
+                        page,
+                        resp.text[:500],
+                    )
+                    resp.raise_for_status()
+                data = resp.json()
+                all_places.extend(data.get("places", []))
+                page_token = data.get("nextPageToken")
+                if not page_token:
+                    break
+    except Exception as e:
+        log.error("[places.google.exception] type=%s msg=%s", type(e).__name__, str(e)[:500])
+        # Fall back to backend mock so the endpoint still returns something,
+        # but tag the practices so the operator can tell mock vs real.
+        return _mock_search(query)
 
+    log.info("[places.google.done] query=%r count=%d", query, len(all_places))
     return [_map_google_place(p) for p in all_places]
 
 
