@@ -49,6 +49,7 @@ from src.scriptgen import generate_script
 from src.settings import settings as app_settings
 from src.storage import (
     add_tags,
+    find_duplicate_place_ids,
     get_cached_search,
     get_practice,
     insert_email_message,
@@ -669,6 +670,18 @@ async def search(body: SearchRequest, user: dict = Depends(get_current_user)):
     practices = await search_places(body.query)
     relevant = [p for p in practices if "IRRELEVANT" not in p.tags]
     irrelevant = [p for p in practices if "IRRELEVANT" in p.tags]
+
+    # Dedup: Google sometimes returns two place_ids for the same business.
+    # When (normalized name + address + phone) already exists under a different
+    # place_id in the DB, rewrite the incoming place_id to the existing one so
+    # the upsert UPDATEs the canonical row instead of inserting a duplicate.
+    dupe_map = find_duplicate_place_ids(relevant)
+    if dupe_map:
+        for p in relevant:
+            canonical = dupe_map.get(p.place_id)
+            if canonical:
+                p.place_id = canonical
+
     upserted = upsert_practices(relevant, touched_by=user["id"])
 
     # Re-fetch relevant practices from DB so the response carries joined

@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 
 from supabase import create_client
@@ -40,6 +41,70 @@ def _flatten_attribution(row: dict) -> dict:
     joined = row.pop("last_touched_by_profile", None)
     row["last_touched_by_name"] = joined.get("name") if joined else None
     return row
+
+
+# ----------------------------- dedup helpers --------------------------------
+
+
+def _norm_phone(phone: str | None) -> str:
+    return re.sub(r"\D", "", phone or "")
+
+
+def _dedup_key(
+    name: str | None,
+    address: str | None,
+    phone: str | None,
+) -> tuple[str, str, str]:
+    """Normalized key used to detect Google's duplicate listings for the
+    same physical business: lowercase trimmed name + address + digits-only
+    phone. All three must match for two rows to be considered duplicates."""
+    return (
+        (name or "").strip().lower(),
+        (address or "").strip().lower(),
+        _norm_phone(phone),
+    )
+
+
+def find_duplicate_place_ids(practices: list[Practice]) -> dict[str, str]:
+    """Map each incoming place_id → existing canonical place_id when an
+    existing DB row matches by (normalized name + address + phone) under a
+    different place_id.
+
+    Prevents Google's parallel listings (same business with two place_ids)
+    from creating duplicate rows. One DB round-trip per search.
+    """
+    client = _get_client()
+    if not client or not practices:
+        return {}
+
+    names = list({p.name for p in practices if p.name})
+    if not names:
+        return {}
+    try:
+        result = (
+            client.table("practices")
+            .select("place_id,name,address,phone")
+            .in_("name", names)
+            .execute()
+        )
+    except Exception:
+        return {}
+
+    existing_by_key: dict[tuple, str] = {}
+    for row in (result.data or []):
+        key = _dedup_key(row.get("name"), row.get("address"), row.get("phone"))
+        # Stable choice if pre-existing dupes share a key: lowest place_id wins.
+        prev = existing_by_key.get(key)
+        if prev is None or row["place_id"] < prev:
+            existing_by_key[key] = row["place_id"]
+
+    mapping: dict[str, str] = {}
+    for p in practices:
+        key = _dedup_key(p.name, p.address, p.phone)
+        existing = existing_by_key.get(key)
+        if existing and existing != p.place_id:
+            mapping[p.place_id] = existing
+    return mapping
 
 
 def upsert_practices(

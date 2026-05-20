@@ -117,13 +117,19 @@ Website: {website or 'none on file'}
 
     client = AsyncOpenAI(api_key=settings.openai_api_key)
     try:
+        # temperature=0 + a fixed `seed` make OpenAI's outputs reproducible
+        # for the same prompt — without these, the 6 AI-derived ICP
+        # dimensions drift by ~5-10 pts on every re-analyze and the total
+        # score visibly shifts. The `seed` is best-effort per OpenAI but in
+        # practice eliminates almost all of the run-to-run jitter.
         response = await client.chat.completions.create(
             model=settings.openai_model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=0.2,
+            temperature=0,
+            seed=42,
             response_format={"type": "json_object"},
         )
         content = response.choices[0].message.content or "{}"
