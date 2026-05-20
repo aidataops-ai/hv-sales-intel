@@ -91,7 +91,12 @@ export async function rescanPractice(placeId: string): Promise<Practice> {
 }
 
 function mockAnalysis(placeId: string): Practice {
-  const practice = mockPractices.find((p) => p.place_id === placeId) ?? mockPractices[0]
+  // Preserve the requested place_id even when the practice isn't in the
+  // mock list. Without this, a backend error would silently swap in
+  // mockPractices[0] under a *different* place_id, making the original
+  // entry appear to vanish from the sidebar.
+  const found = mockPractices.find((p) => p.place_id === placeId)
+  const practice = found ?? { ...mockPractices[0], place_id: placeId }
   const hiring = Math.floor(Math.random() * 70) + 25
   const urgency = Math.floor(Math.random() * 60) + 20
   const lead = Math.min(100, Math.floor(hiring * 0.5 + urgency * 0.3 + Math.random() * 20))

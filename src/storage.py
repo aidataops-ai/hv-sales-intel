@@ -189,27 +189,61 @@ def get_practice(place_id: str) -> dict | None:
     return _flatten_attribution(result.data) if result and result.data else None
 
 
+# Optional columns that may not exist on older deployments. We retry the
+# UPDATE without these fields if PostgREST rejects them as missing columns.
+# These are columns added by later migrations that operators may not have
+# run yet — failing the whole UPDATE because the migration hasn't been
+# applied would break Analyze / Re-analyze with a 500.
+_OPTIONAL_COLUMNS = {
+    "salesforce_lead_url",
+    "icp_vertical",
+    "icp_tier",
+    "analysis_input_hash",
+    "website_contacts",
+}
+
+
+def _update_with_optional_retry(
+    place_id: str,
+    payload: dict,
+) -> dict | None:
+    """UPDATE practices, dropping any _OPTIONAL_COLUMNS the DB rejects."""
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        result = (
+            client.table("practices").update(payload)
+            .eq("place_id", place_id).execute()
+        )
+    except Exception as e:
+        msg = str(e)
+        retry_payload = {k: v for k, v in payload.items() if k not in _OPTIONAL_COLUMNS}
+        if any(c in msg for c in _OPTIONAL_COLUMNS) and len(retry_payload) < len(payload):
+            result = (
+                client.table("practices").update(retry_payload)
+                .eq("place_id", place_id).execute()
+            )
+        else:
+            raise
+    return result.data[0] if result.data else None
+
+
 def update_practice_analysis(
     place_id: str,
     analysis: dict,
     touched_by: str | None = None,
 ) -> dict | None:
-    """Update Phase 2 analysis fields. Stamps attribution when touched_by set."""
-    client = _get_client()
-    if not client:
-        return None
-    result = (
-        client.table("practices")
-        .update(_with_attribution(analysis, touched_by))
-        .eq("place_id", place_id)
-        .execute()
+    """Update Phase 2 analysis fields. Stamps attribution when touched_by set.
+
+    Uses the optional-column retry so a missing post-deploy migration
+    (e.g. `analysis_input_hash` / `website_contacts`) degrades gracefully
+    instead of 500-ing the analyze endpoint.
+    """
+    return _update_with_optional_retry(
+        place_id,
+        _with_attribution(analysis, touched_by),
     )
-    return result.data[0] if result.data else None
-
-
-# Optional columns that may not exist on older deployments. We retry the
-# UPDATE without these fields if PostgREST rejects them as missing columns.
-_OPTIONAL_COLUMNS = {"salesforce_lead_url"}
 
 
 def update_practice_fields(
@@ -222,27 +256,10 @@ def update_practice_fields(
     If an optional column doesn't exist in the DB yet, retries the update
     without that column instead of failing the whole write.
     """
-    client = _get_client()
-    if not client:
-        return None
-    payload = _with_attribution(fields, touched_by)
-    try:
-        result = (
-            client.table("practices").update(payload)
-            .eq("place_id", place_id).execute()
-        )
-    except Exception as e:
-        msg = str(e)
-        retry_payload = {k: v for k, v in payload.items() if k not in _OPTIONAL_COLUMNS}
-        # Only retry if the error mentions one of the optional columns
-        if any(c in msg for c in _OPTIONAL_COLUMNS) and len(retry_payload) < len(payload):
-            result = (
-                client.table("practices").update(retry_payload)
-                .eq("place_id", place_id).execute()
-            )
-        else:
-            raise
-    return result.data[0] if result.data else None
+    return _update_with_optional_retry(
+        place_id,
+        _with_attribution(fields, touched_by),
+    )
 
 
 def insert_email_message(
