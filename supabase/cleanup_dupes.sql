@@ -19,8 +19,44 @@
 -- If a previous run errored mid-transaction, run `rollback;` first.
 
 -- =============================================================================
+-- 0. DIAGNOSTIC — inspect the raw rows that look like duplicates.
+--    Run this first to confirm the name/address/phone variations and see
+--    what the dedup key actually is for each row. Edit the WHERE clause if
+--    you want to look at a different name.
+-- =============================================================================
+
+select
+  place_id,
+  name,
+  address,
+  phone,
+  call_count,
+  status,
+  -- recompute the dedup key inline so you can see the three parts
+  regexp_replace(
+    regexp_replace(lower(trim(coalesce(name, ''))), '[^a-z0-9 ]', '', 'g'),
+    '\s+', ' ', 'g'
+  ) as norm_name,
+  regexp_replace(
+    regexp_replace(
+      regexp_replace(lower(trim(coalesce(address, ''))), ',\s*usa\s*$', '', 'g'),
+      '[^a-z0-9 ]', '', 'g'
+    ),
+    '\s+', ' ', 'g'
+  ) as norm_address,
+  right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10) as norm_phone
+from practices
+where lower(name) like '%houston dental care%'   -- ← edit me
+order by name, address;
+
+
+-- =============================================================================
 -- 1. PREVIEW — see what would be merged. Run alone first.
 -- =============================================================================
+
+-- If you already created _dupe_plan in a previous run, drop it first so the
+-- new (tighter) dedup key gets used:
+--   drop table if exists _dupe_plan;
 
 create temp table if not exists _dupe_plan as
 with normalized as (
@@ -32,9 +68,25 @@ with normalized as (
     coalesce(call_count, 0) as cc,
     last_touched_at,
     updated_at,
-    lower(coalesce(trim(name), '')) || '|' ||
-    lower(coalesce(trim(address), '')) || '|' ||
-    regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g') as dedup_key
+    -- Normalize the three parts hard so cosmetic differences don't matter:
+    --   name    : lowercase, trim, collapse whitespace, strip punctuation
+    --   address : lowercase, trim, drop trailing ", USA", collapse whitespace,
+    --             strip punctuation
+    --   phone   : digits only, then take the RIGHTMOST 10 digits — handles
+    --             "+1 7135551234" vs "7135551234"
+    regexp_replace(
+      regexp_replace(lower(trim(coalesce(name, ''))), '[^a-z0-9 ]', '', 'g'),
+      '\s+', ' ', 'g'
+    ) || '|' ||
+    regexp_replace(
+      regexp_replace(
+        regexp_replace(lower(trim(coalesce(address, ''))), ',\s*usa\s*$', '', 'g'),
+        '[^a-z0-9 ]', '', 'g'
+      ),
+      '\s+', ' ', 'g'
+    ) || '|' ||
+    right(regexp_replace(coalesce(phone, ''), '[^0-9]', '', 'g'), 10)
+      as dedup_key
   from practices
 ),
 ranked as (
