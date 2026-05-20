@@ -40,14 +40,28 @@ function PageContent() {
     const snap = readSnapshot()
     if (snap?.practices && snap.practices.length > 0) {
       setPractices(snap.practices)
+      captureSortScores(snap.practices)
       setHydratedFromDb(true)
     }
-  }, [])
+  }, [captureSortScores])
 
   const [isLoading, setIsLoading] = useState(false)
   const [isRescanning, setIsRescanning] = useState(false)
   const [analyzingIds, setAnalyzingIds] = useState<Set<string>>(new Set())
   const [scoreProgress, setScoreProgress] = useState<string | null>(null)
+
+  // Snapshot of lead_scores frozen at "sort triggers" — first hydrate,
+  // a fresh search, a Refresh click, or a filter change. Per-analyze
+  // updates do NOT refresh the snapshot, so a card the user just
+  // analyzed keeps its position in the sidebar instead of jumping to
+  // the top. Sort falls back to live lead_score for practices not in
+  // the snapshot yet.
+  const [sortScores, setSortScores] = useState<Record<string, number>>({})
+  const captureSortScores = useCallback((list: Practice[]) => {
+    const next: Record<string, number> = {}
+    for (const p of list) next[p.place_id] = p.lead_score ?? -1
+    setSortScores(next)
+  }, [])
 
   // DB hydrate when no snapshot. Always fetches the full DB on first
   // login — no owner / search filters applied at fetch time so the user
@@ -60,6 +74,7 @@ function PageContent() {
         const dbRows = await listPractices({ limit: 2000 })
         if (!cancelled && dbRows.length > 0) {
           setPractices(dbRows)
+          captureSortScores(dbRows)
         }
       } catch {
         /* keep mock fallback */
@@ -71,7 +86,7 @@ function PageContent() {
     return () => {
       cancelled = true
     }
-  }, [hydratedFromDb])
+  }, [hydratedFromDb, captureSortScores])
 
   // Restore scroll once on mount if snapshot present.
   useEffect(() => {
@@ -104,6 +119,7 @@ function PageContent() {
         const dbRows = await listPractices({ limit: 2000 })
         if (!cancelled && dbRows.length > 0) {
           setPractices(dbRows)
+          captureSortScores(dbRows)
         }
       } catch {
         /* keep current */
@@ -122,12 +138,13 @@ function PageContent() {
       try {
         const results = await searchPractices(query)
         setPractices(results)
+        captureSortScores(results)
         setFilters({ q: query, sel: "" })
       } finally {
         setIsLoading(false)
       }
     },
-    [setFilters],
+    [setFilters, captureSortScores],
   )
 
   const handleRescan = useCallback(async () => {
@@ -136,11 +153,12 @@ function PageContent() {
     try {
       const results = await searchPractices(filters.q, true)  // force fresh
       setPractices(results)
+      captureSortScores(results)
       setFilters({ sel: "" })
     } finally {
       setIsRescanning(false)
     }
-  }, [filters.q, setFilters])
+  }, [filters.q, setFilters, captureSortScores])
 
   const handleAnalyze = useCallback(async (placeId: string, refresh = false) => {
     setAnalyzingIds((prev) => new Set(prev).add(placeId))
@@ -152,13 +170,12 @@ function PageContent() {
       setPractices((prev) =>
         prev.map((p) => (p.place_id === placeId ? { ...p, ...updated } : p)),
       )
-      // The list re-sorts by ICP score after analyze, so the just-analyzed
-      // card moves position. Scroll it into view + flash it so the user
-      // can follow it instead of losing their place.
+      // Per-analyze updates intentionally don't refresh sortScores — the
+      // card stays in its current sidebar position until the user hits
+      // Refresh, changes a filter, or runs a new search.
       requestAnimationFrame(() => {
         const el = document.getElementById(`practice-card-${placeId}`)
         if (el) {
-          el.scrollIntoView({ behavior: "smooth", block: "center" })
           el.classList.add("flash-just-analyzed")
           setTimeout(() => el.classList.remove("flash-just-analyzed"), 1500)
         }
@@ -196,7 +213,14 @@ function PageContent() {
       }
     }
     setScoreProgress(null)
-  }, [practices])
+    // After the bulk Score All finishes, re-snapshot so the just-scored
+    // leads float to their proper sorted positions. (Single Analyze does
+    // not re-snapshot — see handleAnalyze for the rationale.)
+    setPractices((prev) => {
+      captureSortScores(prev)
+      return prev
+    })
+  }, [practices, captureSortScores])
 
   const filtered = useMemo(() => {
     const needle = filters.search.toLowerCase()
@@ -231,11 +255,16 @@ function PageContent() {
       return true
     })
     return list.sort((a, b) => {
-      const aScore = a.lead_score ?? -1
-      const bScore = b.lead_score ?? -1
-      return bScore - aScore
+      // Sort by the frozen sort-snapshot, falling back to live lead_score
+      // for practices that joined the list after the last snapshot. Stable
+      // tiebreak on place_id so equal-score cards don't shuffle on every
+      // render.
+      const aScore = sortScores[a.place_id] ?? a.lead_score ?? -1
+      const bScore = sortScores[b.place_id] ?? b.lead_score ?? -1
+      if (bScore !== aScore) return bScore - aScore
+      return a.place_id.localeCompare(b.place_id)
     })
-  }, [practices, filters])
+  }, [practices, filters, sortScores])
 
   return (
     <div className="h-screen w-screen overflow-hidden">
