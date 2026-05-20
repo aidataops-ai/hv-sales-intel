@@ -27,7 +27,17 @@ TIERS (per the H&V ICP definitions):
 - C → Mid-market / specialty / multi-property. Selective or opportunistic. (5-10 providers / 2-10 facilities / multi-property operator.)
 - D → Enterprise / corporate / multi-state. Opportunistic only; longer cycle. (10+ providers / corporate-managed / regional or national operator.)
 
-SCORE EACH OF THE FOLLOWING 0-100 (integers):
+SCORE EACH OF THE FOLLOWING DIMENSIONS. Pick exactly one value from
+the set {0, 20, 40, 60, 80, 100} per dimension — these are coarse
+categorical buckets, NOT a continuous 0-100 scale. The buckets are:
+  0   = signal absent or strongly negative
+  20  = weak signal
+  40  = below average
+  60  = solid / clearly present
+  80  = strong / multiple supporting signals
+  100 = exceptional / textbook example
+Coarse buckets are intentional — they make the score reproducible
+across re-analyses of the same account.
 
 1. operational_pain_score
    How clearly the business shows admin / scheduling / documentation / communication / billing / follow-up / back-office burden. Evidence: negative reviews about wait times, missed calls, slow follow-up; overwhelmed staff; reviews mentioning understaffing; treatment plans / packages / leads not followed up; insurance/billing backlog. Higher = more obvious operational pain.
@@ -213,11 +223,22 @@ def _norm_tier(value: Any) -> str | None:
     return t if t in {"A", "B", "C", "D"} else None
 
 
+_BUCKETS = (0, 20, 40, 60, 80, 100)
+
+
 def _clamp(value: Any) -> int:
+    """Clamp to 0-100 and snap to the nearest 20-pt bucket.
+
+    Snapping enforces the bucket discipline even when GPT returns a
+    near-bucket value (e.g. 73 → 80). This is the main mechanism that
+    keeps re-analyze results stable: small AI drift inside a bucket
+    becomes a no-op for the final score.
+    """
     try:
-        return max(0, min(100, int(value)))
+        raw = max(0, min(100, int(value)))
     except (TypeError, ValueError):
         return 0
+    return min(_BUCKETS, key=lambda b: abs(b - raw))
 
 
 # ----------------------------- mock analysis -------------------------------
