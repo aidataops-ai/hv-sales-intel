@@ -7,7 +7,9 @@ class Settings(BaseSettings):
     supabase_key: str = ""                    # anon key (legacy name preserved)
     supabase_service_role_key: str = ""       # admin client for auth verification
     openai_api_key: str = ""
-    openai_model: str = "gpt-4o"
+    # gpt-4.1 is the recommended default for ICP analysis — significantly
+    # more accurate than gpt-4o on multi-criteria classification.
+    openai_model: str = "gpt-4.1"
 
     # Bootstrap admin (seeded on startup if profiles has zero admins)
     bootstrap_admin_email: str = ""

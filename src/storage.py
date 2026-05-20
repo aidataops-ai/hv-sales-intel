@@ -64,6 +64,8 @@ def upsert_practices(
         "lead_score",
         "urgency_score",
         "hiring_signal_score",
+        "icp_vertical",
+        "icp_tier",
         "status",
         "notes",
         "last_touched_by_name",  # derived from join
