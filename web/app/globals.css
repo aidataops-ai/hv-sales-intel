@@ -26,3 +26,14 @@
 .sidebar-scroll::-webkit-scrollbar-thumb {
   @apply bg-gray-300 rounded-full;
 }
+
+/* Brief highlight on the just-analyzed practice card so the user can
+   follow its position after the list re-sorts by ICP score. */
+@keyframes flash-just-analyzed {
+  0%   { box-shadow: 0 0 0 0 rgba(13, 148, 136, 0.0); }
+  20%  { box-shadow: 0 0 0 4px rgba(13, 148, 136, 0.35); }
+  100% { box-shadow: 0 0 0 0 rgba(13, 148, 136, 0.0); }
+}
+.flash-just-analyzed {
+  animation: flash-just-analyzed 1.5s ease-out;
+}

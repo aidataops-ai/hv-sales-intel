@@ -152,6 +152,17 @@ function PageContent() {
       setPractices((prev) =>
         prev.map((p) => (p.place_id === placeId ? { ...p, ...updated } : p)),
       )
+      // The list re-sorts by ICP score after analyze, so the just-analyzed
+      // card moves position. Scroll it into view + flash it so the user
+      // can follow it instead of losing their place.
+      requestAnimationFrame(() => {
+        const el = document.getElementById(`practice-card-${placeId}`)
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" })
+          el.classList.add("flash-just-analyzed")
+          setTimeout(() => el.classList.remove("flash-just-analyzed"), 1500)
+        }
+      })
     } finally {
       setAnalyzingIds((prev) => {
         const next = new Set(prev)

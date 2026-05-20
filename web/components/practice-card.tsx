@@ -81,6 +81,7 @@ export default function PracticeCard({
 
   return (
     <div
+      id={`practice-card-${practice.place_id}`}
       onClick={isIrrelevant ? undefined : handleCardClick}
       className={cn(
         "w-full text-left p-4 rounded-xl transition-all",
