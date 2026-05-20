@@ -4,15 +4,19 @@
 -- Dedup key: (lower(trim(name)), lower(trim(address)), digits-only phone).
 -- All three must match for two rows to be considered duplicates.
 --
+-- This script is DEFENSIVE: every optional column is wrapped in a DO block
+-- that checks for existence first, so it runs even if your DB hasn't applied
+-- every recent migration yet. Safe to re-run.
+--
 -- HOW TO RUN
 -- ----------
 -- 1. Run section 1 (PREVIEW) and review the merge plan.
--- 2. Run section 2 (MERGE) inside a transaction.
+-- 2. Run section 2 (MERGE) inside a transaction. Each step checks column
+--    existence; missing columns are silently skipped.
 -- 3. If the result looks right, COMMIT. Otherwise ROLLBACK.
 -- 4. Run section 3 (DROP TEMP) to clean up.
 --
--- The application code (src/storage.py::find_duplicate_place_ids) prevents
--- new dupes; this script cleans up the ones already in the DB.
+-- If a previous run errored mid-transaction, run `rollback;` first.
 
 -- =============================================================================
 -- 1. PREVIEW — see what would be merged. Run alone first.
@@ -69,6 +73,7 @@ select * from _dupe_plan limit 50;
 -- 2. MERGE — copy missing data from losers to winners, then delete losers.
 -- =============================================================================
 -- Wrap in BEGIN/COMMIT so you can ROLLBACK if anything looks wrong.
+-- Each step checks that the target column exists; missing ones are skipped.
 
 begin;
 
@@ -81,29 +86,63 @@ from _dupe_plan w
 join _dupe_plan l using (dedup_key)
 where w.role = 'WINNER' and l.role = 'LOSER';
 
--- 2a) Salesforce: if winner has no SF lead but a loser does, copy it over.
-update practices w
-set
-  salesforce_lead_id    = coalesce(w.salesforce_lead_id,    sub.salesforce_lead_id),
-  salesforce_lead_url   = coalesce(w.salesforce_lead_url,   sub.salesforce_lead_url),
-  salesforce_owner_id   = coalesce(w.salesforce_owner_id,   sub.salesforce_owner_id),
-  salesforce_owner_name = coalesce(w.salesforce_owner_name, sub.salesforce_owner_name),
-  salesforce_synced_at  = coalesce(w.salesforce_synced_at,  sub.salesforce_synced_at)
-from (
-  select
-    p.winner,
-    max(l.salesforce_lead_id)    as salesforce_lead_id,
-    max(l.salesforce_lead_url)   as salesforce_lead_url,
-    max(l.salesforce_owner_id)   as salesforce_owner_id,
-    max(l.salesforce_owner_name) as salesforce_owner_name,
-    max(l.salesforce_synced_at)  as salesforce_synced_at
-  from _dupe_pairs p
-  join practices l on l.place_id = p.loser
-  group by p.winner
-) sub
-where w.place_id = sub.winner;
 
--- 2b) Sum call_count across the group.
+-- Helper: run an UPDATE that copies one column from losers to winner (only
+-- when winner's value is NULL). Skips silently if the column doesn't exist.
+do $main$
+declare
+  col text;
+  optional_cols text[] := array[
+    'salesforce_lead_id',
+    'salesforce_lead_url',
+    'salesforce_owner_id',
+    'salesforce_owner_name',
+    'salesforce_synced_at',
+    'icp_vertical',
+    'icp_tier',
+    'summary',
+    'pain_points',
+    'sales_angles',
+    'lead_score',
+    'urgency_score',
+    'hiring_signal_score',
+    'owner_name',
+    'owner_email',
+    'owner_phone',
+    'owner_title',
+    'owner_linkedin',
+    'enrichment_status',
+    'enriched_at',
+    'website_doctor_name',
+    'website_doctor_phone',
+    'website_contacts'
+  ];
+begin
+  foreach col in array optional_cols loop
+    if exists (
+      select 1 from information_schema.columns
+      where table_schema = 'public'
+        and table_name = 'practices'
+        and column_name = col
+    ) then
+      execute format($f$
+        update practices w
+        set %1$I = coalesce(w.%1$I, sub.%1$I)
+        from (
+          select p.winner, max(l.%1$I) as %1$I
+          from _dupe_pairs p
+          join practices l on l.place_id = p.loser
+          group by p.winner
+        ) sub
+        where w.place_id = sub.winner;
+      $f$, col);
+    end if;
+  end loop;
+end
+$main$;
+
+
+-- 2b) Sum call_count across the group (always exists).
 update practices w
 set call_count = coalesce(w.call_count, 0) + coalesce(sub.extra, 0)
 from (
@@ -113,6 +152,7 @@ from (
   group by p.winner
 ) sub
 where w.place_id = sub.winner;
+
 
 -- 2c) Concat call_notes (winner first, then non-empty loser notes).
 update practices w
@@ -130,6 +170,7 @@ from (
 ) sub
 where w.place_id = sub.winner;
 
+
 -- 2d) Union tags.
 update practices w
 set tags = (
@@ -145,74 +186,23 @@ from (
 ) sub
 where w.place_id = sub.winner;
 
--- 2e) Copy missing analysis fields (winner stays winner if it already has them).
-update practices w
-set
-  lead_score          = coalesce(w.lead_score,          sub.lead_score),
-  urgency_score       = coalesce(w.urgency_score,       sub.urgency_score),
-  hiring_signal_score = coalesce(w.hiring_signal_score, sub.hiring_signal_score),
-  icp_vertical        = coalesce(w.icp_vertical,        sub.icp_vertical),
-  icp_tier            = coalesce(w.icp_tier,            sub.icp_tier),
-  summary             = coalesce(w.summary,             sub.summary),
-  pain_points         = coalesce(w.pain_points,         sub.pain_points),
-  sales_angles        = coalesce(w.sales_angles,        sub.sales_angles)
-from (
-  select
-    p.winner,
-    max(l.lead_score)          as lead_score,
-    max(l.urgency_score)       as urgency_score,
-    max(l.hiring_signal_score) as hiring_signal_score,
-    max(l.icp_vertical)        as icp_vertical,
-    max(l.icp_tier)            as icp_tier,
-    max(l.summary)             as summary,
-    max(l.pain_points)         as pain_points,
-    max(l.sales_angles)        as sales_angles
-  from _dupe_pairs p
-  join practices l on l.place_id = p.loser
-  group by p.winner
-) sub
-where w.place_id = sub.winner;
 
--- 2f) Copy missing owner enrichment.
-update practices w
-set
-  owner_name        = coalesce(w.owner_name,        sub.owner_name),
-  owner_email       = coalesce(w.owner_email,       sub.owner_email),
-  owner_phone       = coalesce(w.owner_phone,       sub.owner_phone),
-  owner_title       = coalesce(w.owner_title,       sub.owner_title),
-  owner_linkedin    = coalesce(w.owner_linkedin,    sub.owner_linkedin),
-  enrichment_status = coalesce(w.enrichment_status, sub.enrichment_status),
-  enriched_at       = coalesce(w.enriched_at,       sub.enriched_at)
-from (
-  select
-    p.winner,
-    max(l.owner_name)        as owner_name,
-    max(l.owner_email)       as owner_email,
-    max(l.owner_phone)       as owner_phone,
-    max(l.owner_title)       as owner_title,
-    max(l.owner_linkedin)    as owner_linkedin,
-    max(l.enrichment_status) as enrichment_status,
-    max(l.enriched_at)       as enriched_at
-  from _dupe_pairs p
-  join practices l on l.place_id = p.loser
-  group by p.winner
-) sub
-where w.place_id = sub.winner;
-
--- 2g) email_messages: re-point loser rows to the winner so threads are preserved.
+-- 2e) email_messages: re-point loser rows to the winner so threads are preserved.
 update email_messages em
 set practice_id = (select id from practices where place_id = p.winner)
 from _dupe_pairs p
 join practices loser on loser.place_id = p.loser
 where em.practice_id = loser.id;
 
--- 2h) Delete the losers.
+
+-- 2f) Delete the losers.
 delete from practices where place_id in (select loser from _dupe_pairs);
 
 -- Review row counts. If everything looks right:
 --   COMMIT;
 -- Otherwise:
 --   ROLLBACK;
+
 
 -- =============================================================================
 -- 3. CLEANUP — drop the temp tables.
