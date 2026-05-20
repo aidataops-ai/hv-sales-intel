@@ -144,6 +144,12 @@ alter table practices add column if not exists icp_tier text;       -- A | B | C
 create index if not exists idx_practices_icp_vertical on practices (icp_vertical);
 create index if not exists idx_practices_icp_tier on practices (icp_tier);
 
+-- Fingerprint of analyzer inputs (name/address/phone/website/category/state).
+-- Re-analyze returns the cached result when this hash matches the existing
+-- row, so clicking Re-analyze on an unchanged practice no longer produces
+-- AI-driven score noise.
+alter table practices add column if not exists analysis_input_hash text;
+
 -- Search query cache (avoid re-billing Google for repeated queries)
 create table if not exists searches (
   id bigserial primary key,

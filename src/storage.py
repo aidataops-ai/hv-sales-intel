@@ -131,6 +131,7 @@ def upsert_practices(
         "hiring_signal_score",
         "icp_vertical",
         "icp_tier",
+        "analysis_input_hash",
         "status",
         "notes",
         "last_touched_by_name",  # derived from join

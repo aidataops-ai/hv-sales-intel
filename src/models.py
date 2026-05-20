@@ -28,6 +28,8 @@ class Practice(BaseModel):
     # H&V Universal ICP — vertical + tier classified by the analyzer
     icp_vertical: str | None = None  # medical | dental | alf_nh | hotel_resort | medspa_wellness
     icp_tier: str | None = None      # A | B | C | D
+    # Hash of analyzer inputs — used to short-circuit Re-analyze when nothing changed.
+    analysis_input_hash: str | None = None
 
     # Phase 3 (CRM)
     status: str = "NEW"

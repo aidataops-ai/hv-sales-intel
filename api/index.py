@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import sys
@@ -25,6 +26,25 @@ from src.analyzer import analyze_practice
 from src.auth import get_admin_client, get_current_user, require_admin
 from src.call_log import append_call_note, update_last_call_note
 from src.salesforce import lead_view_url
+
+
+def _analysis_input_fingerprint(record: dict) -> str:
+    """Stable 16-char hash of the practice fields fed to the analyzer.
+
+    Used to short-circuit Re-analyze when nothing material has changed.
+    Includes the identity fields (name/website/category/state/city) but
+    NOT volatile metrics (rating, review_count) — those wobble slightly
+    every Rescan and would falsely invalidate the cache on every click.
+    """
+    fields = [
+        (record.get("name") or "").strip().lower(),
+        (record.get("website") or "").strip().lower(),
+        (record.get("category") or "").strip().lower(),
+        (record.get("state") or "").strip().upper(),
+        (record.get("city") or "").strip().lower(),
+    ]
+    payload = "|".join(fields)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 def _attach_lead_url(practice: dict | None) -> dict | None:
@@ -753,11 +773,31 @@ async def analyze(
         rating = None
         review_count = 0
 
+    # Fingerprint the analyzer inputs. If the practice was already analyzed
+    # against the same input fingerprint, return the cached result — the AI
+    # is non-deterministic, so re-running on identical inputs just produces
+    # score noise. Rescan that materially changes Google data shifts the
+    # fingerprint and forces a fresh AI run.
+    fingerprint = _analysis_input_fingerprint({
+        "name": name,
+        "website": website,
+        "category": category,
+        "city": city,
+        "state": state,
+    })
+    if (
+        current_record
+        and current_record.get("lead_score") is not None
+        and current_record.get("analysis_input_hash") == fingerprint
+    ):
+        return current_record
+
     analysis = await analyze_practice(
         place_id, name, website, category,
         city=city, state=state,
         rating=rating, review_count=review_count,
     )
+    analysis["analysis_input_hash"] = fingerprint
 
     if current_record:
         current_status = current_record.get("status", "NEW")
