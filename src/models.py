@@ -34,6 +34,11 @@ class Practice(BaseModel):
     website_contacts: str | None = None
     # Number of times this row has been included in a bulk CSV export.
     export_count: int = 0
+    # When the row was last included in a CSV export, and by which user.
+    last_exported_at: str | None = None
+    last_exported_by: str | None = None
+    # Resolved at read-time via a profile join — not a stored column.
+    last_exported_by_name: str | None = None
 
     # Phase 3 (CRM)
     status: str = "NEW"

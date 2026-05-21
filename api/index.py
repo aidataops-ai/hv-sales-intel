@@ -79,6 +79,7 @@ from src.storage import (
     list_outbound_message_ids,
     query_for_export,
     query_practices,
+    resolve_user_names,
     save_search_cache,
     update_practice_analysis,
     update_practice_fields,
@@ -691,7 +692,7 @@ _EXPORT_COLUMNS = [
     "last_touched_by_name", "last_touched_at",
     "salesforce_lead_id", "salesforce_lead_url",
     "call_count", "call_notes",
-    "export_count",
+    "export_count", "last_exported_at", "last_exported_by_name",
 ]
 
 
@@ -725,6 +726,14 @@ def export_practices_csv(
 
     rows = query_for_export(cap)
 
+    # Resolve last_exported_by UUIDs to display names so the CSV has a
+    # readable "last exported by" column instead of an opaque UUID.
+    exporter_ids = [r.get("last_exported_by") for r in rows if r.get("last_exported_by")]
+    name_by_id = resolve_user_names(exporter_ids) if exporter_ids else {}
+    for r in rows:
+        eid = r.get("last_exported_by")
+        r["last_exported_by_name"] = name_by_id.get(eid, "") if eid else ""
+
     def _serialize(value) -> str:
         if value is None:
             return ""
@@ -747,7 +756,10 @@ def export_practices_csv(
             buf.seek(0)
             buf.truncate(0)
 
-    increment_export_counts([r["place_id"] for r in rows if r.get("place_id")])
+    increment_export_counts(
+        [r["place_id"] for r in rows if r.get("place_id")],
+        user_id=user.get("id"),
+    )
 
     cap_label = "all" if cap is None else f"max{cap}"
     filename = f"hv-leads-{cap_label}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.csv"

@@ -156,11 +156,17 @@ alter table practices add column if not exists analysis_input_hash text;
 -- Used to personalize the cold-call playbook.
 alter table practices add column if not exists website_contacts text;
 
--- CSV export counter. Increments by 1 for every row included in a bulk
--- export. The export endpoint accepts a `max_exports` filter so an
--- operator can re-run the export later with `max_exports=0` to skip
--- previously-downloaded rows and avoid duplicates.
+-- CSV export tracking. `export_count` increments by 1 for every row
+-- included in a bulk export. `last_exported_at` + `last_exported_by`
+-- record who pulled the row last and when. The export endpoint accepts
+-- a `max_exports` filter so an operator can re-run the export later
+-- with `max_exports=0` to skip previously-downloaded rows and avoid
+-- duplicates. `last_exported_by` lets multi-SDR teams see who has
+-- already pulled each lead.
 alter table practices add column if not exists export_count integer not null default 0;
+alter table practices add column if not exists last_exported_at timestamptz;
+alter table practices add column if not exists last_exported_by uuid references profiles(id);
+create index if not exists idx_practices_last_exported_by on practices (last_exported_by);
 
 -- Search query cache (avoid re-billing Google for repeated queries)
 create table if not exists searches (

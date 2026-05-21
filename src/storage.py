@@ -143,6 +143,8 @@ _OPTIONAL_COLUMNS = {
     "assigned_by",
     "tags",
     "export_count",
+    "last_exported_at",
+    "last_exported_by",
 }
 
 
@@ -215,6 +217,9 @@ def upsert_practices(
         "assigned_to_name",
         # Export tracking
         "export_count",
+        "last_exported_at",
+        "last_exported_by",
+        "last_exported_by_name",
     }
     rows = []
     for p in practices:
@@ -300,12 +305,17 @@ def query_for_export(max_exports: int | None) -> list[dict]:
     return [_flatten_attribution(r) for r in (result.data or [])]
 
 
-def increment_export_counts(place_ids: list[str]) -> None:
-    """Increment export_count by 1 for each row in `place_ids`.
+def increment_export_counts(
+    place_ids: list[str],
+    user_id: str | None = None,
+) -> None:
+    """Increment export_count by 1 and stamp who/when on each `place_id`.
 
-    Uses a single SELECT then per-row UPDATE because Supabase-py doesn't
-    expose `+= 1` SQL fragments. Fine at export-batch scale (a few
-    thousand rows, infrequent).
+    Single SELECT then per-row UPDATE — Supabase-py doesn't expose `+= 1`
+    SQL fragments. Fine at export-batch scale (a few thousand rows,
+    infrequent). Each UPDATE writes `export_count`, `last_exported_at`,
+    and `last_exported_by`; missing columns are dropped via the optional-
+    column retry pattern.
     """
     if not place_ids:
         return
@@ -321,17 +331,54 @@ def increment_export_counts(place_ids: list[str]) -> None:
         )
     except Exception:
         return
+    now = datetime.now(timezone.utc).isoformat()
     for row in existing.data or []:
         next_count = (row.get("export_count") or 0) + 1
+        payload: dict = {
+            "export_count": next_count,
+            "last_exported_at": now,
+        }
+        if user_id:
+            payload["last_exported_by"] = user_id
         try:
-            client.table("practices").update({"export_count": next_count}).eq(
+            client.table("practices").update(payload).eq(
                 "place_id", row["place_id"]
             ).execute()
-        except Exception:
-            # Column missing on old schemas — _OPTIONAL_COLUMNS includes
-            # export_count for the retry path, but we don't need to crash
-            # the export if the increment can't land.
-            continue
+        except Exception as e:
+            msg = str(e)
+            # Drop columns the deployed schema is missing and retry once.
+            missing = [c for c in _OPTIONAL_COLUMNS if c in msg]
+            if not missing:
+                continue
+            retry = {k: v for k, v in payload.items() if k not in missing}
+            if not retry:
+                continue
+            try:
+                client.table("practices").update(retry).eq(
+                    "place_id", row["place_id"]
+                ).execute()
+            except Exception:
+                continue
+
+
+def resolve_user_names(user_ids: list[str]) -> dict[str, str]:
+    """Look up display names for a batch of profile UUIDs. Missing ids
+    return an empty string. Used by the CSV export to render the
+    `last_exported_by_name` column without doing a row-by-row join."""
+    if not user_ids:
+        return {}
+    client = _get_client()
+    if not client:
+        return {}
+    try:
+        result = (
+            client.table("profiles").select("id,name")
+            .in_("id", list({u for u in user_ids if u}))
+            .execute()
+        )
+    except Exception:
+        return {}
+    return {row["id"]: (row.get("name") or "") for row in (result.data or [])}
 
 
 def _update_with_optional_retry(
