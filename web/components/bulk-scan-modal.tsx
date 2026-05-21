@@ -10,6 +10,8 @@ import {
   SPECIALTIES_BY_VERTICAL,
   buildSpecialtyGridQueries,
   buildStateSweepQueries,
+  templateForVertical,
+  totalCitiesForStates,
   type StateCode,
   type Vertical,
 } from "@/lib/bulk-scan"
@@ -38,17 +40,17 @@ const EMPTY_STATS: RunStats = {
   done: false,
 }
 
+const ALL_STATES = Object.keys(STATE_LABELS).sort() as StateCode[]
+
 export default function BulkScanModal({
   open,
   onClose,
   onComplete,
 }: BulkScanModalProps) {
   const [mode, setMode] = useState<Mode>("sweep")
-  const [state, setState] = useState<StateCode>("FL")
-  // Use the {state} placeholder by default so changing the picker keeps
-  // the suffix in sync without the user editing the template.
-  const [template, setTemplate] = useState<string>("dental clinics in {city}, {state}")
   const [vertical, setVertical] = useState<Vertical>("dental")
+  const [states, setStates] = useState<StateCode[]>(["FL"])
+  const [template, setTemplate] = useState<string>(templateForVertical("dental"))
   const [specialties, setSpecialties] = useState<string[]>(
     SPECIALTIES_BY_VERTICAL.dental.slice(0, 3),
   )
@@ -58,27 +60,12 @@ export default function BulkScanModal({
 
   const queries = useMemo(() => {
     if (mode === "sweep") {
-      return buildStateSweepQueries({ template, state })
+      return buildStateSweepQueries({ template, states })
     }
-    return buildSpecialtyGridQueries({ state, specialties })
-  }, [mode, template, state, specialties])
+    return buildSpecialtyGridQueries({ states, specialties })
+  }, [mode, template, states, specialties])
 
-  const cityList = STATE_CITIES[state] ?? []
-
-  /** State picker handler — also rewrites a hardcoded state code at the
-   * end of the template (e.g. ", OH" → ", FL") so the rep doesn't have
-   * to remember to update both fields. */
-  function handleStateChange(next: StateCode) {
-    setState(next)
-    setTemplate((prev) => {
-      // Match a trailing ", XX" or " XX" where XX is one of our state codes.
-      const hardcoded = /,\s*(FL|TX|CA|NY|OH)\s*$/i
-      if (hardcoded.test(prev)) {
-        return prev.replace(hardcoded, `, ${next}`)
-      }
-      return prev
-    })
-  }
+  const totalCities = useMemo(() => totalCitiesForStates(states), [states])
 
   if (!open) return null
 
@@ -91,6 +78,20 @@ export default function BulkScanModal({
     setSpecialties((prev) =>
       prev.includes(s) ? prev.filter((p) => p !== s) : [...prev, s],
     )
+  }
+
+  function toggleState(s: StateCode) {
+    setStates((prev) =>
+      prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s],
+    )
+  }
+
+  function handleVerticalChange(v: Vertical) {
+    setVertical(v)
+    // Auto-fill the State sweep template + reset specialty selection so
+    // the modal always reflects the chosen vertical.
+    setTemplate(templateForVertical(v))
+    setSpecialties(SPECIALTIES_BY_VERTICAL[v].slice(0, 3))
   }
 
   async function runScan() {
@@ -154,15 +155,15 @@ export default function BulkScanModal({
 
   return (
     <div className="fixed inset-0 z-40 bg-black/30 backdrop-blur-sm grid place-items-center p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-[640px] max-w-[92vw] max-h-[calc(100vh-2rem)] overflow-hidden flex flex-col">
+      <div className="bg-white rounded-2xl shadow-xl w-[680px] max-w-[92vw] max-h-[calc(100vh-2rem)] overflow-hidden flex flex-col">
         <div className="flex-none flex items-center justify-between px-5 py-3 border-b border-gray-200">
           <div>
             <h2 className="font-serif text-lg font-semibold text-gray-900">
               Bulk Scan
             </h2>
             <p className="text-xs text-gray-500">
-              Get past Google&apos;s 60-results-per-query ceiling by running many
-              targeted queries in sequence.
+              Run targeted Google Places queries across many cities to get past
+              the 60-results-per-query ceiling.
             </p>
           </div>
           <button
@@ -202,34 +203,72 @@ export default function BulkScanModal({
         </div>
 
         <div className="flex-1 min-h-0 px-5 py-4 space-y-4 overflow-y-auto">
-          <div className="grid grid-cols-2 gap-3">
-            <label className="block">
-              <span className="block text-xs font-medium text-gray-700 mb-1">
-                State
+          {/* Vertical picker — drives the default template and specialty list */}
+          <div>
+            <span className="block text-xs font-medium text-gray-700 mb-1">
+              Vertical
+            </span>
+            <select
+              disabled={running}
+              value={vertical}
+              onChange={(e) => handleVerticalChange(e.target.value as Vertical)}
+              className="w-full text-sm rounded-md border border-gray-200 px-2 py-1.5 bg-white"
+            >
+              {(Object.keys(VERTICAL_LABELS) as Vertical[]).map((v) => (
+                <option key={v} value={v}>
+                  {VERTICAL_LABELS[v]}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* State multi-select */}
+          <div>
+            <div className="flex items-baseline justify-between mb-1">
+              <span className="block text-xs font-medium text-gray-700">
+                States ({states.length} selected · {totalCities} cities)
               </span>
-              <select
-                disabled={running}
-                value={state}
-                onChange={(e) => handleStateChange(e.target.value as StateCode)}
-                className="w-full text-sm rounded-md border border-gray-200 px-2 py-1.5 bg-white"
-              >
-                {(Object.keys(STATE_LABELS) as StateCode[]).map((s) => (
-                  <option key={s} value={s}>
-                    {STATE_LABELS[s]}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div>
-              <span className="block text-xs font-medium text-gray-700 mb-1">
-                Cities included ({cityList.length})
-              </span>
-              <p className="text-[11px] text-gray-500 leading-snug line-clamp-3">
-                {cityList.join(", ")}
-              </p>
+              <div className="flex gap-2 text-[11px]">
+                <button
+                  disabled={running}
+                  onClick={() => setStates(ALL_STATES)}
+                  className="text-teal-700 hover:underline"
+                >
+                  Select all
+                </button>
+                <button
+                  disabled={running}
+                  onClick={() => setStates([])}
+                  className="text-gray-500 hover:underline"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1 max-h-32 overflow-y-auto p-1 border border-gray-200 rounded-md bg-gray-50/40">
+              {ALL_STATES.map((s) => {
+                const active = states.includes(s)
+                const cityCount = STATE_CITIES[s]?.length ?? 0
+                return (
+                  <button
+                    key={s}
+                    disabled={running}
+                    onClick={() => toggleState(s)}
+                    className={`text-[11px] px-2 py-0.5 rounded-full border transition ${
+                      active
+                        ? "bg-teal-50 border-teal-500 text-teal-700"
+                        : "bg-white border-gray-200 text-gray-600 hover:border-gray-400"
+                    }`}
+                    title={`${STATE_LABELS[s]} — ${cityCount} cities`}
+                  >
+                    {s}
+                  </button>
+                )
+              })}
             </div>
           </div>
 
+          {/* Mode-specific controls */}
           {mode === "sweep" ? (
             <div>
               <label className="block">
@@ -240,74 +279,51 @@ export default function BulkScanModal({
                   disabled={running}
                   value={template}
                   onChange={(e) => setTemplate(e.target.value)}
-                  className="w-full text-sm rounded-md border border-gray-200 px-2 py-1.5"
-                  placeholder="e.g. dental clinics in {city}, FL"
+                  className="w-full text-sm rounded-md border border-gray-200 px-2 py-1.5 font-mono"
+                  placeholder="e.g. dental clinics in {city}, {state}"
                 />
               </label>
               <p className="text-[11px] text-gray-500 mt-1">
-                <code>&#123;city&#125;</code> is replaced with each city.{" "}
-                <code>&#123;state&#125;</code> and{" "}
-                <code>&#123;stateLabel&#125;</code> are also available.
+                <code>&#123;city&#125;</code> /{" "}
+                <code>&#123;state&#125;</code> /{" "}
+                <code>&#123;stateLabel&#125;</code> are substituted per city.
               </p>
             </div>
           ) : (
-            <div className="space-y-2">
-              <div>
-                <span className="block text-xs font-medium text-gray-700 mb-1">
-                  Vertical
-                </span>
-                <select
-                  disabled={running}
-                  value={vertical}
-                  onChange={(e) => {
-                    const v = e.target.value as Vertical
-                    setVertical(v)
-                    setSpecialties(SPECIALTIES_BY_VERTICAL[v].slice(0, 3))
-                  }}
-                  className="w-full text-sm rounded-md border border-gray-200 px-2 py-1.5 bg-white"
-                >
-                  {(Object.keys(VERTICAL_LABELS) as Vertical[]).map((v) => (
-                    <option key={v} value={v}>
-                      {VERTICAL_LABELS[v]}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <span className="block text-xs font-medium text-gray-700 mb-1">
-                  Specialties ({specialties.length} selected)
-                </span>
-                <div className="flex flex-wrap gap-1.5">
-                  {SPECIALTIES_BY_VERTICAL[vertical].map((s) => {
-                    const active = specialties.includes(s)
-                    return (
-                      <button
-                        key={s}
-                        disabled={running}
-                        onClick={() => toggleSpecialty(s)}
-                        className={`text-xs px-2 py-1 rounded-full border transition ${
-                          active
-                            ? "bg-teal-50 border-teal-500 text-teal-700"
-                            : "bg-white border-gray-200 text-gray-600 hover:border-gray-400"
-                        }`}
-                      >
-                        {s}
-                      </button>
-                    )
-                  })}
-                </div>
+            <div>
+              <span className="block text-xs font-medium text-gray-700 mb-1">
+                Specialties ({specialties.length} selected)
+              </span>
+              <div className="flex flex-wrap gap-1.5">
+                {SPECIALTIES_BY_VERTICAL[vertical].map((s) => {
+                  const active = specialties.includes(s)
+                  return (
+                    <button
+                      key={s}
+                      disabled={running}
+                      onClick={() => toggleSpecialty(s)}
+                      className={`text-xs px-2 py-1 rounded-full border transition ${
+                        active
+                          ? "bg-teal-50 border-teal-500 text-teal-700"
+                          : "bg-white border-gray-200 text-gray-600 hover:border-gray-400"
+                      }`}
+                    >
+                      {s}
+                    </button>
+                  )
+                })}
               </div>
             </div>
           )}
 
           <div className="rounded-lg bg-gray-50 border border-gray-200 px-3 py-2 text-xs text-gray-700">
             Will run{" "}
-            <span className="font-semibold text-gray-900">
-              {queries.length}
-            </span>{" "}
-            queries. Each one hits Google Places once (≈1 billable call) and
-            returns up to 60 results. The 24-hour search cache short-circuits
-            duplicate queries.
+            <span className="font-semibold text-gray-900">{queries.length}</span>{" "}
+            quer{queries.length === 1 ? "y" : "ies"} across{" "}
+            <span className="font-semibold text-gray-900">{states.length}</span>{" "}
+            state{states.length === 1 ? "" : "s"}. Each one hits Google Places
+            once (≈1 billable call) and returns up to 60 results. The 24-hour
+            search cache short-circuits duplicate queries.
           </div>
 
           {(running || stats.done) && (
@@ -373,7 +389,9 @@ export default function BulkScanModal({
                 Running…
               </>
             ) : (
-              <>Start {queries.length} quer{queries.length === 1 ? "y" : "ies"}</>
+              <>
+                Start {queries.length} quer{queries.length === 1 ? "y" : "ies"}
+              </>
             )}
           </button>
         </div>
