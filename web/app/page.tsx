@@ -288,6 +288,11 @@ function PageContent() {
         canRescan={!!filters.q.trim()}
         isRescanning={isRescanning}
         currentQuery={filters.q}
+        onBulkScanComplete={() => {
+          // Force a fresh DB pull so the newly-upserted practices appear.
+          clearSnapshot()
+          setHydratedFromDb(false)
+        }}
       />
 
       <main className="relative w-full h-full pt-14">

@@ -1,9 +1,11 @@
 "use client"
 
-import { Brain, RefreshCw } from "lucide-react"
+import { useState } from "react"
+import { Brain, RefreshCw, Layers } from "lucide-react"
 import SearchBar from "./search-bar"
 import UserMenu from "./user-menu"
 import ExportButton from "./export-button"
+import BulkScanModal from "./bulk-scan-modal"
 
 interface TopBarProps {
   onSearch: (query: string) => void
@@ -14,6 +16,8 @@ interface TopBarProps {
   canRescan: boolean
   isRescanning: boolean
   currentQuery: string
+  /** Called after a bulk scan finishes so the page can re-fetch from DB. */
+  onBulkScanComplete: () => void
 }
 
 export default function TopBar({
@@ -25,7 +29,10 @@ export default function TopBar({
   canRescan,
   isRescanning,
   currentQuery,
+  onBulkScanComplete,
 }: TopBarProps) {
+  const [bulkOpen, setBulkOpen] = useState(false)
+
   return (
     <header className="fixed top-0 left-0 right-0 z-20 h-14 flex items-center justify-between px-6 bg-white/70 backdrop-blur-md border-b border-gray-200/50">
       <div className="flex items-center gap-2">
@@ -45,6 +52,14 @@ export default function TopBar({
           {isRescanning ? "Rescanning..." : "Rescan"}
         </button>
         <button
+          onClick={() => setBulkOpen(true)}
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50 transition"
+          title="Run many targeted Google Places queries in sequence to get past the 60-results-per-query ceiling"
+        >
+          <Layers className="w-4 h-4" />
+          Bulk Scan
+        </button>
+        <button
           onClick={onScoreAll}
           disabled={!!scoreProgress}
           className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-teal-600 text-teal-700 text-sm font-medium hover:bg-teal-50 disabled:opacity-50 transition"
@@ -55,6 +70,12 @@ export default function TopBar({
         <ExportButton />
         <UserMenu />
       </div>
+
+      <BulkScanModal
+        open={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        onComplete={onBulkScanComplete}
+      />
     </header>
   )
 }
