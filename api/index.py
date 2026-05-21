@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 
@@ -72,9 +73,11 @@ from src.storage import (
     find_duplicate_place_ids,
     get_cached_search,
     get_practice,
+    increment_export_counts,
     insert_email_message,
     list_email_messages,
     list_outbound_message_ids,
+    query_for_export,
     query_practices,
     save_search_cache,
     update_practice_analysis,
@@ -665,12 +668,94 @@ def list_practices(
     city: str | None = Query(None),
     category: str | None = Query(None),
     min_rating: float | None = Query(None),
-    limit: int = Query(1000, ge=1, le=5000),
+    # Bumped 5000 → 50000 so operators can explore a five-figure book of leads.
+    limit: int = Query(10_000, ge=1, le=50_000),
     user: dict = Depends(get_current_user),
 ):
     rows = query_practices(city=city, category=category, min_rating=min_rating, limit=limit)
     rows = [_attach_lead_url(r) for r in rows]
     return {"practices": rows, "count": len(rows)}
+
+
+# CSV column order — kept in sync with the export endpoint below.
+_EXPORT_COLUMNS = [
+    "place_id", "name", "address", "city", "state",
+    "phone", "website", "rating", "review_count", "category",
+    "icp_vertical", "icp_tier", "lead_score",
+    "urgency_score", "hiring_signal_score",
+    "status", "tags",
+    "owner_name", "owner_title", "owner_email", "owner_phone", "owner_linkedin",
+    "enrichment_status", "enriched_at",
+    "website_doctor_name", "website_doctor_phone",
+    "summary", "pain_points", "sales_angles",
+    "last_touched_by_name", "last_touched_at",
+    "salesforce_lead_id", "salesforce_lead_url",
+    "call_count", "call_notes",
+    "export_count",
+]
+
+
+@app.get("/api/practices/export.csv")
+def export_practices_csv(
+    max_exports: str | None = Query(
+        None,
+        description=(
+            "Filter on existing export_count. Missing/empty exports every row. "
+            "0 = only never-exported rows. N = export_count <= N."
+        ),
+    ),
+    user: dict = Depends(get_current_user),
+):
+    """Stream a CSV of practices and increment export_count on every row included.
+
+    UX: leave `max_exports` empty to export everything; pass `0` next time
+    to avoid duplicate downloads (only never-exported rows).
+    """
+    import csv
+    import io
+
+    # Parse the optional filter. Empty string is treated as "no filter" so the
+    # frontend doesn't have to omit the param entirely.
+    cap: int | None = None
+    if max_exports is not None and max_exports != "":
+        try:
+            cap = max(0, int(max_exports))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="max_exports must be an integer")
+
+    rows = query_for_export(cap)
+
+    def _serialize(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, list):
+            return ", ".join(str(v) for v in value)
+        if isinstance(value, (dict,)):
+            return json.dumps(value)
+        return str(value)
+
+    def iter_csv():
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(_EXPORT_COLUMNS)
+        yield buf.getvalue()
+        buf.seek(0)
+        buf.truncate(0)
+        for row in rows:
+            writer.writerow([_serialize(row.get(col)) for col in _EXPORT_COLUMNS])
+            yield buf.getvalue()
+            buf.seek(0)
+            buf.truncate(0)
+
+    increment_export_counts([r["place_id"] for r in rows if r.get("place_id")])
+
+    cap_label = "all" if cap is None else f"max{cap}"
+    filename = f"hv-leads-{cap_label}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.csv"
+    return StreamingResponse(
+        iter_csv(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 class SearchRequest(BaseModel):

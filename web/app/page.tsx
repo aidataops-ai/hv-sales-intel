@@ -75,7 +75,7 @@ function PageContent() {
     let cancelled = false
     async function hydrate() {
       try {
-        const dbRows = await listPractices({ limit: 2000 })
+        const dbRows = await listPractices({ limit: 20000 })
         if (cancelled) return
         // Always reflect what the API returned — including the empty list.
         // Without this, wiping the DB + clicking Refresh leaves stale
@@ -125,7 +125,7 @@ function PageContent() {
     let cancelled = false
     const timer = setTimeout(async () => {
       try {
-        const dbRows = await listPractices({ limit: 2000 })
+        const dbRows = await listPractices({ limit: 20000 })
         if (cancelled) return
         // Mirror the main hydrate: always reflect the API response,
         // including the empty list, so wiping the DB takes effect on

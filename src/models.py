@@ -32,6 +32,8 @@ class Practice(BaseModel):
     analysis_input_hash: str | None = None
     # AI-extracted decision-maker contacts from the website (JSON string).
     website_contacts: str | None = None
+    # Number of times this row has been included in a bulk CSV export.
+    export_count: int = 0
 
     # Phase 3 (CRM)
     status: str = "NEW"

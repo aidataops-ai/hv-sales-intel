@@ -156,6 +156,12 @@ alter table practices add column if not exists analysis_input_hash text;
 -- Used to personalize the cold-call playbook.
 alter table practices add column if not exists website_contacts text;
 
+-- CSV export counter. Increments by 1 for every row included in a bulk
+-- export. The export endpoint accepts a `max_exports` filter so an
+-- operator can re-run the export later with `max_exports=0` to skip
+-- previously-downloaded rows and avoid duplicates.
+alter table practices add column if not exists export_count integer not null default 0;
+
 -- Search query cache (avoid re-billing Google for repeated queries)
 create table if not exists searches (
   id bigserial primary key,

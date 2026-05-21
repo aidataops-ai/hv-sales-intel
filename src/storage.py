@@ -142,6 +142,7 @@ _OPTIONAL_COLUMNS = {
     "assigned_at",
     "assigned_by",
     "tags",
+    "export_count",
 }
 
 
@@ -212,6 +213,8 @@ def upsert_practices(
         "assigned_at",
         "assigned_by",
         "assigned_to_name",
+        # Export tracking
+        "export_count",
     }
     rows = []
     for p in practices:
@@ -274,6 +277,61 @@ def get_practice(place_id: str) -> dict | None:
     except Exception:
         return None
     return _flatten_attribution(result.data) if result and result.data else None
+
+
+def query_for_export(max_exports: int | None) -> list[dict]:
+    """Fetch every practice eligible for a CSV export.
+
+    `max_exports` semantics:
+      - None       → no filter; export every row
+      - 0          → only never-exported rows (export_count = 0)
+      - N          → only rows with export_count <= N
+
+    Returns rows with the profile join (so last_touched_by_name resolves).
+    """
+    client = _get_client()
+    if not client:
+        return []
+    q = client.table("practices").select(PROFILE_JOIN_SELECT)
+    if max_exports is not None:
+        q = q.lte("export_count", max_exports)
+    q = q.order("lead_score", desc=True).limit(50_000)
+    result = q.execute()
+    return [_flatten_attribution(r) for r in (result.data or [])]
+
+
+def increment_export_counts(place_ids: list[str]) -> None:
+    """Increment export_count by 1 for each row in `place_ids`.
+
+    Uses a single SELECT then per-row UPDATE because Supabase-py doesn't
+    expose `+= 1` SQL fragments. Fine at export-batch scale (a few
+    thousand rows, infrequent).
+    """
+    if not place_ids:
+        return
+    client = _get_client()
+    if not client:
+        return
+    try:
+        existing = (
+            client.table("practices")
+            .select("place_id,export_count")
+            .in_("place_id", place_ids)
+            .execute()
+        )
+    except Exception:
+        return
+    for row in existing.data or []:
+        next_count = (row.get("export_count") or 0) + 1
+        try:
+            client.table("practices").update({"export_count": next_count}).eq(
+                "place_id", row["place_id"]
+            ).execute()
+        except Exception:
+            # Column missing on old schemas — _OPTIONAL_COLUMNS includes
+            # export_count for the retry path, but we don't need to crash
+            # the export if the increment can't land.
+            continue
 
 
 def _update_with_optional_retry(
