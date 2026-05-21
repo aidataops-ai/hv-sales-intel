@@ -153,9 +153,9 @@ export default function BulkScanModal({
       : 0
 
   return (
-    <div className="fixed inset-0 z-40 bg-black/30 backdrop-blur-sm grid place-items-center">
-      <div className="bg-white rounded-2xl shadow-xl w-[640px] max-w-[92vw] max-h-[90vh] overflow-hidden flex flex-col">
-        <div className="flex items-center justify-between px-5 py-3 border-b border-gray-200">
+    <div className="fixed inset-0 z-40 bg-black/30 backdrop-blur-sm grid place-items-center p-4">
+      <div className="bg-white rounded-2xl shadow-xl w-[640px] max-w-[92vw] max-h-[calc(100vh-2rem)] overflow-hidden flex flex-col">
+        <div className="flex-none flex items-center justify-between px-5 py-3 border-b border-gray-200">
           <div>
             <h2 className="font-serif text-lg font-semibold text-gray-900">
               Bulk Scan
@@ -174,7 +174,7 @@ export default function BulkScanModal({
           </button>
         </div>
 
-        <div className="px-5 pt-4 pb-2 border-b border-gray-100">
+        <div className="flex-none px-5 pt-4 pb-2 border-b border-gray-100">
           <div className="inline-flex bg-gray-100 rounded-lg p-0.5 text-sm">
             <button
               disabled={running}
@@ -201,7 +201,7 @@ export default function BulkScanModal({
           </div>
         </div>
 
-        <div className="px-5 py-4 space-y-4 overflow-y-auto">
+        <div className="flex-1 min-h-0 px-5 py-4 space-y-4 overflow-y-auto">
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
               <span className="block text-xs font-medium text-gray-700 mb-1">
@@ -355,7 +355,7 @@ export default function BulkScanModal({
           )}
         </div>
 
-        <div className="px-5 py-3 border-t border-gray-200 flex items-center justify-end gap-2">
+        <div className="flex-none px-5 py-3 border-t border-gray-200 flex items-center justify-end gap-2">
           <button
             onClick={handleClose}
             className="text-sm px-3 py-1.5 rounded-md text-gray-700 hover:bg-gray-50"
