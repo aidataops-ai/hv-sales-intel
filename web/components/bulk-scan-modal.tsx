@@ -45,7 +45,9 @@ export default function BulkScanModal({
 }: BulkScanModalProps) {
   const [mode, setMode] = useState<Mode>("sweep")
   const [state, setState] = useState<StateCode>("FL")
-  const [template, setTemplate] = useState<string>("dental clinics in {city}, FL")
+  // Use the {state} placeholder by default so changing the picker keeps
+  // the suffix in sync without the user editing the template.
+  const [template, setTemplate] = useState<string>("dental clinics in {city}, {state}")
   const [vertical, setVertical] = useState<Vertical>("dental")
   const [specialties, setSpecialties] = useState<string[]>(
     SPECIALTIES_BY_VERTICAL.dental.slice(0, 3),
@@ -62,6 +64,21 @@ export default function BulkScanModal({
   }, [mode, template, state, specialties])
 
   const cityList = STATE_CITIES[state] ?? []
+
+  /** State picker handler — also rewrites a hardcoded state code at the
+   * end of the template (e.g. ", OH" → ", FL") so the rep doesn't have
+   * to remember to update both fields. */
+  function handleStateChange(next: StateCode) {
+    setState(next)
+    setTemplate((prev) => {
+      // Match a trailing ", XX" or " XX" where XX is one of our state codes.
+      const hardcoded = /,\s*(FL|TX|CA|NY|OH)\s*$/i
+      if (hardcoded.test(prev)) {
+        return prev.replace(hardcoded, `, ${next}`)
+      }
+      return prev
+    })
+  }
 
   if (!open) return null
 
@@ -193,7 +210,7 @@ export default function BulkScanModal({
               <select
                 disabled={running}
                 value={state}
-                onChange={(e) => setState(e.target.value as StateCode)}
+                onChange={(e) => handleStateChange(e.target.value as StateCode)}
                 className="w-full text-sm rounded-md border border-gray-200 px-2 py-1.5 bg-white"
               >
                 {(Object.keys(STATE_LABELS) as StateCode[]).map((s) => (
