@@ -1,8 +1,11 @@
 import json
+import logging
 
 from openai import AsyncOpenAI
 
 from src.settings import settings
+
+log = logging.getLogger("hvsi.scriptgen")
 
 SYSTEM_PROMPT = """You are a cold call script writer for Health & Virtuals, a healthcare staffing and talent acquisition company.
 
@@ -85,6 +88,8 @@ Verbatim Patient Review Excerpts:
 """
 
     client = AsyncOpenAI(api_key=settings.openai_api_key)
+    log.info("[scriptgen.start] practice=%r model=%s contacts=%d",
+             name, settings.openai_model, len(website_contacts or []))
     try:
         response = await client.chat.completions.create(
             model=settings.openai_model,
@@ -98,9 +103,14 @@ Verbatim Patient Review Excerpts:
         content = response.choices[0].message.content or "{}"
         result = json.loads(content)
         if "sections" in result and len(result["sections"]) == 5:
+            log.info("[scriptgen.done] practice=%r", name)
             return result
-    except Exception:
-        pass
+        log.warning("[scriptgen.bad_shape] practice=%r keys=%s",
+                    name, list(result.keys()))
+    except Exception as e:
+        log.error("[scriptgen.openai_error] practice=%r model=%s type=%s msg=%s",
+                  name, settings.openai_model,
+                  type(e).__name__, str(e)[:600])
 
     return _mock_script(
         name=name,

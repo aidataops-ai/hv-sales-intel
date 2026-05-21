@@ -1,4 +1,5 @@
 import json
+import logging
 import random
 from typing import Any
 
@@ -8,6 +9,8 @@ from src.crawler import crawl_website
 from src.icp_scorer import score_icp
 from src.reviews import fetch_reviews, format_reviews_for_prompt
 from src.settings import settings
+
+log = logging.getLogger("hvsi.analyzer")
 
 SYSTEM_PROMPT = """You are a sales intelligence analyst for Health & Virtuals (H&V), a managed remote-staffing company that places non-clinical virtual assistants (front desk, scheduler, admin, billing, coordinator) into US-based service businesses. H&V's focus market is Florida.
 
@@ -137,6 +140,11 @@ Website: {website or 'none on file'}
 """
 
     client = AsyncOpenAI(api_key=settings.openai_api_key)
+    log.info(
+        "[analyzer.start] place_id=%s model=%s website_len=%d reviews_len=%d",
+        place_id, settings.openai_model,
+        len(website_text or ""), len(reviews_text or ""),
+    )
     try:
         # temperature=0 + a fixed `seed` make OpenAI's outputs reproducible
         # for the same prompt — without these, the 6 AI-derived ICP
@@ -155,7 +163,16 @@ Website: {website or 'none on file'}
         )
         content = response.choices[0].message.content or "{}"
         result = json.loads(content)
-    except Exception:
+        log.info("[analyzer.done] place_id=%s vertical=%s tier=%s",
+                 place_id,
+                 result.get("icp_vertical"),
+                 result.get("icp_tier"))
+    except Exception as e:
+        log.error(
+            "[analyzer.openai_error] place_id=%s model=%s type=%s msg=%s",
+            place_id, settings.openai_model,
+            type(e).__name__, str(e)[:600],
+        )
         return _mock_analysis(
             name=name, category=category, state=state,
             rating=rating, review_count=review_count, website=website,
