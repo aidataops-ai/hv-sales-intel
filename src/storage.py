@@ -247,6 +247,37 @@ def upsert_practices(
     return len(result.data) if result.data else 0
 
 
+# PostgREST has a default `db-max-rows` cap (1000 on hosted Supabase) that
+# silently truncates large responses. We paginate via Range headers so a
+# `.limit(20000)` actually returns 20000 instead of clipping at 1000.
+_POSTGREST_PAGE_SIZE = 1000
+
+
+def _paginated_query(builder, limit: int) -> list[dict]:
+    """Fetch up to `limit` rows from a Supabase query builder, working around
+    PostgREST's per-request max-rows ceiling by issuing successive .range()
+    calls. The caller is responsible for any .order() / filters — those are
+    applied to the builder before we get it.
+    """
+    rows: list[dict] = []
+    page = 0
+    while len(rows) < limit:
+        want = min(_POSTGREST_PAGE_SIZE, limit - len(rows))
+        start = page * _POSTGREST_PAGE_SIZE
+        end = start + want - 1  # .range() is inclusive
+        try:
+            result = builder.range(start, end).execute()
+        except Exception:
+            break
+        batch = result.data or []
+        rows.extend(batch)
+        # Short read → we're at the end of the result set.
+        if len(batch) < want:
+            break
+        page += 1
+    return rows
+
+
 def query_practices(
     city: str | None = None,
     category: str | None = None,
@@ -264,9 +295,9 @@ def query_practices(
         q = q.eq("category", category)
     if min_rating:
         q = q.gte("rating", min_rating)
-    q = q.order("rating", desc=True).limit(limit)
-    result = q.execute()
-    return [_flatten_attribution(r) for r in (result.data or [])]
+    q = q.order("rating", desc=True)
+    rows = _paginated_query(q, limit)
+    return [_flatten_attribution(r) for r in rows]
 
 
 def get_practice(place_id: str) -> dict | None:
@@ -293,6 +324,8 @@ def query_for_export(max_exports: int | None) -> list[dict]:
       - N          → only rows with export_count <= N
 
     Returns rows with the profile join (so last_touched_by_name resolves).
+    Paginates through PostgREST's max-rows cap so a 5k-lead DB exports
+    every row instead of clipping at 1000.
     """
     client = _get_client()
     if not client:
@@ -300,9 +333,9 @@ def query_for_export(max_exports: int | None) -> list[dict]:
     q = client.table("practices").select(PROFILE_JOIN_SELECT)
     if max_exports is not None:
         q = q.lte("export_count", max_exports)
-    q = q.order("lead_score", desc=True).limit(50_000)
-    result = q.execute()
-    return [_flatten_attribution(r) for r in (result.data or [])]
+    q = q.order("lead_score", desc=True)
+    rows = _paginated_query(q, 50_000)
+    return [_flatten_attribution(r) for r in rows]
 
 
 def increment_export_counts(
