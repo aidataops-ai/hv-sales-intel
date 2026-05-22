@@ -30,6 +30,9 @@ const CATEGORIES = [
   { value: "urgent_care", label: "Urgent Care" },
   { value: "mental_health", label: "Mental Health" },
   { value: "primary_care", label: "Primary Care" },
+  { value: "alf_nh", label: "Assisted Living / Nursing" },
+  { value: "hotel_resort", label: "Hotels / Resorts" },
+  { value: "medspa_wellness", label: "MedSpa / Wellness" },
   { value: "specialty", label: "Specialty" },
 ]
 

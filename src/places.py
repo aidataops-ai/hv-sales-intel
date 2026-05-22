@@ -121,7 +121,7 @@ def _map_google_place(place: dict) -> Practice:
     name = place.get("displayName", {}).get("text", "Unknown")
     types = place.get("types", [])
     tags: list[str] = []
-    if not _is_healthcare(types, name):
+    if not _is_in_scope(types, name):
         tags.append("IRRELEVANT")
     return Practice(
         place_id=place.get("id") or place.get("name", "").rsplit("/", 1)[-1] or "unknown_place",
@@ -141,6 +141,7 @@ def _map_google_place(place: dict) -> Practice:
     )
 
 
+# Healthcare types — original ICP segment.
 HEALTHCARE_TYPES = frozenset({
     "doctor", "dentist", "dental_clinic",
     "physiotherapist", "chiropractor",
@@ -152,24 +153,45 @@ HEALTHCARE_TYPES = frozenset({
     "veterinary_care",
 })
 
-# Hard-disqualifiers — if Google tags the place with any of these, it's
-# definitely not healthcare regardless of what's in the name (e.g.
-# "Doctors Café", "Dental Bar Restaurant").
+# Assisted Living / Nursing Home types.
+ALF_TYPES = frozenset({
+    "nursing_home", "assisted_living_facility",
+    "retirement_community", "elderly_care_facility",
+})
+
+# Hotels / Resorts types.
+HOTEL_TYPES = frozenset({
+    "lodging", "hotel", "motel", "resort_hotel", "bed_and_breakfast",
+    "extended_stay_hotel",
+})
+
+# MedSpa / Spa / Wellness types. Google bundles medspas under spa /
+# beauty_salon; we let them in and re-classify via name keywords.
+MEDSPA_TYPES = frozenset({
+    "spa", "beauty_salon", "wellness_center",
+})
+
+# Every Google type that signals an in-scope ICP segment. Replaces the old
+# healthcare-only check.
+IN_SCOPE_TYPES = HEALTHCARE_TYPES | ALF_TYPES | HOTEL_TYPES | MEDSPA_TYPES
+
+# Hard-disqualifiers — if Google tags the place with any of these alone
+# (and none of the in-scope types apply), it's definitely not target ICP
+# (e.g. "Doctors Café", "Dental Bar Restaurant", standalone gym).
 NEGATIVE_TYPES = frozenset({
     "cafe", "coffee_shop", "restaurant", "food", "bar", "bakery",
     "meal_takeaway", "meal_delivery", "night_club",
-    "gym", "fitness_center", "beauty_salon", "hair_care", "spa",
+    "gym", "fitness_center", "hair_care",
     "store", "supermarket", "shopping_mall", "clothing_store",
     "convenience_store", "grocery_or_supermarket", "department_store",
-    "lodging", "tourist_attraction", "park", "school", "university",
+    "tourist_attraction", "park", "school", "university",
     "car_dealer", "car_repair", "car_rental", "gas_station",
     "real_estate_agency", "insurance_agency", "lawyer", "bank", "atm",
 })
 
-# Keywords in the place name that strongly suggest healthcare. Note: we do
-# NOT include the bare word "doctor" because it appears in restaurant /
-# café names ("Doctors Café"). The phrase "Dr." with a trailing dot is a
-# stronger signal because it almost always precedes a person's name.
+# Keywords in the place name that strongly suggest each in-scope segment.
+# "Dr." with trailing dot is a stronger person-name signal than the bare
+# word "doctor", which appears in restaurant names ("Doctors Café").
 HEALTHCARE_NAME_KEYWORDS = (
     "clinic", "hospital", "medical", "dental", "dentist", "orthodont",
     "psychiatr", "psycholog", "mental health", "behavioral health",
@@ -180,23 +202,54 @@ HEALTHCARE_NAME_KEYWORDS = (
     "dr.", "md ", "m.d.", "dds", "d.d.s.",
 )
 
+ALF_NAME_KEYWORDS = (
+    "assisted living", "memory care", "nursing home", "senior living",
+    "skilled nursing", "retirement home", "retirement community",
+    "elder care", "elderly care", "senior care", "alzheimer", "dementia care",
+)
 
-def _is_healthcare(types: list[str], name: str) -> bool:
-    """True if the place looks like a healthcare practice we'd want to target.
+HOTEL_NAME_KEYWORDS = (
+    "hotel", "resort", "motel", "lodge", "suites",
+    "bed & breakfast", "bed and breakfast", "vacation rental",
+    "boutique hotel", "marriott", "hilton", "hyatt",
+)
+
+MEDSPA_NAME_KEYWORDS = (
+    "medspa", "med spa", "aesthetics", "anti-aging", "day spa",
+    "rejuvenation", "skin clinic", "laser clinic", "cosmetic clinic",
+    "wellness center", "wellness clinic", "iv lounge", "iv therapy",
+    "botox", "filler",
+)
+
+
+def _is_in_scope(types: list[str], name: str) -> bool:
+    """True if the place looks like an in-scope ICP target (healthcare,
+    ALF/nursing, hotel/resort, or medspa/wellness).
 
     Logic:
-      1. If Google flags it as a café / restaurant / shop / etc → reject.
-      2. If Google flags it as a healthcare type → accept.
-      3. Otherwise inspect the display name (solo practitioners often only
-         get the generic 'doctor' or 'point_of_interest' type).
+      1. If Google flags it as an in-scope type → accept regardless of
+         any incidental negative type (e.g. a hotel that also lists 'spa').
+      2. If Google flags it as ONLY a negative type → reject.
+      3. Otherwise inspect the display name — solo practitioners, small
+         medspas, and boutique hotels often only get a generic type.
     """
     type_set = set(types or [])
+    if IN_SCOPE_TYPES & type_set:
+        return True
     if NEGATIVE_TYPES & type_set:
         return False
-    if HEALTHCARE_TYPES & type_set:
-        return True
     name_lower = (name or "").lower()
-    return any(k in name_lower for k in HEALTHCARE_NAME_KEYWORDS)
+    keywords = (
+        HEALTHCARE_NAME_KEYWORDS
+        + ALF_NAME_KEYWORDS
+        + HOTEL_NAME_KEYWORDS
+        + MEDSPA_NAME_KEYWORDS
+    )
+    return any(k in name_lower for k in keywords)
+
+
+# Backward-compatible alias — older imports may reference _is_healthcare.
+_is_healthcare = _is_in_scope
 
 
 def _extract_city(address: str) -> str | None:
@@ -222,17 +275,21 @@ def _extract_state(address: str) -> str | None:
 def _classify_types(types: list[str], name: str = "") -> str:
     """Map Google Places types to our category taxonomy.
 
-    Google's types are unreliable for solo psychiatry/dental practices —
-    they often only get the generic 'doctor' type. We use the display name
-    as a fallback signal so e.g. "Dr Smith Psychiatrist" doesn't end up as
-    primary_care.
+    Order matters — more specific signals win. Solo practitioners and
+    boutique businesses often only get a generic Google type, so the
+    name string is the fallback for every branch.
+
+    Possible return values:
+        mental_health, dental, chiropractic, urgent_care,
+        alf_nh, hotel_resort, medspa_wellness,
+        primary_care, specialty (catchall)
     """
     type_set = set(types)
     name_lower = (name or "").lower()
 
-    # Mental health gets checked first because psychiatrists frequently
-    # carry only the 'doctor' type — name-based detection is the only
-    # reliable signal for them.
+    # Mental health first — psychiatrists frequently carry only the
+    # generic 'doctor' type, so name-based detection is the only reliable
+    # signal.
     if (
         type_set & {"psychiatrist", "psychologist", "mental_health"}
         or any(
@@ -241,6 +298,7 @@ def _classify_types(types: list[str], name: str = "") -> str:
                 "psychiatrist", "psychiatric", "psychiatry",
                 "psychologist", "psychology", "mental health",
                 "behavioral health", "psychotherapy", "counseling",
+                "therapist", "therapy",
             )
         )
     ):
@@ -256,8 +314,28 @@ def _classify_types(types: list[str], name: str = "") -> str:
     ):
         return "chiropractic"
 
+    if (
+        type_set & ALF_TYPES
+        or any(k in name_lower for k in ALF_NAME_KEYWORDS)
+    ):
+        return "alf_nh"
+
+    if (
+        type_set & HOTEL_TYPES
+        or any(k in name_lower for k in HOTEL_NAME_KEYWORDS)
+    ):
+        return "hotel_resort"
+
     if type_set & {"hospital", "urgent_care_center", "emergency_room"} or "urgent care" in name_lower:
         return "urgent_care"
+
+    # MedSpa / wellness — checked AFTER the harder medical categories so a
+    # "Wellness Pediatrics Clinic" stays medical, not medspa.
+    if (
+        type_set & MEDSPA_TYPES
+        or any(k in name_lower for k in MEDSPA_NAME_KEYWORDS)
+    ):
+        return "medspa_wellness"
 
     if type_set & {"doctor", "general_practitioner", "primary_care"}:
         return "primary_care"
