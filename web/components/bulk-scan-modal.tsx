@@ -154,8 +154,8 @@ export default function BulkScanModal({
       : 0
 
   return (
-    <div className="fixed inset-0 z-40 bg-black/30 backdrop-blur-sm grid place-items-center p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-[680px] max-w-[92vw] max-h-[calc(100vh-2rem)] overflow-hidden flex flex-col">
+    <div className="fixed inset-0 z-40 bg-black/30 backdrop-blur-sm flex items-start justify-center pt-20 px-4 pb-4">
+      <div className="bg-white rounded-2xl shadow-xl w-[680px] max-w-[92vw] max-h-[calc(100vh-6rem)] overflow-hidden flex flex-col">
         <div className="flex-none flex items-center justify-between px-5 py-3 border-b border-gray-200">
           <div>
             <h2 className="font-serif text-lg font-semibold text-gray-900">
