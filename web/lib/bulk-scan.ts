@@ -110,10 +110,22 @@ export const STATE_CITIES: Record<StateCode, string[]> = {
   WY: ["Cheyenne", "Casper", "Laramie", "Gillette"],
 }
 
-export type Vertical = "medical" | "dental" | "alf_nh" | "hotel_resort" | "medspa_wellness"
+// Bulk Scan picks a vertical purely to drive query phrasing in the modal.
+// The canonical ICP vertical (used by the scorer) is separate — psychiatry /
+// mental_health practices are still classified by the analyzer as the
+// "medical" ICP vertical per the H&V ICP doc, which keeps Vertical fit
+// scoring intact.
+export type Vertical =
+  | "medical"
+  | "mental_health"
+  | "dental"
+  | "alf_nh"
+  | "hotel_resort"
+  | "medspa_wellness"
 
 export const VERTICAL_LABELS: Record<Vertical, string> = {
-  medical: "Medical practices",
+  medical: "Medical practices (primary care, internal, family)",
+  mental_health: "Mental health (psychiatry, therapy, behavioral)",
   dental: "Dental practices",
   alf_nh: "Assisted living / Nursing homes",
   hotel_resort: "Hotels / Resorts",
@@ -124,6 +136,7 @@ export const VERTICAL_LABELS: Record<Vertical, string> = {
 // template when the rep picks a vertical.
 export const VERTICAL_BASE_QUERIES: Record<Vertical, string> = {
   medical: "medical clinics",
+  mental_health: "mental health clinics",
   dental: "dental clinics",
   alf_nh: "assisted living facilities",
   hotel_resort: "hotels and resorts",
@@ -135,10 +148,20 @@ export const SPECIALTIES_BY_VERTICAL: Record<Vertical, string[]> = {
     "primary care clinic",
     "family medicine practice",
     "internal medicine practice",
-    "psychiatry practice",
-    "mental health clinic",
     "chiropractic clinic",
     "urgent care",
+    "pediatric clinic",
+    "geriatric clinic",
+  ],
+  mental_health: [
+    "mental health clinic",
+    "psychiatry practice",
+    "behavioral health center",
+    "counseling center",
+    "therapist office",
+    "psychologist office",
+    "addiction recovery clinic",
+    "trauma therapy clinic",
   ],
   dental: [
     "dental clinic",
