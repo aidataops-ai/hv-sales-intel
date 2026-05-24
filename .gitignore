@@ -5,3 +5,9 @@ node_modules/
 __pycache__/
 *.pyc
 .vercel
+
+# macOS metadata files
+.DS_Store
+
+# Source ICP PDFs — internal reference, not for the demo repo
+ICP Documents/
