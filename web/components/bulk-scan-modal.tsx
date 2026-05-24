@@ -10,6 +10,7 @@ import {
   SPECIALTIES_BY_VERTICAL,
   buildSpecialtyGridQueries,
   buildStateSweepQueries,
+  parseCustomCities,
   templateForVertical,
   totalCitiesForStates,
   type StateCode,
@@ -54,18 +55,33 @@ export default function BulkScanModal({
   const [specialties, setSpecialties] = useState<string[]>(
     SPECIALTIES_BY_VERTICAL.dental.slice(0, 3),
   )
+  const [customCitiesText, setCustomCitiesText] = useState<string>("")
+  const extraCitiesByState = useMemo(
+    () => parseCustomCities(customCitiesText),
+    [customCitiesText],
+  )
   const [running, setRunning] = useState(false)
   const [stats, setStats] = useState<RunStats>(EMPTY_STATS)
   const [stopRequested, setStopRequested] = useState(false)
 
   const queries = useMemo(() => {
     if (mode === "sweep") {
-      return buildStateSweepQueries({ template, states })
+      return buildStateSweepQueries({ template, states, extraCitiesByState })
     }
-    return buildSpecialtyGridQueries({ states, specialties })
-  }, [mode, template, states, specialties])
+    return buildSpecialtyGridQueries({ states, specialties, extraCitiesByState })
+  }, [mode, template, states, specialties, extraCitiesByState])
 
-  const totalCities = useMemo(() => totalCitiesForStates(states), [states])
+  const totalCities = useMemo(
+    () => totalCitiesForStates(states, extraCitiesByState),
+    [states, extraCitiesByState],
+  )
+
+  const extraCitiesCount = useMemo(
+    () => Object.values(extraCitiesByState).reduce(
+      (n, list) => n + (list?.length ?? 0), 0,
+    ),
+    [extraCitiesByState],
+  )
 
   if (!open) return null
 
@@ -266,6 +282,33 @@ export default function BulkScanModal({
                 )
               })}
             </div>
+          </div>
+
+          {/* Custom cities supplement */}
+          <div>
+            <label className="block">
+              <span className="block text-xs font-medium text-gray-700 mb-1">
+                Custom cities (optional)
+                {extraCitiesCount > 0 && (
+                  <span className="ml-1 text-teal-700">
+                    · +{extraCitiesCount} added
+                  </span>
+                )}
+              </span>
+              <textarea
+                disabled={running}
+                value={customCitiesText}
+                onChange={(e) => setCustomCitiesText(e.target.value)}
+                rows={3}
+                className="w-full text-sm rounded-md border border-gray-200 px-2 py-1.5 font-mono"
+                placeholder={"Vernon, CA\nMaywood, CA\nCalifornia: Bell, Cudahy, Huntington Park"}
+              />
+            </label>
+            <p className="text-[11px] text-gray-500 mt-1">
+              One per line. Formats: <code>City, ST</code> or{" "}
+              <code>StateName: city, city, …</code>. Supplements the defaults
+              above for any state you selected.
+            </p>
           </div>
 
           {/* Mode-specific controls */}

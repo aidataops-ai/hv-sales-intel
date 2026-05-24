@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
-import { LogOut, UserCog, KeyRound, ChevronDown } from "lucide-react"
+import { LogOut, UserCog, KeyRound, ChevronDown, Plug } from "lucide-react"
 import { useAuth } from "@/lib/auth"
 import ChangePasswordModal from "./change-password-modal"
 
@@ -53,13 +53,22 @@ export default function UserMenu() {
             </p>
           </div>
           {user.role === "admin" && (
-            <Link
-              href="/admin/users"
-              onClick={() => setOpen(false)}
-              className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-            >
-              <UserCog className="w-4 h-4" /> Users
-            </Link>
+            <>
+              <Link
+                href="/admin/users"
+                onClick={() => setOpen(false)}
+                className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+              >
+                <UserCog className="w-4 h-4" /> Users
+              </Link>
+              <Link
+                href="/admin/integrations"
+                onClick={() => setOpen(false)}
+                className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+              >
+                <Plug className="w-4 h-4" /> Integrations
+              </Link>
+            </>
           )}
           <button
             onClick={() => {
