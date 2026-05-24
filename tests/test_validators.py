@@ -17,18 +17,17 @@ def test_validate_email_accepts_uppercase_local_part():
     validate_email("Sarah.Khan@healthandgroup.com")
 
 
-def test_validate_email_accepts_healthandvirtuals_domain():
+def test_validate_email_accepts_any_domain():
+    # Domain allowlist was removed for the demo — any well-formed
+    # address must be accepted regardless of domain.
+    validate_email("sarah@anywhere.com")
+    validate_email("sarah@example.org")
     validate_email("sarah@healthandvirtuals.com")
 
 
 def test_validate_email_rejects_missing_at():
     with pytest.raises(ValueError, match="format"):
         validate_email("sarahhealthandgroup.com")
-
-
-def test_validate_email_rejects_wrong_domain():
-    with pytest.raises(ValueError, match="@healthandgroup.com"):
-        validate_email("sarah@example.com")
 
 
 def test_validate_email_rejects_double_dash_anywhere():

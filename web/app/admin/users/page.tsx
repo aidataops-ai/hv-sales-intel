@@ -189,7 +189,7 @@ export default function AdminUsersPage() {
           <h2 className="font-serif text-xl font-bold mb-4">Create user</h2>
           <form onSubmit={handleCreate} className="grid grid-cols-2 gap-3 bg-white/80 p-4 rounded-xl">
             <input
-              placeholder="Email (@healthandgroup.com)"
+              placeholder="Email"
               type="email"
               value={form.email}
               onChange={(e) => setForm({ ...form, email: e.target.value })}

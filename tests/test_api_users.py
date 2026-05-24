@@ -17,16 +17,18 @@ def cleanup():
     app.dependency_overrides.clear()
 
 
-def test_create_user_rejects_bad_email_domain(sample_admin_profile):
+def test_create_user_rejects_malformed_email(sample_admin_profile):
+    # Domain allowlist removed for the demo — only malformed addresses
+    # should be rejected now (off-domain addresses are accepted).
     _override_admin(sample_admin_profile)
     client = TestClient(app)
     resp = client.post("/api/admin/users", json={
-        "email": "rep@example.com",
+        "email": "not-an-email",
         "name": "Rep",
         "password": "Healthy123!",
     })
     assert resp.status_code == 400
-    assert "@healthandgroup.com" in resp.json()["detail"]
+    assert "format" in resp.json()["detail"]
 
 
 def test_create_user_rejects_double_dash_email(sample_admin_profile):
