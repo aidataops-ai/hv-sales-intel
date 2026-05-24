@@ -79,8 +79,21 @@ def _read_supabase_token(request: Request) -> str | None:
     return None
 
 
+CURRENT_COMPANY_COOKIE = "apex_current_company"
+
+
 async def get_current_user(request: Request) -> dict:
-    """Resolve JWT → profiles row. 401 if missing/invalid, 403 if no profile."""
+    """Resolve JWT → profiles row + active company. 401 if no token,
+    403 if no profile or no company membership.
+
+    The returned dict carries:
+      - All `profiles` columns (id, email, name, role, etc.)
+      - `company_id`   — the active company UUID
+      - `company_role` — 'admin' or 'sdr' WITHIN that company
+      - `role` is overridden with `company_role` so existing code that
+        gates on `user["role"] == "admin"` automatically respects the
+        per-company role instead of the legacy global one.
+    """
     token = _read_supabase_token(request)
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -100,11 +113,72 @@ async def get_current_user(request: Request) -> dict:
         raise HTTPException(status_code=403, detail="No profile for this user")
     if result.data.get("disabled_at"):
         raise HTTPException(status_code=401, detail="Account disabled")
-    return result.data
+    profile = result.data
+
+    # Resolve the active company. Cookie wins if the user is actually a
+    # member of that company; otherwise fall back to the oldest membership.
+    company_id, company_role = _resolve_current_company(
+        client, profile["id"], request.cookies.get(CURRENT_COMPANY_COOKIE),
+    )
+
+    return {
+        **profile,
+        "company_id": company_id,
+        "company_role": company_role,
+        # Override the legacy global role with the per-company role so
+        # require_admin and existing role checks work per-company.
+        "role": company_role,
+        # Preserve the global profile role under a separate key for the
+        # few places that need it (e.g. a future super-admin path).
+        "global_role": profile.get("role"),
+    }
+
+
+def _resolve_current_company(
+    client, user_id: str, cookie_value: str | None,
+) -> tuple[str, str]:
+    """Return (company_id, role) for the user's active company.
+
+    If the cookie names a company the user belongs to, use it.
+    Otherwise pick the oldest membership. Raises 403 if the user is in
+    no companies — every authenticated user must belong to at least one.
+    """
+    if cookie_value:
+        try:
+            member = (
+                client.table("company_members")
+                .select("role,company_id")
+                .eq("user_id", user_id)
+                .eq("company_id", cookie_value)
+                .maybe_single().execute()
+            )
+        except Exception:
+            member = None
+        if member and member.data:
+            return cookie_value, member.data["role"]
+
+    try:
+        first = (
+            client.table("company_members")
+            .select("company_id,role")
+            .eq("user_id", user_id)
+            .order("joined_at")
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        first = None
+    if not first or not first.data:
+        raise HTTPException(
+            status_code=403,
+            detail="User belongs to no company. Sign up to create one.",
+        )
+    row = first.data[0]
+    return row["company_id"], row["role"]
 
 
 async def require_admin(user: dict = Depends(get_current_user)) -> dict:
-    """Raise 403 if the current user isn't an admin."""
+    """Raise 403 if the current user isn't an admin of the active company."""
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin only")
     return user

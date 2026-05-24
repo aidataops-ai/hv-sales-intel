@@ -6,6 +6,7 @@ import SearchBar from "./search-bar"
 import UserMenu from "./user-menu"
 import ExportButton from "./export-button"
 import BulkScanModal from "./bulk-scan-modal"
+import CompanySwitcher from "./company-switcher"
 
 interface TopBarProps {
   onSearch: (query: string) => void
@@ -68,6 +69,7 @@ export default function TopBar({
           {scoreProgress ?? "Score All"}
         </button>
         <ExportButton />
+        <CompanySwitcher />
         <UserMenu />
       </div>
 

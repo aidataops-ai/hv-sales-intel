@@ -4,7 +4,7 @@ import logging
 import sys
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -662,6 +662,175 @@ def change_my_password(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update password: {e}")
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Multi-tenant: companies + sign-up + switcher
+# ---------------------------------------------------------------------------
+
+import re as _re
+import secrets as _secrets
+
+
+def _slugify_company(name: str) -> str:
+    base = _re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
+    return (base[:40] or "company") + "-" + _secrets.token_hex(3)
+
+
+class SignupRequest(BaseModel):
+    email: str
+    password: str
+    company_name: str
+    full_name: str | None = None
+
+
+@app.post("/api/signup")
+def signup(body: SignupRequest):
+    """Create an auth user + a brand-new company + admin membership.
+
+    Returns the new company_id + slug. The frontend then signs the user
+    in (Supabase doesn't auto-sign admin-created users) and the
+    onboarding wizard takes over.
+    """
+    from src.validators import validate_email, validate_password
+
+    try:
+        validate_email(body.email)
+        validate_password(body.password)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if not (body.company_name or "").strip():
+        raise HTTPException(status_code=400, detail="Company name is required.")
+
+    admin = get_admin_client()
+
+    # 1. Create the auth user.
+    try:
+        new_user = admin.auth.admin.create_user({
+            "email": body.email,
+            "password": body.password,
+            "email_confirm": True,
+            "user_metadata": {
+                "name": (body.full_name or body.company_name).strip(),
+            },
+        })
+    except Exception as e:
+        msg = str(e).lower()
+        if "already" in msg or "registered" in msg or "exists" in msg:
+            raise HTTPException(status_code=400, detail="Email already in use.")
+        raise HTTPException(status_code=400, detail=str(e))
+
+    auth_user_id = new_user.user.id
+
+    # 2. The DB trigger auto-creates the `profiles` row with role='sdr'.
+    # Promote to admin so they can manage their own company.
+    try:
+        admin.table("profiles").update({"role": "admin"}).eq(
+            "id", auth_user_id
+        ).execute()
+    except Exception:
+        pass  # Trigger may not have run yet; not fatal.
+
+    # 3. Create the company.
+    slug = _slugify_company(body.company_name)
+    try:
+        company_row = admin.table("companies").insert({
+            "slug": slug,
+            "name": body.company_name.strip(),
+            "branding": {
+                "display_name": body.company_name.strip(),
+                "short_name": body.company_name.strip(),
+            },
+            "created_by": auth_user_id,
+        }).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not create company: {e}")
+    company_id = company_row.data[0]["id"]
+
+    # 4. Add the user as admin of the new company.
+    try:
+        admin.table("company_members").insert({
+            "company_id": company_id,
+            "user_id": auth_user_id,
+            "role": "admin",
+        }).execute()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not create membership: {e}")
+
+    return {
+        "company_id": company_id,
+        "company_slug": slug,
+        "user_id": auth_user_id,
+    }
+
+
+@app.get("/api/me/companies")
+def list_my_companies(user: dict = Depends(get_current_user)):
+    """List every company the current user is a member of."""
+    client = get_admin_client()
+    try:
+        result = (
+            client.table("company_members")
+            .select(
+                "role,company:companies(id,slug,name,branding,archived_at)"
+            )
+            .eq("user_id", user["id"])
+            .execute()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    out = []
+    for row in (result.data or []):
+        company = row.get("company") or {}
+        if not company or company.get("archived_at"):
+            continue
+        out.append({
+            "id": company["id"],
+            "slug": company["slug"],
+            "name": company["name"],
+            "branding": company.get("branding"),
+            "role": row["role"],
+            "is_current": company["id"] == user.get("company_id"),
+        })
+    return {"companies": out, "current_company_id": user.get("company_id")}
+
+
+@app.post("/api/me/companies/{company_id}/switch")
+def switch_company(
+    company_id: str,
+    response: Response,
+    user: dict = Depends(get_current_user),
+):
+    """Set the apex_current_company cookie to the requested company,
+    after verifying the user is a member. Subsequent requests resolve
+    via get_current_user to the new company."""
+    client = get_admin_client()
+    try:
+        member = (
+            client.table("company_members").select("role")
+            .eq("user_id", user["id"])
+            .eq("company_id", company_id)
+            .maybe_single().execute()
+        )
+    except Exception:
+        member = None
+    if not member or not member.data:
+        raise HTTPException(status_code=403, detail="Not a member of that company.")
+
+    # 30-day cookie, readable by JS so the frontend can show the active
+    # company without an extra round-trip.
+    response.set_cookie(
+        key="apex_current_company",
+        value=company_id,
+        max_age=60 * 60 * 24 * 30,
+        httponly=False,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return {"ok": True, "company_id": company_id, "role": member.data["role"]}
 
 
 @app.get("/api/practices")
