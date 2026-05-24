@@ -2,9 +2,7 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import {
-  Cloud, KeyRound, Mail, Phone, Sparkles, Building2, ArrowLeft, Check,
-} from "lucide-react"
+import { Cloud, Sparkles, ArrowLeft, Check } from "lucide-react"
 import { useAuth } from "@/lib/auth"
 
 /**
@@ -27,24 +25,6 @@ export default function IntegrationsPage() {
     table_webhook_url: "",
     api_key: "",
     inbound_secret: "",
-  })
-  const [ringcentral, setRingcentral] = useState({
-    web_app_url: "https://app.ringcentral.com",
-  })
-  const [m365, setM365] = useState({
-    tenant_id: "",
-    client_id: "",
-    client_secret: "",
-    refresh_token: "",
-    sender_email: "",
-    reply_lookback_days: "30",
-  })
-  const [openai, setOpenai] = useState({
-    api_key: "",
-    model: "gpt-4.1",
-  })
-  const [google, setGoogle] = useState({
-    api_key: "",
   })
 
   const [saved, setSaved] = useState<string | null>(null)
@@ -150,116 +130,6 @@ export default function IntegrationsPage() {
           />
         </IntegrationCard>
 
-        <IntegrationCard
-          title="RingCentral"
-          subtitle="Click-to-call from every practice card."
-          icon={<Phone className="w-4 h-4" />}
-          onSave={() => mockSave("ringcentral")}
-          saved={saved === "ringcentral"}
-        >
-          <Field
-            label="Web app URL"
-            placeholder="https://app.ringcentral.com"
-            value={ringcentral.web_app_url}
-            onChange={(v) =>
-              setRingcentral({ ...ringcentral, web_app_url: v })
-            }
-            hint="Override only if you self-host RingCentral."
-          />
-        </IntegrationCard>
-
-        <IntegrationCard
-          title="Microsoft 365 / Graph"
-          subtitle="Send + poll outreach email from your company mailbox."
-          icon={<Mail className="w-4 h-4" />}
-          onSave={() => mockSave("m365")}
-          saved={saved === "m365"}
-        >
-          <div className="grid grid-cols-2 gap-3">
-            <Field
-              label="Tenant ID"
-              placeholder="00000000-0000-0000-0000-000000000000"
-              value={m365.tenant_id}
-              onChange={(v) => setM365({ ...m365, tenant_id: v })}
-            />
-            <Field
-              label="Client ID"
-              placeholder="00000000-0000-0000-0000-000000000000"
-              value={m365.client_id}
-              onChange={(v) => setM365({ ...m365, client_id: v })}
-            />
-            <Field
-              label="Client secret"
-              type="password"
-              placeholder="••••••••••••"
-              value={m365.client_secret}
-              onChange={(v) => setM365({ ...m365, client_secret: v })}
-            />
-            <Field
-              label="Refresh token"
-              type="password"
-              placeholder="••••••••••••"
-              value={m365.refresh_token}
-              onChange={(v) => setM365({ ...m365, refresh_token: v })}
-            />
-            <Field
-              label="Sender email"
-              type="email"
-              placeholder="outreach@your-company.com"
-              value={m365.sender_email}
-              onChange={(v) => setM365({ ...m365, sender_email: v })}
-            />
-            <Field
-              label="Reply look-back (days)"
-              type="number"
-              placeholder="30"
-              value={m365.reply_lookback_days}
-              onChange={(v) =>
-                setM365({ ...m365, reply_lookback_days: v })
-              }
-            />
-          </div>
-        </IntegrationCard>
-
-        <IntegrationCard
-          title="OpenAI"
-          subtitle="Used for ICP analysis, call scripts, and email drafts."
-          icon={<KeyRound className="w-4 h-4" />}
-          onSave={() => mockSave("openai")}
-          saved={saved === "openai"}
-        >
-          <Field
-            label="API key"
-            type="password"
-            placeholder="sk-..."
-            value={openai.api_key}
-            onChange={(v) => setOpenai({ ...openai, api_key: v })}
-          />
-          <Field
-            label="Model"
-            placeholder="gpt-4.1"
-            value={openai.model}
-            onChange={(v) => setOpenai({ ...openai, model: v })}
-            hint="Recommended: gpt-4.1 for accuracy, gpt-4o-mini for cost."
-          />
-        </IntegrationCard>
-
-        <IntegrationCard
-          title="Google Places (New)"
-          subtitle="Discovery + business detail enrichment for every lead."
-          icon={<Building2 className="w-4 h-4" />}
-          onSave={() => mockSave("google")}
-          saved={saved === "google"}
-        >
-          <Field
-            label="API key"
-            type="password"
-            placeholder="AIza..."
-            value={google.api_key}
-            onChange={(v) => setGoogle({ ...google, api_key: v })}
-            hint="Needs Places API (New) enabled and billing turned on in GCP."
-          />
-        </IntegrationCard>
       </div>
 
       <p className="text-[11px] text-gray-400 mt-8 text-center">
