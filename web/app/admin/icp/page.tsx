@@ -83,24 +83,6 @@ interface CompanyResponse {
   icp_parsed?: ICPParsed | null
 }
 
-const EMPTY_ICP: ICPParsed = {
-  verticals_in_scope: [],
-  verticals_adjacent: [],
-  geographies: { focus_states: [], operating_states: [], outside_us: "exclude" },
-  size_categories: { primary: ["A", "B"], opportunistic: ["C", "D"] },
-  dimension_weights: {
-    vertical_fit: 15, operational_pain: 20, decision_maker_access: 15,
-    remote_readiness: 15, role_clarity: 15, budget_maturity: 10,
-    compliance_boundary: 10,
-  },
-  in_scope_keywords: [],
-  disqualifiers: [],
-  primary_decision_makers: [],
-  service_catalog: [],
-  brand_voice: "warm, direct, not pushy",
-  company_self_description: "",
-}
-
 export default function ICPDefinitionPage() {
   const { user } = useAuth()
   const [company, setCompany] = useState<CompanyResponse | null>(null)
