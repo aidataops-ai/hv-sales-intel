@@ -178,6 +178,183 @@ create table if not exists searches (
 );
 create index if not exists idx_searches_query_norm on searches (query_norm);
 
+-- =============================================================================
+-- Multi-tenant ICP foundation (added 2026-05-24)
+--
+-- See `docs/specs/2026-05-24-multitenant-icp-upload-design.md` for context.
+-- This block creates the four new tables + RLS policies. The existing
+-- `practices` table is intentionally untouched here — column drops happen
+-- in a separate cutover migration (Phase 8 of the plan).
+-- =============================================================================
+
+create extension if not exists "pgcrypto";
+
+-- A tenant.
+create table if not exists companies (
+  id            uuid primary key default gen_random_uuid(),
+  slug          text unique not null,
+  name          text not null,
+  branding      jsonb,                  -- {display_name, accent_color, logo_url}
+  icp_doc_text  text,                   -- raw upload / paste for audit + re-parse
+  icp_parsed    jsonb,                  -- structured ICP — see icp_parser.py schema
+  scoring_config jsonb,                 -- dimension-weight overrides; null = defaults
+  integration_secrets jsonb,            -- per-tenant SF / RingCentral / etc.
+  created_by    uuid references auth.users(id),
+  created_at    timestamptz default now(),
+  archived_at   timestamptz
+);
+create index if not exists idx_companies_slug on companies (slug);
+
+-- Membership of a user in a company, with a per-company role.
+create table if not exists company_members (
+  company_id    uuid references companies(id) on delete cascade,
+  user_id       uuid references auth.users(id) on delete cascade,
+  role          text not null check (role in ('admin','sdr')),
+  joined_at     timestamptz default now(),
+  primary key (company_id, user_id)
+);
+create index if not exists idx_company_members_user on company_members (user_id);
+
+-- Per-(company, practice) AI analysis. One row per company × practice.
+create table if not exists company_practice_analyses (
+  id                  bigserial primary key,
+  company_id          uuid not null references companies(id) on delete cascade,
+  practice_id         bigint not null references practices(id) on delete cascade,
+  lead_score          int,
+  classification      text,             -- Strong ICP / Qualified / Weak / Poor fit
+  icp_breakdown       jsonb,
+  icp_vertical        text,
+  icp_tier            text,
+  summary             text,
+  pain_points         jsonb,
+  sales_angles        jsonb,
+  website_contacts    jsonb,
+  urgency_score       int,              -- legacy alias retained for older UI
+  hiring_signal_score int,              -- legacy alias retained for older UI
+  analysis_input_hash text,
+  analyzed_at         timestamptz default now(),
+  unique (company_id, practice_id)
+);
+create index if not exists idx_cpa_company_score
+  on company_practice_analyses (company_id, lead_score desc nulls last);
+create index if not exists idx_cpa_company_vertical
+  on company_practice_analyses (company_id, icp_vertical);
+
+-- Per-(company, practice) CRM + workflow state.
+create table if not exists company_practice_state (
+  id                      bigserial primary key,
+  company_id              uuid not null references companies(id) on delete cascade,
+  practice_id             bigint not null references practices(id) on delete cascade,
+  status                  text default 'NEW',
+  notes                   text,
+  tags                    text[] not null default '{}',
+  call_count              int not null default 0,
+  call_notes              text,
+  call_script             text,
+  email                   text,
+  email_draft             text,
+  email_draft_updated_at  timestamptz,
+  salesforce_lead_id      text,
+  salesforce_lead_url     text,
+  salesforce_owner_id     text,
+  salesforce_owner_name   text,
+  salesforce_synced_at    timestamptz,
+  assigned_to             uuid references auth.users(id),
+  assigned_at             timestamptz,
+  assigned_by             uuid references auth.users(id),
+  last_touched_by         uuid references auth.users(id),
+  last_touched_at         timestamptz,
+  export_count            int not null default 0,
+  last_exported_at        timestamptz,
+  last_exported_by        uuid references auth.users(id),
+  enrichment_status       text,
+  enriched_at             timestamptz,
+  owner_name              text,
+  owner_email             text,
+  owner_phone             text,
+  owner_title             text,
+  owner_linkedin          text,
+  unique (company_id, practice_id)
+);
+create index if not exists idx_cps_company_status
+  on company_practice_state (company_id, status);
+create index if not exists idx_cps_company_tags
+  on company_practice_state using gin (tags);
+create index if not exists idx_cps_company_assigned
+  on company_practice_state (company_id, assigned_to);
+create index if not exists idx_cps_company_sf
+  on company_practice_state (company_id, salesforce_lead_id);
+
+-- Per-company email log (replaces email_messages.practice_id linkage).
+create table if not exists company_email_messages (
+  id            bigserial primary key,
+  company_id    uuid not null references companies(id) on delete cascade,
+  practice_id   bigint not null references practices(id) on delete cascade,
+  user_id       uuid references auth.users(id),
+  direction     text not null check (direction in ('out','in')),
+  subject       text,
+  body          text,
+  message_id    text,
+  in_reply_to   text,
+  sent_at       timestamptz default now(),
+  error         text
+);
+create index if not exists idx_cem_company_practice
+  on company_email_messages (company_id, practice_id, sent_at desc);
+create index if not exists idx_cem_message_id
+  on company_email_messages (message_id);
+
+-- =============================================================================
+-- RLS — tenant isolation for the per-company tables.
+--
+-- The backend uses the SERVICE-ROLE key for writes (bypasses RLS) and
+-- enforces company_id in code. RLS is defense-in-depth so a code bug
+-- that forgets a filter doesn't leak data via the anon client.
+-- =============================================================================
+
+alter table companies                 enable row level security;
+alter table company_members           enable row level security;
+alter table company_practice_analyses enable row level security;
+alter table company_practice_state    enable row level security;
+alter table company_email_messages    enable row level security;
+alter table practices                 enable row level security;
+
+-- A user can see / edit a company iff they're a member of it.
+drop policy if exists "tenant_membership_companies" on companies;
+create policy "tenant_membership_companies"
+  on companies for all
+  using (id in (select company_id from company_members where user_id = auth.uid()));
+
+drop policy if exists "tenant_membership_members" on company_members;
+create policy "tenant_membership_members"
+  on company_members for all
+  using (user_id = auth.uid()
+         or company_id in (select company_id from company_members where user_id = auth.uid()));
+
+drop policy if exists "tenant_isolation_analyses" on company_practice_analyses;
+create policy "tenant_isolation_analyses"
+  on company_practice_analyses for all
+  using (company_id in (select company_id from company_members where user_id = auth.uid()));
+
+drop policy if exists "tenant_isolation_state" on company_practice_state;
+create policy "tenant_isolation_state"
+  on company_practice_state for all
+  using (company_id in (select company_id from company_members where user_id = auth.uid()));
+
+drop policy if exists "tenant_isolation_emails" on company_email_messages;
+create policy "tenant_isolation_emails"
+  on company_email_messages for all
+  using (company_id in (select company_id from company_members where user_id = auth.uid()));
+
+-- `practices` is intentionally world-readable across tenants — same
+-- business should dedup to one row regardless of which company first
+-- discovered it. Writes still need authentication. Documenting the
+-- intent here with a permissive policy.
+drop policy if exists "practices_authenticated_read" on practices;
+create policy "practices_authenticated_read"
+  on practices for select
+  using (auth.role() = 'authenticated' or auth.role() = 'service_role');
+
 -- Backfill tags from existing state (idempotent — only writes empty tags)
 update practices set tags = coalesce((
   select array_agg(distinct t) from unnest(array[
