@@ -804,6 +804,81 @@ def list_my_companies(user: dict = Depends(get_current_user)):
     return {"companies": out, "current_company_id": user.get("company_id")}
 
 
+# ---------------------------------------------------------------------------
+# ICP definition — admin uploads a free-text ICP doc, GPT parses it into a
+# structured schema, admin reviews + saves to companies.icp_parsed.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/companies/me")
+def get_my_company(user: dict = Depends(get_current_user)):
+    """Return the active company row including its parsed ICP, if any."""
+    client = get_admin_client()
+    try:
+        result = (
+            client.table("companies")
+            .select("id,slug,name,branding,icp_doc_text,icp_parsed,scoring_config,created_at")
+            .eq("id", user["company_id"])
+            .maybe_single().execute()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not result or not result.data:
+        raise HTTPException(status_code=404, detail="Company not found")
+    return result.data
+
+
+class ParseICPRequest(BaseModel):
+    raw_text: str
+
+
+@app.post("/api/companies/me/icp/parse")
+async def parse_my_icp(
+    body: ParseICPRequest,
+    admin: dict = Depends(require_admin),
+):
+    """Send the pasted ICP doc to GPT and return the structured JSON
+    (NOT saved — admin reviews + edits before calling PUT below)."""
+    from src.icp_parser import parse_icp_doc
+
+    try:
+        parsed = await parse_icp_doc(body.raw_text)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"icp_parsed": parsed}
+
+
+class SaveICPRequest(BaseModel):
+    icp_parsed: dict
+    icp_doc_text: str | None = None
+
+
+@app.put("/api/companies/me/icp")
+def save_my_icp(
+    body: SaveICPRequest,
+    admin: dict = Depends(require_admin),
+):
+    """Persist the (possibly edited) parsed ICP onto the active company.
+    Also stores the raw doc text for audit / re-parse later."""
+    from src.icp_parser import _validate
+
+    payload: dict = {"icp_parsed": _validate(body.icp_parsed)}
+    if body.icp_doc_text is not None:
+        payload["icp_doc_text"] = body.icp_doc_text
+
+    client = get_admin_client()
+    try:
+        result = (
+            client.table("companies").update(payload)
+            .eq("id", admin["company_id"]).execute()
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Company not found")
+    return result.data[0]
+
+
 @app.post("/api/me/companies/{company_id}/switch")
 def switch_company(
     company_id: str,
