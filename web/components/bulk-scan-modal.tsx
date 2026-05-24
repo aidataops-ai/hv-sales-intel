@@ -162,8 +162,8 @@ export default function BulkScanModal({
               Bulk Scan
             </h2>
             <p className="text-xs text-gray-500">
-              Run targeted Google Places queries across many cities to get past
-              the 60-results-per-query ceiling.
+              Pull leads from the underlying directory across many cities at
+              once — useful when one search would clip too early.
             </p>
           </div>
           <button
@@ -321,9 +321,9 @@ export default function BulkScanModal({
             <span className="font-semibold text-gray-900">{queries.length}</span>{" "}
             quer{queries.length === 1 ? "y" : "ies"} across{" "}
             <span className="font-semibold text-gray-900">{states.length}</span>{" "}
-            state{states.length === 1 ? "" : "s"}. Each one hits Google Places
-            once (≈1 billable call) and returns up to 60 results. The 24-hour
-            search cache short-circuits duplicate queries.
+            state{states.length === 1 ? "" : "s"}. Each query returns up to
+            60 leads. The 24-hour cache short-circuits duplicate queries so
+            re-running the same scan is free.
           </div>
 
           {(running || stats.done) && (

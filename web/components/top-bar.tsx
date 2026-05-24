@@ -54,7 +54,7 @@ export default function TopBar({
         <button
           onClick={() => setBulkOpen(true)}
           className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50 transition"
-          title="Run many targeted Google Places queries in sequence to get past the 60-results-per-query ceiling"
+          title="Run a batch of targeted lead searches across many cities in sequence"
         >
           <Layers className="w-4 h-4" />
           Bulk Scan
