@@ -1,3 +1,4 @@
+import json
 import re
 from datetime import datetime, timezone
 
@@ -5,6 +6,43 @@ from supabase import create_client
 
 from src.models import Practice
 from src.settings import settings
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — dual-write routing.
+#
+# Fields the new per-company tables own. update_practice_fields routes each
+# incoming key by category: state fields → company_practice_state, analysis
+# fields → company_practice_analyses, everything else stays on `practices`
+# (the shared dedup table) only.
+# ---------------------------------------------------------------------------
+
+_STATE_FIELDS = frozenset({
+    "status", "notes", "tags",
+    "call_count", "call_notes", "call_script",
+    "email", "email_draft", "email_draft_updated_at",
+    "salesforce_lead_id", "salesforce_lead_url",
+    "salesforce_owner_id", "salesforce_owner_name", "salesforce_synced_at",
+    "assigned_to", "assigned_at", "assigned_by",
+    "last_touched_by", "last_touched_at",
+    "export_count", "last_exported_at", "last_exported_by",
+    "enrichment_status", "enriched_at",
+    "owner_name", "owner_email", "owner_phone", "owner_title", "owner_linkedin",
+})
+
+_ANALYSIS_FIELDS = frozenset({
+    "summary", "pain_points", "sales_angles",
+    "lead_score", "urgency_score", "hiring_signal_score",
+    "icp_breakdown", "icp_vertical", "icp_tier",
+    "analysis_input_hash", "website_contacts",
+    "classification",
+})
+
+# Fields that arrive as JSON-string in legacy code but are jsonb in the
+# per-company analyses table — coerce on write.
+_JSONB_ANALYSIS_FIELDS = frozenset({
+    "pain_points", "sales_angles", "website_contacts", "icp_breakdown",
+})
 
 PROFILE_JOIN_SELECT = "*, last_touched_by_profile:profiles!last_touched_by(name)"
 
@@ -151,6 +189,7 @@ _OPTIONAL_COLUMNS = {
 def upsert_practices(
     practices: list[Practice],
     touched_by: str | None = None,
+    company_id: str | None = None,
 ) -> int:
     """Upsert practices. Returns count. Stamps attribution when touched_by set.
 
@@ -244,6 +283,14 @@ def upsert_practices(
             .upsert(filtered_rows, on_conflict="place_id")
             .execute()
         )
+
+    # Phase 3 dual-write: seed per-company state for every upserted place
+    # so the active tenant sees new search results in their sidebar.
+    _ensure_state_rows_for_practices(
+        company_id,
+        [p.place_id for p in practices if p.place_id],
+    )
+
     return len(result.data) if result.data else 0
 
 
@@ -276,6 +323,201 @@ def _paginated_query(builder, limit: int) -> list[dict]:
             break
         page += 1
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — per-company write helpers.
+#
+# Every helper is fail-soft: if the per-company write blows up (e.g. the
+# practice id can't be resolved, or the new tables don't exist on this
+# deployment), we silently drop it. The legacy `practices` write is the
+# source of truth until Phase 4 swaps the reads.
+# ---------------------------------------------------------------------------
+
+
+def _practice_id_by_place(place_id: str) -> int | None:
+    """Look up `practices.id` (bigint) given a `place_id` (text)."""
+    if not place_id:
+        return None
+    client = _get_client()
+    if not client:
+        return None
+    try:
+        result = (
+            client.table("practices").select("id")
+            .eq("place_id", place_id).maybe_single().execute()
+        )
+    except Exception:
+        return None
+    if not result or not result.data:
+        return None
+    return result.data["id"]
+
+
+def _coerce_jsonb(value):
+    """Pass dicts/lists/None through; parse JSON strings into structures."""
+    if value is None or isinstance(value, (list, dict, int, float, bool)):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    return None
+
+
+def _split_fields_for_dual_write(
+    fields: dict,
+) -> tuple[dict, dict, list[str] | None]:
+    """Split a `fields` dict into (state_fields, analysis_fields, new_tags).
+
+    `tags` is pulled out separately because `add_tags` (read-modify-write
+    union) is the right shape; a blind UPDATE would clobber existing tags.
+    """
+    state: dict = {}
+    analysis: dict = {}
+    new_tags: list[str] | None = None
+    for k, v in fields.items():
+        if k == "tags":
+            if isinstance(v, list):
+                new_tags = list(v)
+            continue
+        if k in _STATE_FIELDS:
+            state[k] = v
+        elif k in _ANALYSIS_FIELDS:
+            analysis[k] = v
+    return state, analysis, new_tags
+
+
+def _per_company_upsert(
+    table: str,
+    company_id: str,
+    practice_id: int,
+    fields: dict,
+) -> None:
+    """Upsert per-(company, practice) state OR analyses. Silent on failure."""
+    if not company_id or not practice_id or not fields:
+        return
+    client = _get_client()
+    if not client:
+        return
+    payload = {"company_id": company_id, "practice_id": practice_id, **fields}
+    try:
+        client.table(table).upsert(payload, on_conflict="company_id,practice_id").execute()
+    except Exception:
+        # Don't fail the legacy write because the per-company mirror failed.
+        pass
+
+
+def _write_per_company_state(
+    place_id: str | None,
+    company_id: str | None,
+    state_fields: dict,
+    touched_by: str | None,
+) -> None:
+    if not place_id or not company_id or not state_fields:
+        return
+    pid = _practice_id_by_place(place_id)
+    if not pid:
+        return
+    payload = {**state_fields}
+    if touched_by:
+        payload.setdefault("last_touched_by", touched_by)
+        payload.setdefault("last_touched_at", datetime.now(timezone.utc).isoformat())
+    _per_company_upsert("company_practice_state", company_id, pid, payload)
+
+
+def _write_per_company_analyses(
+    place_id: str | None,
+    company_id: str | None,
+    analysis_fields: dict,
+) -> None:
+    if not place_id or not company_id or not analysis_fields:
+        return
+    pid = _practice_id_by_place(place_id)
+    if not pid:
+        return
+    # Coerce JSON-string fields into structured jsonb.
+    coerced = {
+        k: (_coerce_jsonb(v) if k in _JSONB_ANALYSIS_FIELDS else v)
+        for k, v in analysis_fields.items()
+    }
+    # Always stamp analyzed_at on writes; the column default only fires on insert.
+    coerced.setdefault("analyzed_at", datetime.now(timezone.utc).isoformat())
+    _per_company_upsert("company_practice_analyses", company_id, pid, coerced)
+
+
+def _add_tags_per_company(
+    place_id: str | None,
+    company_id: str | None,
+    new_tags: list[str],
+) -> None:
+    """Dedup-merge tags onto company_practice_state for (company, practice)."""
+    if not place_id or not company_id or not new_tags:
+        return
+    pid = _practice_id_by_place(place_id)
+    if not pid:
+        return
+    client = _get_client()
+    if not client:
+        return
+    try:
+        existing = (
+            client.table("company_practice_state").select("tags")
+            .eq("company_id", company_id).eq("practice_id", pid)
+            .maybe_single().execute()
+        )
+    except Exception:
+        existing = None
+    current = []
+    if existing and existing.data:
+        current = (existing.data.get("tags") or [])
+    merged = sorted(set(current) | set(new_tags))
+    if sorted(current) == merged:
+        return
+    _per_company_upsert(
+        "company_practice_state",
+        company_id,
+        pid,
+        {"tags": merged},
+    )
+
+
+def _ensure_state_rows_for_practices(
+    company_id: str | None,
+    place_ids: list[str],
+) -> None:
+    """Seed blank company_practice_state rows so newly-upserted practices
+    show up in the active tenant's sidebar even before any per-practice
+    action is taken. Idempotent — only inserts missing rows."""
+    if not company_id or not place_ids:
+        return
+    client = _get_client()
+    if not client:
+        return
+    # Resolve place_id → practice_id in one round-trip.
+    try:
+        rows = (
+            client.table("practices").select("id,place_id")
+            .in_("place_id", place_ids).execute()
+        )
+    except Exception:
+        return
+    payload = [
+        {"company_id": company_id, "practice_id": r["id"]}
+        for r in (rows.data or [])
+        if r.get("id")
+    ]
+    if not payload:
+        return
+    try:
+        client.table("company_practice_state").upsert(
+            payload,
+            on_conflict="company_id,practice_id",
+            ignore_duplicates=True,
+        ).execute()
+    except Exception:
+        pass
 
 
 def query_practices(
@@ -341,6 +583,7 @@ def query_for_export(max_exports: int | None) -> list[dict]:
 def increment_export_counts(
     place_ids: list[str],
     user_id: str | None = None,
+    company_id: str | None = None,
 ) -> None:
     """Increment export_count by 1 and stamp who/when on each `place_id`.
 
@@ -377,6 +620,12 @@ def increment_export_counts(
             client.table("practices").update(payload).eq(
                 "place_id", row["place_id"]
             ).execute()
+            # Phase 3 dual-write: mirror to per-company state so Phase 4
+            # can read export_count from there without a backfill scramble.
+            if company_id:
+                _write_per_company_state(
+                    row["place_id"], company_id, payload, touched_by=None,
+                )
         except Exception as e:
             msg = str(e)
             # Drop columns the deployed schema is missing and retry once.
@@ -444,33 +693,64 @@ def update_practice_analysis(
     place_id: str,
     analysis: dict,
     touched_by: str | None = None,
+    company_id: str | None = None,
 ) -> dict | None:
     """Update Phase 2 analysis fields. Stamps attribution when touched_by set.
 
     Uses the optional-column retry so a missing post-deploy migration
     (e.g. `analysis_input_hash` / `website_contacts`) degrades gracefully
     instead of 500-ing the analyze endpoint.
+
+    Phase 3 dual-write: when company_id is set, also upserts the analysis
+    into company_practice_analyses and the auto-status into
+    company_practice_state.
     """
-    return _update_with_optional_retry(
+    result = _update_with_optional_retry(
         place_id,
         _with_attribution(analysis, touched_by),
     )
+
+    if company_id:
+        # Split: most analysis dict keys are analysis; status (auto-advance) is state.
+        analysis_part = {k: v for k, v in analysis.items() if k in _ANALYSIS_FIELDS}
+        state_part = {k: v for k, v in analysis.items() if k in _STATE_FIELDS}
+        _write_per_company_analyses(place_id, company_id, analysis_part)
+        if state_part:
+            _write_per_company_state(place_id, company_id, state_part, touched_by)
+
+    return result
 
 
 def update_practice_fields(
     place_id: str,
     fields: dict,
     touched_by: str | None = None,
+    company_id: str | None = None,
 ) -> dict | None:
     """Update arbitrary fields. Stamps attribution when touched_by set.
 
     If an optional column doesn't exist in the DB yet, retries the update
     without that column instead of failing the whole write.
+
+    Phase 3 dual-write: when company_id is set, splits the dict by
+    category (state vs analysis vs other) and upserts into the matching
+    per-company table(s). `tags` is routed through the tag-union helper.
     """
-    return _update_with_optional_retry(
+    result = _update_with_optional_retry(
         place_id,
         _with_attribution(fields, touched_by),
     )
+
+    if company_id:
+        state, analysis, new_tags = _split_fields_for_dual_write(fields)
+        if state:
+            _write_per_company_state(place_id, company_id, state, touched_by)
+        if analysis:
+            _write_per_company_analyses(place_id, company_id, analysis)
+        if new_tags:
+            _add_tags_per_company(place_id, company_id, new_tags)
+
+    return result
 
 
 def insert_email_message(
@@ -482,8 +762,13 @@ def insert_email_message(
     message_id: str | None,
     in_reply_to: str | None,
     error: str | None,
+    company_id: str | None = None,
 ) -> dict | None:
-    """Insert a row into email_messages. Returns the inserted row."""
+    """Insert a row into email_messages. Returns the inserted row.
+
+    Phase 3 dual-write: when company_id is set, also mirrors into
+    company_email_messages so Phase 4 can swap reads cleanly.
+    """
     client = _get_client()
     if not client:
         return None
@@ -498,7 +783,17 @@ def insert_email_message(
         "error": error,
     }
     result = client.table("email_messages").insert(row).execute()
-    return result.data[0] if result.data else None
+    inserted = result.data[0] if result.data else None
+
+    if company_id and practice_id:
+        try:
+            client.table("company_email_messages").insert(
+                {**row, "company_id": company_id}
+            ).execute()
+        except Exception:
+            pass
+
+    return inserted
 
 
 def list_email_messages(practice_id: int) -> list[dict]:
@@ -579,12 +874,19 @@ def save_search_cache(query: str, place_ids: list[str]) -> None:
         return
 
 
-def add_tags(place_id: str, new_tags: list[str]) -> None:
+def add_tags(
+    place_id: str,
+    new_tags: list[str],
+    company_id: str | None = None,
+) -> None:
     """Append tags to a practice's tags array, deduped. No-op if list empty.
 
     Reads current tags, computes union, writes back. Two roundtrips is fine
     for our write rate; postgres array_cat is not exposed via the PostgREST
     client, so this read-modify-write pattern is the simplest reliable shape.
+
+    Phase 3 dual-write: when company_id is set, also unions the same tags
+    into company_practice_state for (company_id, practice_id).
     """
     if not new_tags:
         return
@@ -602,9 +904,12 @@ def add_tags(place_id: str, new_tags: list[str]) -> None:
         return
     existing = (result.data or {}).get("tags") or []
     merged = sorted(set(existing) | set(new_tags))
-    if sorted(existing) == merged:
-        return  # nothing new
-    client.table("practices").update({"tags": merged}).eq("place_id", place_id).execute()
+    if sorted(existing) != merged:
+        client.table("practices").update({"tags": merged}).eq("place_id", place_id).execute()
+
+    # Mirror to per-company state (handles its own dedup separately).
+    if company_id:
+        _add_tags_per_company(place_id, company_id, new_tags)
 
 
 def list_outbound_message_ids(practice_id: int) -> list[str]:

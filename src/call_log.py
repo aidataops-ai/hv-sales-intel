@@ -86,7 +86,7 @@ async def append_call_note(
         log.exception("[call_log.sync.error] place_id=%s err=%r", place_id, e)
         warning = f"Salesforce sync failed: {e}. Local log saved."
 
-    updated = update_practice_fields(place_id, updates, touched_by=user.get("id"))
+    updated = update_practice_fields(place_id, updates, touched_by=user.get("id"), company_id=user.get("company_id"))
     log.info(
         "[call_log.done] place_id=%s call_count=%s lead_id=%s warning=%s",
         place_id, updates.get("call_count"),
@@ -162,7 +162,7 @@ async def update_last_call_note(
         log.exception("[call_log.update_last.sf_error] place_id=%s err=%r", place_id, e)
         warning = f"Salesforce sync failed: {e}. Local log saved."
 
-    updated = update_practice_fields(place_id, updates, touched_by=user.get("id"))
+    updated = update_practice_fields(place_id, updates, touched_by=user.get("id"), company_id=user.get("company_id"))
     log.info(
         "[call_log.update_last.done] place_id=%s warning=%s", place_id, warning,
     )

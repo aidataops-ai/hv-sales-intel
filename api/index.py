@@ -390,6 +390,7 @@ async def get_email_draft_endpoint(
             "email_draft_updated_at": datetime.now(timezone.utc).isoformat(),
         },
         touched_by=user["id"],
+        company_id=user["company_id"],
     )
     return draft
 
@@ -417,6 +418,7 @@ async def regenerate_email_draft_endpoint(
             "email_draft_updated_at": datetime.now(timezone.utc).isoformat(),
         },
         touched_by=user["id"],
+        company_id=user["company_id"],
     )
     return draft
 
@@ -444,6 +446,7 @@ def patch_email_draft_endpoint(
             "email_draft_updated_at": datetime.now(timezone.utc).isoformat(),
         },
         touched_by=user["id"],
+        company_id=user["company_id"],
     )
     return current
 
@@ -480,6 +483,7 @@ async def send_email_endpoint(
             message_id=None,
             in_reply_to=None,
             error=str(e),
+            company_id=user["company_id"],
         )
         raise HTTPException(500, f"Send failed: {e}") from e
 
@@ -492,14 +496,15 @@ async def send_email_endpoint(
         message_id=result.get("message_id"),
         in_reply_to=None,
         error=None,
+        company_id=user["company_id"],
     )
 
     current_status = practice.get("status", "NEW")
     fields: dict = {}
     if _should_auto_advance(current_status, "CONTACTED"):
         fields["status"] = "CONTACTED"
-    update_practice_fields(place_id, fields, touched_by=user["id"])
-    add_tags(place_id, ["CONTACTED"])
+    update_practice_fields(place_id, fields, touched_by=user["id"], company_id=user["company_id"])
+    add_tags(place_id, ["CONTACTED"], company_id=user["company_id"])
 
     return row
 
@@ -559,6 +564,7 @@ async def poll_email_replies_endpoint(
             message_id=reply.get("message_id"),
             in_reply_to=reply.get("in_reply_to"),
             error=None,
+            company_id=user["company_id"],
         )
         if inserted:
             new_rows.append(inserted)
@@ -568,8 +574,8 @@ async def poll_email_replies_endpoint(
         fields: dict = {}
         if _should_auto_advance(current_status, "FOLLOW UP"):
             fields["status"] = "FOLLOW UP"
-        update_practice_fields(place_id, fields, touched_by=user["id"])
-        add_tags(place_id, ["REPLIED"])
+        update_practice_fields(place_id, fields, touched_by=user["id"], company_id=user["company_id"])
+        add_tags(place_id, ["REPLIED"], company_id=user["company_id"])
 
     return {
         "new_messages": new_rows,
@@ -595,14 +601,15 @@ def mark_email_replied_endpoint(
         message_id=None,
         in_reply_to=None,
         error=None,
+        company_id=user["company_id"],
     )
 
     current_status = practice.get("status", "NEW")
     fields: dict = {}
     if _should_auto_advance(current_status, "FOLLOW UP"):
         fields["status"] = "FOLLOW UP"
-    update_practice_fields(place_id, fields, touched_by=user["id"])
-    add_tags(place_id, ["REPLIED"])
+    update_practice_fields(place_id, fields, touched_by=user["id"], company_id=user["company_id"])
+    add_tags(place_id, ["REPLIED"], company_id=user["company_id"])
 
     return row
 
@@ -928,6 +935,7 @@ def export_practices_csv(
     increment_export_counts(
         [r["place_id"] for r in rows if r.get("place_id")],
         user_id=user.get("id"),
+        company_id=user.get("company_id"),
     )
 
     cap_label = "all" if cap is None else f"max{cap}"
@@ -968,7 +976,7 @@ async def search(body: SearchRequest, user: dict = Depends(get_current_user)):
             if canonical:
                 p.place_id = canonical
 
-    upserted = upsert_practices(relevant, touched_by=user["id"])
+    upserted = upsert_practices(relevant, touched_by=user["id"], company_id=user["company_id"])
 
     # Re-fetch relevant practices from DB so the response carries joined
     # attribution (last_touched_by_name). Irrelevant ones never enter the DB
@@ -1019,7 +1027,7 @@ async def analyze(
     if existing and rescan:
         refreshed = await get_place(place_id, fallback=Practice(**_strip_joined(existing)))
         if refreshed:
-            upsert_practices([refreshed], touched_by=user["id"])
+            upsert_practices([refreshed], touched_by=user["id"], company_id=user["company_id"])
             current_record = get_practice(place_id) or refreshed.model_dump()
 
     if current_record:
@@ -1079,8 +1087,8 @@ async def analyze(
         if _should_auto_advance(current_status, "RESEARCHED"):
             analysis["status"] = "RESEARCHED"
 
-    updated = update_practice_analysis(place_id, analysis, touched_by=user["id"])
-    add_tags(place_id, ["RESEARCHED"])
+    updated = update_practice_analysis(place_id, analysis, touched_by=user["id"], company_id=user["company_id"])
+    add_tags(place_id, ["RESEARCHED"], company_id=user["company_id"])
     if updated:
         return updated
 
@@ -1099,7 +1107,7 @@ async def rescan_practice(place_id: str, user: dict = Depends(get_current_user))
     if not refreshed:
         return existing
 
-    upsert_practices([refreshed], touched_by=user["id"])
+    upsert_practices([refreshed], touched_by=user["id"], company_id=user["company_id"])
     return get_practice(place_id) or refreshed.model_dump()
 
 
@@ -1114,12 +1122,12 @@ async def get_script(place_id: str, user: dict = Depends(get_current_user)):
 
     script = await _build_personalized_script(practice)
 
-    update_practice_fields(place_id, {"call_script": json.dumps(script)}, touched_by=user["id"])
-    add_tags(place_id, ["SCRIPT_READY"])
+    update_practice_fields(place_id, {"call_script": json.dumps(script)}, touched_by=user["id"], company_id=user["company_id"])
+    add_tags(place_id, ["SCRIPT_READY"], company_id=user["company_id"])
 
     current_status = practice.get("status", "NEW")
     if _should_auto_advance(current_status, "SCRIPT READY"):
-        update_practice_fields(place_id, {"status": "SCRIPT READY"}, touched_by=user["id"])
+        update_practice_fields(place_id, {"status": "SCRIPT READY"}, touched_by=user["id"], company_id=user["company_id"])
 
     return script
 
@@ -1132,8 +1140,8 @@ async def regenerate_script_endpoint(place_id: str, user: dict = Depends(get_cur
 
     script = await _build_personalized_script(practice)
 
-    update_practice_fields(place_id, {"call_script": json.dumps(script)}, touched_by=user["id"])
-    add_tags(place_id, ["SCRIPT_READY"])
+    update_practice_fields(place_id, {"call_script": json.dumps(script)}, touched_by=user["id"], company_id=user["company_id"])
+    add_tags(place_id, ["SCRIPT_READY"], company_id=user["company_id"])
     return script
 
 
@@ -1224,7 +1232,7 @@ async def patch_practice(
         "[api.patch_practice] place_id=%s user=%s fields=%s",
         place_id, user.get("email"), list(fields.keys()),
     )
-    updated = update_practice_fields(place_id, fields, touched_by=user["id"])
+    updated = update_practice_fields(place_id, fields, touched_by=user["id"], company_id=user["company_id"])
     if not updated:
         raise HTTPException(status_code=404, detail="Practice not found")
 
@@ -1234,7 +1242,7 @@ async def patch_practice(
         "CLOSED LOST": "CLOSED_LOST",
     }
     if body.status and body.status in STATUS_TAG_MAP:
-        add_tags(place_id, [STATUS_TAG_MAP[body.status]])
+        add_tags(place_id, [STATUS_TAG_MAP[body.status]], company_id=user["company_id"])
 
     # If notes changed AND practice has a Salesforce Lead, push the notes
     # into the Lead's Call_Notes__c field (overwriting). Fail-soft: log
@@ -1284,7 +1292,7 @@ async def call_log_endpoint(
     except LookupError:
         log.warning("[api.call_log.404] place_id=%s", place_id)
         raise HTTPException(404, "Practice not found")
-    add_tags(place_id, ["CONTACTED"])
+    add_tags(place_id, ["CONTACTED"], company_id=user["company_id"])
     log.info(
         "[api.call_log.response] place_id=%s call_count=%s lead_id=%s warning=%s",
         place_id, practice.get("call_count"),
@@ -1362,14 +1370,18 @@ async def enrich_endpoint(
         trigger_result = await trigger_enrichment(_P(**existing))
     except Exception as e:
         final = update_practice_fields(
-            place_id, {"enrichment_status": "failed"}, touched_by=None
+            place_id, {"enrichment_status": "failed"},
+            touched_by=None, company_id=user["company_id"],
         )
         return {"practice": final, "clay_warning": f"Enrichment trigger failed: {e}"}
 
     if trigger_result.get("skipped"):
         return {"practice": existing, "clay_warning": "Clay not configured. Enrichment skipped."}
 
-    updated = update_practice_fields(place_id, {"enrichment_status": "pending"}, touched_by=None)
+    updated = update_practice_fields(
+        place_id, {"enrichment_status": "pending"},
+        touched_by=None, company_id=user["company_id"],
+    )
     return {"practice": updated, "clay_warning": None}
 
 
