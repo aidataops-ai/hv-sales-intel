@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
-import { LogOut, UserCog, KeyRound, ChevronDown, Plug } from "lucide-react"
+import { LogOut, UserCog, KeyRound, ChevronDown, Plug, BookOpen } from "lucide-react"
 import { useAuth } from "@/lib/auth"
 import ChangePasswordModal from "./change-password-modal"
 
@@ -52,6 +52,13 @@ export default function UserMenu() {
               {user.is_bootstrap_admin ? " · bootstrap" : ""}
             </p>
           </div>
+          <Link
+            href="/icp"
+            onClick={() => setOpen(false)}
+            className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+          >
+            <BookOpen className="w-4 h-4" /> ICP rubric
+          </Link>
           {user.role === "admin" && (
             <>
               <Link
