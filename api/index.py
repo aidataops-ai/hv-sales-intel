@@ -86,7 +86,7 @@ from src.storage import (
     upsert_practices,
 )
 
-app = FastAPI(title="HV Sales Intel", version="0.2.0")
+app = FastAPI(title="Apex Sales Intel", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -762,7 +762,7 @@ def export_practices_csv(
     )
 
     cap_label = "all" if cap is None else f"max{cap}"
-    filename = f"hv-leads-{cap_label}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.csv"
+    filename = f"apex-leads-{cap_label}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.csv"
     return StreamingResponse(
         iter_csv(),
         media_type="text/csv",

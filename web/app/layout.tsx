@@ -16,8 +16,8 @@ const jakarta = Plus_Jakarta_Sans({
 })
 
 export const metadata: Metadata = {
-  title: "HV Sales Intel",
-  description: "Healthcare practice discovery for Health & Virtuals",
+  title: "Apex Sales Intel",
+  description: "Account discovery for ApexVirtuals",
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

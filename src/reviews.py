@@ -143,7 +143,7 @@ async def fetch_external_reviews(
     async with httpx.AsyncClient(
         follow_redirects=True,
         timeout=12,
-        headers={"User-Agent": "HVSalesIntel/1.0"},
+        headers={"User-Agent": "ApexSalesIntel/1.0"},
     ) as client:
         for source, url in unique_candidates[:MAX_EXTERNAL_PAGES]:
             reviews.extend(await _extract_reviews_from_page(client, source, url))
@@ -155,7 +155,7 @@ async def _discover_first_party_review_pages(website: str) -> list[tuple[str, st
         async with httpx.AsyncClient(
             follow_redirects=True,
             timeout=10,
-            headers={"User-Agent": "HVSalesIntel/1.0"},
+            headers={"User-Agent": "ApexSalesIntel/1.0"},
         ) as client:
             resp = await client.get(website)
             resp.raise_for_status()
@@ -187,7 +187,7 @@ async def _discover_third_party_review_pages(
         async with httpx.AsyncClient(
             follow_redirects=True,
             timeout=10,
-            headers={"User-Agent": "HVSalesIntel/1.0"},
+            headers={"User-Agent": "ApexSalesIntel/1.0"},
         ) as client:
             resp = await client.get(search_url, params={"q": query})
             resp.raise_for_status()

@@ -25,7 +25,7 @@ class Practice(BaseModel):
     urgency_score: int | None = None
     hiring_signal_score: int | None = None
 
-    # H&V Universal ICP — vertical + tier classified by the analyzer
+    # Apex Universal ICP — vertical + tier classified by the analyzer
     icp_vertical: str | None = None  # medical | dental | alf_nh | hotel_resort | medspa_wellness
     icp_tier: str | None = None      # A | B | C | D
     # Hash of analyzer inputs — used to short-circuit Re-analyze when nothing changed.

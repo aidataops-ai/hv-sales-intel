@@ -1,5 +1,5 @@
 // City + specialty presets used by the Bulk Scan modal.
-// Cities come from the H&V ICP launch-priority lists where available and
+// Cities come from the Apex ICP launch-priority lists where available and
 // from major-metro population data for the rest of the US. Specialties
 // are pulled from the per-vertical PDFs. Edit here to tune sweeps.
 
@@ -113,7 +113,7 @@ export const STATE_CITIES: Record<StateCode, string[]> = {
 // Bulk Scan picks a vertical purely to drive query phrasing in the modal.
 // The canonical ICP vertical (used by the scorer) is separate — psychiatry /
 // mental_health practices are still classified by the analyzer as the
-// "medical" ICP vertical per the H&V ICP doc, which keeps Vertical fit
+// "medical" ICP vertical per the Apex ICP doc, which keeps Vertical fit
 // scoring intact.
 export type Vertical =
   | "medical"

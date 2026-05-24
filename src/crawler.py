@@ -47,7 +47,7 @@ async def crawl_website(url: str) -> dict:
 
     async with httpx.AsyncClient(
         follow_redirects=True, timeout=TIMEOUT,
-        headers={"User-Agent": "HVSalesIntel/1.0"},
+        headers={"User-Agent": "ApexSalesIntel/1.0"},
     ) as client:
         while (to_visit or discovered) and len(visited) < MAX_PAGES:
             current = to_visit.pop(0) if to_visit else discovered.pop(0)

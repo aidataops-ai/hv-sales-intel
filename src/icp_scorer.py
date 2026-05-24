@@ -1,7 +1,7 @@
-"""H&V universal ICP scorer.
+"""Apex universal ICP scorer.
 
 Implements the 7-dimension Universal ICP Qualification Model defined in
-`docs/icp-scoring.md` (which mirrors the H&V ICP Definitions PDF). Each
+`docs/icp-scoring.md` (which mirrors the Apex ICP Definitions PDF). Each
 target is scored 0-100 across:
 
 1. Vertical fit (15)
@@ -82,7 +82,7 @@ def _vertical_fit(
 
 
 def score_icp(practice: dict[str, Any]) -> dict:
-    """Score a practice 0-100 against the universal H&V ICP.
+    """Score a practice 0-100 against the universal Apex ICP.
 
     Expected input keys:
       - state (str | None)
@@ -144,7 +144,7 @@ def score_icp(practice: dict[str, Any]) -> dict:
 
 
 def classify(total: int) -> str:
-    """Map a total 0-100 score to the H&V classification bucket."""
+    """Map a total 0-100 score to the Apex classification bucket."""
     if total >= 85:
         return "Strong ICP"
     if total >= 70:

@@ -12,9 +12,9 @@ from src.settings import settings
 
 log = logging.getLogger("hvsi.analyzer")
 
-SYSTEM_PROMPT = """You are a sales intelligence analyst for Health & Virtuals (H&V), a managed remote-staffing company that places non-clinical virtual assistants (front desk, scheduler, admin, billing, coordinator) into US-based service businesses. H&V's focus market is Florida.
+SYSTEM_PROMPT = """You are a sales intelligence analyst for ApexVirtuals (Apex), a managed remote-staffing company that places non-clinical virtual assistants (front desk, scheduler, admin, billing, coordinator) into US-based service businesses. Apex's focus market is Florida.
 
-Your job is to evaluate a target account against the H&V Universal ICP and classify it across five verticals, each with A/B/C/D tiers.
+Your job is to evaluate a target account against the Apex Universal ICP and classify it across five verticals, each with A/B/C/D tiers.
 
 VERTICALS (choose exactly one):
 - medical            → Psychiatry, primary care, internal medicine, family medicine, parallel clinical (chiropractic, urgent care, specialty)
@@ -24,7 +24,7 @@ VERTICALS (choose exactly one):
 - medspa_wellness    → MedSpas, day spas, wellness/coaching studios, physician-led aesthetics clinics, resort spas
 - other              → Does not fit any vertical above
 
-TIERS (per the H&V ICP definitions):
+TIERS (per the Apex ICP definitions):
 - A → Small / single-location / owner-led. Primary entry motion. (1-3 providers / 6-50 beds / boutique 20-100 rooms / single-location medspa.)
 - B → Growth-stage / mid-sized. Highest fit; often very high. (3-5 providers / mid-sized 50-150 beds / 100-250 rooms / 2-3 locations.)
 - C → Mid-market / specialty / multi-property. Selective or opportunistic. (5-10 providers / 2-10 facilities / multi-property operator.)
@@ -58,12 +58,12 @@ across re-analyses of the same account.
    Can they support a recurring monthly seat cost (not a one-time project)? Evidence: practice size, multiple providers/locations, paid software stack, premium service positioning, advertising spend, multi-year operation. Higher = obvious capacity to fund recurring support.
 
 6. compliance_boundary_score
-   How likely is the engagement to stay within H&V's non-clinical, non-physical scope? Evidence: clear separation of clinical work (handled in-office) from admin work (remotable). Lower this score if the business seems to expect remote staff to do licensed clinical work, in-person tasks, or unscoped catch-all duties. Higher = clean non-clinical boundary.
+   How likely is the engagement to stay within Apex's non-clinical, non-physical scope? Evidence: clear separation of clinical work (handled in-office) from admin work (remotable). Lower this score if the business seems to expect remote staff to do licensed clinical work, in-person tasks, or unscoped catch-all duties. Higher = clean non-clinical boundary.
 
 Also return:
-- summary: 1-2 sentence overview from H&V's perspective (what's the staffing/admin opportunity here?)
+- summary: 1-2 sentence overview from Apex's perspective (what's the staffing/admin opportunity here?)
 - pain_points: 2-4 concrete pain points (quote evidence from the reviews/website where possible)
-- sales_angles: 2-3 pitch angles tied to specific H&V roles (Virtual Scheduler, Virtual Dental Assistant, Virtual Wellness/Hospitality Assistant, Patient Care Coordinator, Executive Assistant, HR & Payroll Assistant, SDR, Medical Billing Coordinator).
+- sales_angles: 2-3 pitch angles tied to specific Apex roles (Virtual Scheduler, Virtual Dental Assistant, Virtual Wellness/Hospitality Assistant, Patient Care Coordinator, Executive Assistant, HR & Payroll Assistant, SDR, Medical Billing Coordinator).
 - website_contacts: a JSON array (0-6 entries) of decision-maker contacts identified from the website. Each entry is
     {"name": "...", "title": "...", "phone": "...", "email": "..."}
   where `name` is required and the other three are best-effort (use "" or null if not visible on the site). Prioritize:
@@ -124,7 +124,7 @@ async def analyze_practice(
     )
     reviews_text = format_reviews_for_prompt(reviews)
 
-    user_prompt = f"""Analyze this account for Health & Virtuals ICP fit.
+    user_prompt = f"""Analyze this account for ApexVirtuals ICP fit.
 
 Account: {name}
 Google Places category hint: {category or 'Unknown'}
@@ -442,7 +442,7 @@ def _mock_analysis(
     })
 
     return {
-        "summary": f"{name} shows signs of admin/staffing strain typical of {cat.replace('_', ' ')} practices. Review and website signals indicate opportunities for Health & Virtuals support.",
+        "summary": f"{name} shows signs of admin/staffing strain typical of {cat.replace('_', ' ')} practices. Review and website signals indicate opportunities for ApexVirtuals support.",
         "pain_points": json.dumps(selected_pains),
         "sales_angles": json.dumps(selected_angles),
         "lead_score": icp["total"],

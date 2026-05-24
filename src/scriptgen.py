@@ -7,7 +7,7 @@ from src.settings import settings
 
 log = logging.getLogger("hvsi.scriptgen")
 
-SYSTEM_PROMPT = """You are a cold call script writer for Health & Virtuals, a healthcare staffing and talent acquisition company.
+SYSTEM_PROMPT = """You are a cold call script writer for ApexVirtuals, a healthcare staffing and talent acquisition company.
 
 Given information about a practice (name, category, location, lead doctor, owner, analysis summary, pain points, sales angles, review excerpts, and a list of decision-maker contacts pulled from the practice's website), generate a personalized cold call playbook tailored to THIS specific practice.
 
@@ -25,11 +25,11 @@ Return ONLY valid JSON with this exact structure:
 Personalization requirements:
 - Opening: When website_contacts contains a decision-maker (owner / practice manager / GM / lead doctor), ask for that person BY NAME AND TITLE — e.g., "Hi, may I speak with Sarah Smith, the practice manager?" or "Hi, is Dr. Patel, the owner, available?". If a direct phone is listed for that person, mention it in a parenthetical so the rep can dial it next time ("(direct line on file: 555-555-0100)"). If website_contacts has more than one name, name the primary in the greeting and list the others in a short "Other contacts on file" bullet line beneath the opening greeting so the rep has fallbacks. If no contacts are available, fall back to the legacy lead doctor field, then to a generic practice greeting. Reference the city if provided.
 - Discovery Questions: Reference 1-2 specific items from the provided pain_points by name (not generic). 3-4 numbered questions total.
-- Pitch: If review_excerpts are provided, quote ONE excerpt verbatim with leading attribution ("One of your patient reviews mentioned, '...'") and tie it to a Health & Virtuals staffing solution. Mention Health & Virtuals by name. If website_contacts indicates the decision-maker's title (e.g. "Owner & Lead Dentist"), tailor the pitch to that role.
+- Pitch: If review_excerpts are provided, quote ONE excerpt verbatim with leading attribution ("One of your patient reviews mentioned, '...'") and tie it to a ApexVirtuals staffing solution. Mention ApexVirtuals by name. If website_contacts indicates the decision-maker's title (e.g. "Owner & Lead Dentist"), tailor the pitch to that role.
 - Objection Handling: Cover "We already have a recruiter", "We can't afford it", "We're not hiring right now", and one objection specific to this category. If a secondary contact is available (a manager other than the primary), include one objection-recovery line of the form "If [Name] isn't available, could you point me to [secondary name / role]?".
 - Closing: Reference the city when present ("we've placed staff at multiple [city]-area clinics"). Suggest a 15-minute meeting and a free staffing assessment. If an email is listed for the primary contact, offer to send a follow-up to that exact email address.
 
-Keep each section 3-6 sentences. Be conversational, not robotic. Use the rep's perspective ("I", "we at Health & Virtuals"). When you mention a name or phone number from website_contacts, use the EXACT spelling and formatting given — do not paraphrase or guess."""
+Keep each section 3-6 sentences. Be conversational, not robotic. Use the rep's perspective ("I", "we at ApexVirtuals"). When you mention a name or phone number from website_contacts, use the EXACT spelling and formatting given — do not paraphrase or guess."""
 
 
 async def generate_script(
@@ -162,7 +162,7 @@ def _mock_script(
     elif website_doctor_name:
         doctor_greeting = f"Hi, may I speak with {website_doctor_name}?"
     else:
-        doctor_greeting = f"Hi, this is [Your Name] calling from Health & Virtuals about {name}."
+        doctor_greeting = f"Hi, this is [Your Name] calling from ApexVirtuals about {name}."
 
     # Build an "other contacts on file" line for the rep's reference.
     secondary_lines = []
@@ -187,7 +187,7 @@ def _mock_script(
                 "title": "Opening",
                 "icon": "phone",
                 "content": (
-                    f"{doctor_greeting} I'm reaching out because Health & Virtuals "
+                    f"{doctor_greeting} I'm reaching out because ApexVirtuals "
                     f"helps {cat_label} practices{city_phrase} with staffing solutions. "
                     f"Do you have a quick moment?{other_contacts_line}"
                 ),
@@ -206,7 +206,7 @@ def _mock_script(
                 "title": "Pitch",
                 "icon": "target",
                 "content": (
-                    f"At Health & Virtuals, we provide pre-vetted front desk staff, medical "
+                    f"At ApexVirtuals, we provide pre-vetted front desk staff, medical "
                     f"assistants, and administrative support specifically for practices like "
                     f"{name}. We handle recruiting, screening, and onboarding so you can focus "
                     "on patient care."
