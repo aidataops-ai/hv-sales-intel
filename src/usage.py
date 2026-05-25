@@ -25,15 +25,20 @@ log = logging.getLogger("hvsi.usage")
 # ---------------------------------------------------------------------------
 
 OPENAI_COST_PER_MILLION_TOKENS: dict[str, dict[str, float]] = {
-    # ¢ per 1M tokens. $2 input / $8 output = 200¢ / 800¢ per million.
-    "gpt-4.1":          {"input": 200,  "output": 800},
-    "gpt-4.1-mini":     {"input": 40,   "output": 160},
-    "gpt-4o":           {"input": 250,  "output": 1000},
-    "gpt-4o-mini":      {"input": 15,   "output": 60},
-    "gpt-4-turbo":      {"input": 1000, "output": 3000},
-    "gpt-3.5-turbo":    {"input": 50,   "output": 150},
-    # Fallback used when the model is unknown.
-    "default":          {"input": 200,  "output": 800},
+    # ¢ per 1M tokens. Values verified against OpenAI's published list
+    # pricing for the modern generation. Legacy gpt-4-turbo and 3.5-turbo
+    # are intentionally omitted — if anyone is still pinning to those,
+    # they'll fall through to `default` and be conservatively over-billed
+    # rather than silently under-billed.
+    "gpt-4.1":      {"input": 200, "output": 800},   # $2.00 / $8.00 per 1M
+    "gpt-4.1-mini": {"input": 40,  "output": 160},   # $0.40 / $1.60
+    "gpt-4o":       {"input": 500, "output": 1500},  # $5.00 / $15.00
+    "gpt-4o-mini":  {"input": 15,  "output": 60},    # $0.15 / $0.60
+    # Default mirrors gpt-4.1 because that's the analyzer's pinned model.
+    # If you bump settings.openai_model to a different default, also
+    # update this entry so legacy/uncategorized rows are estimated
+    # against the right band.
+    "default":      {"input": 200, "output": 800},
 }
 
 # Cents per Places-API call. Pro SKU Text Search is $0.032 = 3.2¢; Place
