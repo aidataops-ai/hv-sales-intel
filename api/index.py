@@ -813,6 +813,69 @@ def list_my_companies(user: dict = Depends(get_current_user)):
 # ---------------------------------------------------------------------------
 
 
+@app.post("/api/admin/usage/recompute-costs")
+def admin_usage_recompute(admin: dict = Depends(require_admin)):
+    """Recalculate `cost_cents` on every `usage_events` row for the
+    active company using the CURRENT pricing constants in src/usage.py.
+
+    Idempotent. Run it after a pricing edit (e.g. correcting gpt-4o
+    from 250/1000 → 500/1500) so historical events catch up to the
+    new bands.
+    """
+    from src.usage import estimate_openai_cost, estimate_places_cost
+
+    client = get_admin_client()
+    page_size = 1000
+    page = 0
+    updated = 0
+    scanned = 0
+    while True:
+        start = page * page_size
+        end = start + page_size - 1
+        try:
+            batch = (
+                client.table("usage_events")
+                .select("id,kind,model,input_tokens,output_tokens,calls,cost_cents")
+                .eq("company_id", admin["company_id"])
+                .order("id")
+                .range(start, end)
+                .execute()
+            )
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        rows = batch.data or []
+        if not rows:
+            break
+        for r in rows:
+            scanned += 1
+            kind = r.get("kind") or ""
+            if kind.startswith("openai_"):
+                new_cost = estimate_openai_cost(
+                    r.get("model"),
+                    int(r.get("input_tokens") or 0),
+                    int(r.get("output_tokens") or 0),
+                )
+            elif kind.startswith("places_"):
+                new_cost = estimate_places_cost(kind, int(r.get("calls") or 1))
+            else:
+                continue
+            old_cost = float(r.get("cost_cents") or 0.0)
+            if abs(old_cost - new_cost) < 0.0001:
+                continue  # no change → skip the write
+            try:
+                client.table("usage_events").update(
+                    {"cost_cents": new_cost}
+                ).eq("id", r["id"]).execute()
+                updated += 1
+            except Exception:
+                continue
+        if len(rows) < page_size:
+            break
+        page += 1
+
+    return {"scanned": scanned, "updated": updated}
+
+
 @app.get("/api/admin/usage")
 def admin_usage(
     days: int = Query(30, ge=1, le=365),

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react"
 import Link from "next/link"
 import {
   ArrowLeft, RefreshCw, Loader2, Activity, DollarSign,
-  Cloud, Sparkles,
+  Cloud, Sparkles, Calculator, Check,
 } from "lucide-react"
 import { useAuth } from "@/lib/auth"
 
@@ -76,6 +76,8 @@ export default function UsagePage() {
   const [loading, setLoading] = useState(true)
   const [windowDays, setWindowDays] = useState(30)
   const [error, setError] = useState<string | null>(null)
+  const [recomputing, setRecomputing] = useState(false)
+  const [recomputeMsg, setRecomputeMsg] = useState<string | null>(null)
 
   const fetchUsage = useCallback(async (days: number) => {
     setLoading(true)
@@ -96,6 +98,33 @@ export default function UsagePage() {
   useEffect(() => {
     fetchUsage(windowDays)
   }, [windowDays, fetchUsage])
+
+  async function handleRecompute() {
+    setRecomputing(true)
+    setRecomputeMsg(null)
+    setError(null)
+    try {
+      const res = await fetch(`${API_URL}/api/admin/usage/recompute-costs`, {
+        method: "POST",
+        credentials: "include",
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.detail || `Failed (${res.status})`)
+      }
+      const json = await res.json()
+      setRecomputeMsg(
+        `Recomputed ${json.updated} of ${json.scanned} events.`,
+      )
+      // Refresh visible numbers with the corrected costs.
+      await fetchUsage(windowDays)
+      setTimeout(() => setRecomputeMsg(null), 4000)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setRecomputing(false)
+    }
+  }
 
   if (!user) {
     return <Centered>Sign in to view usage.</Centered>
@@ -150,8 +179,27 @@ export default function UsagePage() {
               />
               Refresh
             </button>
+            <button
+              onClick={handleRecompute}
+              disabled={recomputing}
+              className="inline-flex items-center gap-1.5 text-xs px-2 py-1.5 rounded-md border border-teal-600 text-teal-700 hover:bg-teal-50 disabled:opacity-50"
+              title="Walk every usage_events row for this company and recalculate cost_cents from the current pricing constants in src/usage.py. Run after a pricing edit."
+            >
+              {recomputing ? (
+                <Loader2 className="w-3 h-3 animate-spin" />
+              ) : (
+                <Calculator className="w-3 h-3" />
+              )}
+              Recompute costs
+            </button>
           </div>
         </header>
+
+        {recomputeMsg && (
+          <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-lg px-3 py-2 text-sm mb-4 inline-flex items-center gap-2">
+            <Check className="w-4 h-4" /> {recomputeMsg}
+          </div>
+        )}
 
         {error && (
           <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-lg px-3 py-2 text-sm mb-4">
