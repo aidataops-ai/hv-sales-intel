@@ -157,8 +157,12 @@ export async function updatePractice(
 }
 
 function mockScript(placeId: string): Script {
-  const practice = mockPractices.find((p) => p.place_id === placeId) ?? mockPractices[0]
-  const name = practice.name
+  // Don't fall back to `mockPractices[0]` — that's how Palm Valley Family
+  // Dentistry ended up with a script saying "Houston Dental Care". When
+  // the placeId isn't in the mock list, leave the practice name as the
+  // placeId so the fallback is at least obvious instead of misleading.
+  const found = mockPractices.find((p) => p.place_id === placeId)
+  const name = found?.name ?? placeId
   return {
     sections: [
       { title: "Opening", icon: "phone", content: `Hi, this is [Your Name] from ApexVirtuals. I'm calling about ${name} — we specialize in healthcare staffing and I noticed your practice may benefit from our services. Do you have a quick moment?` },

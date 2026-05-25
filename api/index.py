@@ -1412,7 +1412,7 @@ async def get_script(place_id: str, user: dict = Depends(get_current_user)):
     if practice.get("call_script"):
         return json.loads(practice["call_script"])
 
-    script = await _build_personalized_script(practice)
+    script = await _build_personalized_script(practice, user)
 
     update_practice_fields(place_id, {"call_script": json.dumps(script)}, touched_by=user["id"], company_id=user["company_id"])
     add_tags(place_id, ["SCRIPT_READY"], company_id=user["company_id"])
@@ -1430,14 +1430,14 @@ async def regenerate_script_endpoint(place_id: str, user: dict = Depends(get_cur
     if not practice:
         raise HTTPException(status_code=404, detail="Practice not found")
 
-    script = await _build_personalized_script(practice)
+    script = await _build_personalized_script(practice, user)
 
     update_practice_fields(place_id, {"call_script": json.dumps(script)}, touched_by=user["id"], company_id=user["company_id"])
     add_tags(place_id, ["SCRIPT_READY"], company_id=user["company_id"])
     return script
 
 
-async def _build_personalized_script(practice: dict) -> dict:
+async def _build_personalized_script(practice: dict, user: dict) -> dict:
     """Build script generation context from a practice row, fetch fresh review
     excerpts, and return the generated playbook."""
     try:
