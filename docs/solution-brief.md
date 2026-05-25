@@ -122,3 +122,8 @@ Five verticals supported: **medical**, **mental health**, **dental**, **assisted
 - Self-serve onboarding for new tenants.
 - Predictable per-tenant unit economics — Usage & cost page makes the marginal cost per lead transparent so pricing can be set with margin.
 - Cross-tenant lead dedup keeps the Google Places bill linear with discovery effort, not with tenant count.
+
+## Related docs
+
+- [Pricing & profitability model](pricing-model.md) — unit economics, tier proposals (Starter / Growth / Scale / Enterprise), credit pricing, 5k-lead worked example, margin targets, positioning thesis.
+- [ICP scoring rubric](icp-scoring.md) — public-facing dimension definitions for the SDR.
