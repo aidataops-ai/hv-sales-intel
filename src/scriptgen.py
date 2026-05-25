@@ -48,6 +48,8 @@ async def generate_script(
     owner_title: str | None = None,
     review_excerpts: list[str] | None = None,
     website_contacts: list[dict] | None = None,
+    company_id: str | None = None,
+    user_id: str | None = None,
 ) -> dict:
     """Generate a cold call playbook personalized to the practice."""
     if not settings.openai_api_key:
@@ -104,6 +106,17 @@ Verbatim Patient Review Excerpts:
         result = json.loads(content)
         if "sections" in result and len(result["sections"]) == 5:
             log.info("[scriptgen.done] practice=%r", name)
+            try:
+                from src.usage import record_openai
+                record_openai(
+                    kind="openai_script",
+                    response=response,
+                    company_id=company_id,
+                    user_id=user_id,
+                    metadata={"practice": name},
+                )
+            except Exception:
+                pass
             return result
         log.warning("[scriptgen.bad_shape] practice=%r keys=%s",
                     name, list(result.keys()))

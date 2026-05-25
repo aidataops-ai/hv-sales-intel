@@ -106,7 +106,12 @@ RULES:
 Output JSON only — no markdown fences, no prose, no comments."""
 
 
-async def parse_icp_doc(raw_text: str) -> dict:
+async def parse_icp_doc(
+    raw_text: str,
+    *,
+    company_id: str | None = None,
+    user_id: str | None = None,
+) -> dict:
     """Send the ICP text to GPT and return the structured dict.
 
     Falls back to a default skeleton if OpenAI isn't configured or the
@@ -142,6 +147,17 @@ async def parse_icp_doc(raw_text: str) -> dict:
         log.info("[icp_parser.done] verticals=%s states=%d",
                  validated["verticals_in_scope"],
                  len(validated["geographies"]["operating_states"]))
+        try:
+            from src.usage import record_openai
+            record_openai(
+                kind="openai_icp_parse",
+                response=response,
+                company_id=company_id,
+                user_id=user_id,
+                metadata={"chars": len(snippet)},
+            )
+        except Exception:
+            pass
         return validated
     except Exception as e:
         log.error("[icp_parser.error] type=%s msg=%s",

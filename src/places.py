@@ -19,14 +19,22 @@ FIELD_MASK = (
 )
 
 
-async def search_places(query: str) -> list[Practice]:
+async def search_places(
+    query: str,
+    company_id: str | None = None,
+    user_id: str | None = None,
+) -> list[Practice]:
     """Search for practices. Uses Google Places API if key is set, else mock data."""
     if settings.google_maps_api_key:
-        return await _google_search(query)
+        return await _google_search(query, company_id=company_id, user_id=user_id)
     return _mock_search(query)
 
 
-async def _google_search(query: str) -> list[Practice]:
+async def _google_search(
+    query: str,
+    company_id: str | None = None,
+    user_id: str | None = None,
+) -> list[Practice]:
     """Call Google Places Text Search (New) API, paginating up to 60 results.
 
     Google caps maxResultCount at 20 per request but supports up to 60 total
@@ -45,6 +53,7 @@ async def _google_search(query: str) -> list[Practice]:
 
     all_places: list[dict] = []
     page_token: str | None = None
+    pages_fetched = 0
     log.info("[places.google.start] query=%r", query)
     try:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -53,6 +62,7 @@ async def _google_search(query: str) -> list[Practice]:
                 if page_token:
                     body["pageToken"] = page_token
                 resp = await client.post(url, json=body, headers=headers)
+                pages_fetched += 1
                 if resp.status_code != 200:
                     log.error(
                         "[places.google.error] status=%s page=%s body=%s",
@@ -68,15 +78,45 @@ async def _google_search(query: str) -> list[Practice]:
                     break
     except Exception as e:
         log.error("[places.google.exception] type=%s msg=%s", type(e).__name__, str(e)[:500])
-        # Fall back to backend mock so the endpoint still returns something,
-        # but tag the practices so the operator can tell mock vs real.
+        # Still log the calls we did make before the error fired so the
+        # admin sees the spend even on failed runs.
+        if pages_fetched:
+            try:
+                from src.usage import record_places
+                record_places(
+                    kind="places_search",
+                    calls=pages_fetched,
+                    company_id=company_id,
+                    user_id=user_id,
+                    metadata={"query": query, "error": str(e)[:200]},
+                )
+            except Exception:
+                pass
         return _mock_search(query)
+
+    # Log usage — one row per outbound HTTP call, even though they share a query.
+    try:
+        from src.usage import record_places
+        record_places(
+            kind="places_search",
+            calls=pages_fetched,
+            company_id=company_id,
+            user_id=user_id,
+            metadata={"query": query, "results": len(all_places)},
+        )
+    except Exception:
+        pass
 
     log.info("[places.google.done] query=%r count=%d", query, len(all_places))
     return [_map_google_place(p) for p in all_places]
 
 
-async def get_place(place_id: str, fallback: Practice | None = None) -> Practice | None:
+async def get_place(
+    place_id: str,
+    fallback: Practice | None = None,
+    company_id: str | None = None,
+    user_id: str | None = None,
+) -> Practice | None:
     """Fetch the latest place details for a known Google place id."""
     if not settings.google_maps_api_key:
         return fallback
@@ -98,6 +138,18 @@ async def get_place(place_id: str, fallback: Practice | None = None) -> Practice
 
     payload = resp.json()
     payload.setdefault("id", place_id)
+
+    try:
+        from src.usage import record_places
+        record_places(
+            kind="places_details",
+            company_id=company_id,
+            user_id=user_id,
+            metadata={"place_id": place_id},
+        )
+    except Exception:
+        pass
+
     return _map_google_place(payload)
 
 

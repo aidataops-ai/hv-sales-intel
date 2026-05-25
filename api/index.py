@@ -382,6 +382,8 @@ async def get_email_draft_endpoint(
         summary=practice.get("summary"),
         pain_points=practice.get("pain_points"),
         sales_angles=practice.get("sales_angles"),
+        company_id=user.get("company_id"),
+        user_id=user.get("id"),
     )
     update_practice_fields(
         place_id,
@@ -410,6 +412,8 @@ async def regenerate_email_draft_endpoint(
         summary=practice.get("summary"),
         pain_points=practice.get("pain_points"),
         sales_angles=practice.get("sales_angles"),
+        company_id=user.get("company_id"),
+        user_id=user.get("id"),
     )
     update_practice_fields(
         place_id,
@@ -805,6 +809,136 @@ def list_my_companies(user: dict = Depends(get_current_user)):
 
 
 # ---------------------------------------------------------------------------
+# Usage + cost stats — admin-only.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/admin/usage")
+def admin_usage(
+    days: int = Query(30, ge=1, le=365),
+    admin: dict = Depends(require_admin),
+):
+    """Aggregate Places + OpenAI usage for the active company.
+
+    Returns:
+      {
+        "window_days": 30,
+        "by_kind":  [{kind, count_events, total_calls, input_tokens, output_tokens, cost_cents}],
+        "by_model": [{model, count_events, input_tokens, output_tokens, cost_cents}],
+        "totals":   {events, places_calls, openai_calls, input_tokens, output_tokens, cost_cents,
+                     places_cost_cents, openai_cost_cents},
+        "recent":   [{created_at, kind, model, input_tokens, output_tokens, calls, cost_cents, metadata}],
+        "pricing":  {openai_per_million_tokens, places_per_call}
+      }
+    """
+    from datetime import datetime, timedelta, timezone
+    from src.usage import OPENAI_COST_PER_MILLION_TOKENS, PLACES_COST_CENTS
+
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    client = get_admin_client()
+
+    rows: list[dict]
+    try:
+        result = (
+            client.table("usage_events").select("*")
+            .eq("company_id", admin["company_id"])
+            .gte("created_at", since)
+            .order("created_at", desc=True)
+            .limit(5000)
+            .execute()
+        )
+        rows = result.data or []
+    except Exception as e:
+        log.warning("[usage.fetch.error] %s", e)
+        rows = []
+
+    by_kind: dict[str, dict] = {}
+    by_model: dict[str, dict] = {}
+    totals = {
+        "events": 0,
+        "places_calls": 0,
+        "openai_calls": 0,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cost_cents": 0.0,
+        "places_cost_cents": 0.0,
+        "openai_cost_cents": 0.0,
+    }
+    for r in rows:
+        kind = r.get("kind") or "other"
+        model = r.get("model") or "—"
+        in_tok = int(r.get("input_tokens") or 0)
+        out_tok = int(r.get("output_tokens") or 0)
+        calls = int(r.get("calls") or 1)
+        cost = float(r.get("cost_cents") or 0.0)
+
+        kb = by_kind.setdefault(kind, {
+            "kind": kind, "count_events": 0, "total_calls": 0,
+            "input_tokens": 0, "output_tokens": 0, "cost_cents": 0.0,
+        })
+        kb["count_events"] += 1
+        kb["total_calls"] += calls
+        kb["input_tokens"] += in_tok
+        kb["output_tokens"] += out_tok
+        kb["cost_cents"] += cost
+
+        if kind.startswith("openai_") and r.get("model"):
+            mb = by_model.setdefault(model, {
+                "model": model, "count_events": 0,
+                "input_tokens": 0, "output_tokens": 0, "cost_cents": 0.0,
+            })
+            mb["count_events"] += 1
+            mb["input_tokens"] += in_tok
+            mb["output_tokens"] += out_tok
+            mb["cost_cents"] += cost
+
+        totals["events"] += 1
+        totals["input_tokens"] += in_tok
+        totals["output_tokens"] += out_tok
+        totals["cost_cents"] += cost
+        if kind.startswith("places_"):
+            totals["places_calls"] += calls
+            totals["places_cost_cents"] += cost
+        elif kind.startswith("openai_"):
+            totals["openai_calls"] += calls
+            totals["openai_cost_cents"] += cost
+
+    # Round to keep the JSON tidy for the UI.
+    def _round_costs(d: dict) -> None:
+        for k in ("cost_cents", "places_cost_cents", "openai_cost_cents"):
+            if k in d:
+                d[k] = round(float(d[k]), 4)
+    _round_costs(totals)
+    for d in by_kind.values():
+        _round_costs(d)
+    for d in by_model.values():
+        _round_costs(d)
+
+    recent = [{
+        "created_at": r.get("created_at"),
+        "kind": r.get("kind"),
+        "model": r.get("model"),
+        "input_tokens": r.get("input_tokens"),
+        "output_tokens": r.get("output_tokens"),
+        "calls": r.get("calls") or 1,
+        "cost_cents": round(float(r.get("cost_cents") or 0), 4),
+        "metadata": r.get("metadata"),
+    } for r in rows[:50]]
+
+    return {
+        "window_days": days,
+        "by_kind":  sorted(by_kind.values(), key=lambda x: x["cost_cents"], reverse=True),
+        "by_model": sorted(by_model.values(), key=lambda x: x["cost_cents"], reverse=True),
+        "totals":   totals,
+        "recent":   recent,
+        "pricing":  {
+            "openai_per_million_tokens": OPENAI_COST_PER_MILLION_TOKENS,
+            "places_per_call":           PLACES_COST_CENTS,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # ICP definition — admin uploads a free-text ICP doc, GPT parses it into a
 # structured schema, admin reviews + saves to companies.icp_parsed.
 # ---------------------------------------------------------------------------
@@ -842,7 +976,11 @@ async def parse_my_icp(
     from src.icp_parser import parse_icp_doc
 
     try:
-        parsed = await parse_icp_doc(body.raw_text)
+        parsed = await parse_icp_doc(
+            body.raw_text,
+            company_id=admin.get("company_id"),
+            user_id=admin.get("id"),
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"icp_parsed": parsed}
@@ -1036,7 +1174,11 @@ async def search(body: SearchRequest, user: dict = Depends(get_current_user)):
         if cached:
             return {"practices": cached, "count": len(cached), "upserted": 0, "cached": True}
 
-    practices = await search_places(body.query)
+    practices = await search_places(
+        body.query,
+        company_id=user.get("company_id"),
+        user_id=user.get("id"),
+    )
     relevant = [p for p in practices if "IRRELEVANT" not in p.tags]
     irrelevant = [p for p in practices if "IRRELEVANT" in p.tags]
 
@@ -1100,7 +1242,12 @@ async def analyze(
 
     current_record = existing
     if existing and rescan:
-        refreshed = await get_place(place_id, fallback=Practice(**_strip_joined(existing)))
+        refreshed = await get_place(
+            place_id,
+            fallback=Practice(**_strip_joined(existing)),
+            company_id=user.get("company_id"),
+            user_id=user.get("id"),
+        )
         if refreshed:
             upsert_practices([refreshed], touched_by=user["id"], company_id=user["company_id"])
             current_record = get_practice(place_id) or refreshed.model_dump()
@@ -1154,6 +1301,8 @@ async def analyze(
         place_id, name, website, category,
         city=city, state=state,
         rating=rating, review_count=review_count,
+        company_id=user.get("company_id"),
+        user_id=user.get("id"),
     )
     analysis["analysis_input_hash"] = fingerprint
 
@@ -1178,7 +1327,12 @@ async def rescan_practice(place_id: str, user: dict = Depends(get_current_user))
     if not existing:
         raise HTTPException(status_code=404, detail="Practice not found")
 
-    refreshed = await get_place(place_id, fallback=Practice(**_strip_joined(existing)))
+    refreshed = await get_place(
+            place_id,
+            fallback=Practice(**_strip_joined(existing)),
+            company_id=user.get("company_id"),
+            user_id=user.get("id"),
+        )
     if not refreshed:
         return existing
 
@@ -1264,6 +1418,8 @@ async def _build_personalized_script(practice: dict) -> dict:
         owner_title=practice.get("owner_title"),
         review_excerpts=review_excerpts,
         website_contacts=website_contacts,
+        company_id=user.get("company_id"),
+        user_id=user.get("id"),
     )
 
 

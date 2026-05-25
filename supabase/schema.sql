@@ -285,6 +285,25 @@ create index if not exists idx_cps_company_assigned
 create index if not exists idx_cps_company_sf
   on company_practice_state (company_id, salesforce_lead_id);
 
+-- Usage + cost log. One row per billable external call (Places search,
+-- Places details, OpenAI completion). Aggregated by the /admin/usage
+-- page so admins can see token + Places-API spend and tune pricing.
+create table if not exists usage_events (
+  id              bigserial primary key,
+  company_id      uuid references companies(id) on delete cascade,
+  user_id         uuid references auth.users(id) on delete set null,
+  kind            text not null,        -- places_search | places_details | openai_analyze | openai_script | openai_email | openai_icp_parse
+  model           text,                 -- OpenAI model name; null for Places
+  input_tokens   int,
+  output_tokens  int,
+  calls           int default 1,         -- count of underlying API hits (Places pages > 1)
+  cost_cents      numeric(12, 4),        -- estimated cost in cents (fractional)
+  metadata        jsonb,                 -- free-form: query, place_id, error info
+  created_at      timestamptz default now()
+);
+create index if not exists idx_usage_company_created on usage_events (company_id, created_at desc);
+create index if not exists idx_usage_kind on usage_events (kind);
+
 -- Per-company email log (replaces email_messages.practice_id linkage).
 create table if not exists company_email_messages (
   id            bigserial primary key,

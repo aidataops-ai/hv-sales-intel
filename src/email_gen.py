@@ -25,6 +25,9 @@ async def generate_email_draft(
     summary: str | None,
     pain_points: str | None,
     sales_angles: str | None,
+    *,
+    company_id: str | None = None,
+    user_id: str | None = None,
 ) -> dict:
     """Return {subject, body}. Uses GPT if OPENAI_API_KEY set, mock otherwise."""
     if not settings.openai_api_key:
@@ -53,6 +56,17 @@ Sales Angles: {sales_angles or '[]'}
         content = response.choices[0].message.content or "{}"
         result = json.loads(content)
         if "subject" in result and "body" in result:
+            try:
+                from src.usage import record_openai
+                record_openai(
+                    kind="openai_email",
+                    response=response,
+                    company_id=company_id,
+                    user_id=user_id,
+                    metadata={"practice": name},
+                )
+            except Exception:
+                pass
             return {"subject": result["subject"], "body": result["body"]}
     except Exception:
         pass

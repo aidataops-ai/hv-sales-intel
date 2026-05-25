@@ -103,6 +103,8 @@ async def analyze_practice(
     state: str | None = None,
     rating: float | None = None,
     review_count: int = 0,
+    company_id: str | None = None,
+    user_id: str | None = None,
 ) -> dict:
     """Analyze a practice. Uses OpenAI if API key is set, otherwise returns mock data."""
     if not settings.openai_api_key:
@@ -111,6 +113,7 @@ async def analyze_practice(
             rating=rating, review_count=review_count, website=website,
         )
 
+    # Crawl + reviews happen first so we have the inputs to send to GPT.
     crawl_result = await crawl_website(website or "")
     website_text = crawl_result["text"]
     website_doctor_name = crawl_result["doctor_name"]
@@ -167,6 +170,17 @@ Website: {website or 'none on file'}
                  place_id,
                  result.get("icp_vertical"),
                  result.get("icp_tier"))
+        try:
+            from src.usage import record_openai
+            record_openai(
+                kind="openai_analyze",
+                response=response,
+                company_id=company_id,
+                user_id=user_id,
+                metadata={"place_id": place_id, "name": name},
+            )
+        except Exception:
+            pass
     except Exception as e:
         log.error(
             "[analyzer.openai_error] place_id=%s model=%s type=%s msg=%s",
