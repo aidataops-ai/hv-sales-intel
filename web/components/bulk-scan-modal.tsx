@@ -77,6 +77,8 @@ export default function BulkScanModal({
   // when the user only needed a few hundred leads. null = no cap.
   const [maxLeads, setMaxLeads] = useState<number | null>(500)
   const [hitCap, setHitCap] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
 
   const queries = useMemo(() => {
     const usQs =
@@ -199,9 +201,6 @@ export default function BulkScanModal({
     setRunning(false)
     onComplete()
   }
-
-  const [exporting, setExporting] = useState(false)
-  const [exportError, setExportError] = useState<string | null>(null)
 
   async function exportScanResults() {
     if (stats.uniquePlaceIds.length === 0 || exporting) return
