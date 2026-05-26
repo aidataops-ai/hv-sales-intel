@@ -10,9 +10,11 @@ import {
   SPECIALTIES_BY_VERTICAL,
   buildSpecialtyGridQueries,
   buildStateSweepQueries,
+  buildUKQueries,
   parseCustomCities,
   templateForVertical,
   totalCitiesForStates,
+  UK_ALL_CITIES,
   type StateCode,
   type Vertical,
 } from "@/lib/bulk-scan"
@@ -43,15 +45,12 @@ const EMPTY_STATS: RunStats = {
   done: false,
 }
 
-// Split for the picker so the international row gets a dedicated
-// section header instead of being buried at the bottom of the
-// alphabetical US list.
-const INTERNATIONAL_CODES = ["UK"] as const
+// The state picker only lists US states + DC. The UK is its own
+// country with its own city-level picker further down the modal —
+// it never appears in the US chip grid (was confusing before).
 const US_STATES = (Object.keys(STATE_LABELS) as StateCode[])
-  .filter((s) => !INTERNATIONAL_CODES.includes(s as never))
+  .filter((s) => s !== "UK")
   .sort() as StateCode[]
-const INTERNATIONAL_STATES = INTERNATIONAL_CODES as readonly StateCode[]
-const ALL_STATES = [...US_STATES, ...INTERNATIONAL_STATES] as StateCode[]
 
 export default function BulkScanModal({
   open,
@@ -61,6 +60,7 @@ export default function BulkScanModal({
   const [mode, setMode] = useState<Mode>("sweep")
   const [vertical, setVertical] = useState<Vertical>("dental")
   const [states, setStates] = useState<StateCode[]>(["FL"])
+  const [ukCities, setUkCities] = useState<string[]>([])  // empty == UK not selected
   const [template, setTemplate] = useState<string>(templateForVertical("dental"))
   const [specialties, setSpecialties] = useState<string[]>(
     SPECIALTIES_BY_VERTICAL.dental.slice(0, 3),
@@ -75,11 +75,18 @@ export default function BulkScanModal({
   const [stopRequested, setStopRequested] = useState(false)
 
   const queries = useMemo(() => {
-    if (mode === "sweep") {
-      return buildStateSweepQueries({ template, states, extraCitiesByState })
-    }
-    return buildSpecialtyGridQueries({ states, specialties, extraCitiesByState })
-  }, [mode, template, states, specialties, extraCitiesByState])
+    const usQs =
+      mode === "sweep"
+        ? buildStateSweepQueries({ template, states, extraCitiesByState })
+        : buildSpecialtyGridQueries({ states, specialties, extraCitiesByState })
+    const ukQs =
+      ukCities.length === 0
+        ? []
+        : mode === "sweep"
+          ? buildUKQueries({ template, cities: ukCities })
+          : buildUKQueries({ cities: ukCities, specialties })
+    return [...usQs, ...ukQs]
+  }, [mode, template, states, specialties, extraCitiesByState, ukCities])
 
   const totalCities = useMemo(
     () => totalCitiesForStates(states, extraCitiesByState),
@@ -109,6 +116,12 @@ export default function BulkScanModal({
   function toggleState(s: StateCode) {
     setStates((prev) =>
       prev.includes(s) ? prev.filter((x) => x !== s) : [...prev, s],
+    )
+  }
+
+  function toggleUKCity(city: string) {
+    setUkCities((prev) =>
+      prev.includes(city) ? prev.filter((c) => c !== city) : [...prev, city],
     )
   }
 
@@ -293,16 +306,17 @@ export default function BulkScanModal({
             </select>
           </div>
 
-          {/* State multi-select */}
-          <div>
-            <div className="flex items-baseline justify-between mb-1">
-              <span className="block text-xs font-medium text-gray-700">
-                States ({states.length} selected · {totalCities} cities)
+          {/* US states multi-select */}
+          <div className="rounded-md border border-gray-200 bg-gray-50/40 p-2.5">
+            <div className="flex items-baseline justify-between mb-1.5">
+              <span className="block text-xs font-semibold text-gray-800">
+                <span className="mr-1">🇺🇸</span>
+                United States — {states.length} selected · {totalCities} cities
               </span>
               <div className="flex gap-2 text-[11px]">
                 <button
                   disabled={running}
-                  onClick={() => setStates(ALL_STATES)}
+                  onClick={() => setStates(US_STATES)}
                   className="text-teal-700 hover:underline"
                 >
                   Select all
@@ -316,41 +330,70 @@ export default function BulkScanModal({
                 </button>
               </div>
             </div>
-            <div className="max-h-40 overflow-y-auto p-2 border border-gray-200 rounded-md bg-gray-50/40 space-y-2">
-              <div>
-                <p className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">
-                  United States
-                </p>
-                <div className="flex flex-wrap gap-1">
-                  {US_STATES.map((s) => (
-                    <StateChip
-                      key={s}
-                      code={s}
-                      active={states.includes(s)}
-                      disabled={running}
-                      onToggle={toggleState}
-                    />
-                  ))}
-                </div>
-              </div>
-              <div>
-                <p className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">
-                  International
-                </p>
-                <div className="flex flex-wrap gap-1">
-                  {INTERNATIONAL_STATES.map((s) => (
-                    <StateChip
-                      key={s}
-                      code={s}
-                      active={states.includes(s)}
-                      disabled={running}
-                      onToggle={toggleState}
-                      label={STATE_LABELS[s]}
-                    />
-                  ))}
-                </div>
+            <div className="max-h-40 overflow-y-auto">
+              <div className="flex flex-wrap gap-1">
+                {US_STATES.map((s) => (
+                  <StateChip
+                    key={s}
+                    code={s}
+                    active={states.includes(s)}
+                    disabled={running}
+                    onToggle={toggleState}
+                  />
+                ))}
               </div>
             </div>
+          </div>
+
+          {/* United Kingdom — separate country, city-level picker */}
+          <div className="rounded-md border border-gray-200 bg-gray-50/40 p-2.5">
+            <div className="flex items-baseline justify-between mb-1.5">
+              <span className="block text-xs font-semibold text-gray-800">
+                <span className="mr-1">🇬🇧</span>
+                United Kingdom — {ukCities.length} of {UK_ALL_CITIES.length} cities
+              </span>
+              <div className="flex gap-2 text-[11px]">
+                <button
+                  disabled={running}
+                  onClick={() => setUkCities([...UK_ALL_CITIES])}
+                  className="text-teal-700 hover:underline"
+                >
+                  Select all
+                </button>
+                <button
+                  disabled={running}
+                  onClick={() => setUkCities([])}
+                  className="text-gray-500 hover:underline"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+            <div className="max-h-40 overflow-y-auto">
+              <div className="flex flex-wrap gap-1">
+                {UK_ALL_CITIES.map((city) => {
+                  const active = ukCities.includes(city)
+                  return (
+                    <button
+                      key={city}
+                      disabled={running}
+                      onClick={() => toggleUKCity(city)}
+                      className={`text-[11px] px-2 py-0.5 rounded-full border transition ${
+                        active
+                          ? "bg-teal-50 border-teal-500 text-teal-700"
+                          : "bg-white border-gray-200 text-gray-600 hover:border-gray-400"
+                      }`}
+                    >
+                      {city}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+            <p className="text-[11px] text-gray-500 mt-1.5">
+              UK is its own country — queries are built as{" "}
+              <code>… in &lt;city&gt;, UK</code>, not as a US state.
+            </p>
           </div>
 
           {/* Custom cities supplement */}
@@ -433,9 +476,19 @@ export default function BulkScanModal({
             <span className="font-semibold text-gray-900">{queries.length}</span>{" "}
             quer{queries.length === 1 ? "y" : "ies"} across{" "}
             <span className="font-semibold text-gray-900">{states.length}</span>{" "}
-            state{states.length === 1 ? "" : "s"}. Each query returns up to
-            60 leads. The 24-hour cache short-circuits duplicate queries so
-            re-running the same scan is free.
+            US state{states.length === 1 ? "" : "s"}
+            {ukCities.length > 0 && (
+              <>
+                {" "}+{" "}
+                <span className="font-semibold text-gray-900">
+                  {ukCities.length}
+                </span>{" "}
+                UK cit{ukCities.length === 1 ? "y" : "ies"}
+              </>
+            )}
+            . Each query returns up to 60 leads. The 24-hour cache
+            short-circuits duplicate queries so re-running the same scan is
+            free.
           </div>
 
           {(running || stats.done) && (

@@ -989,3 +989,41 @@ export function totalCitiesForStates(
     return acc + merged.length
   }, 0)
 }
+
+// ---------------------------------------------------------------------------
+// United Kingdom — separate country picker.
+// UK doesn't map cleanly to "states", so we expose its cities directly as
+// chips. Queries are built per-city with a literal ", UK" suffix.
+// ---------------------------------------------------------------------------
+
+export const UK_ALL_CITIES: string[] = STATE_CITIES.UK ?? []
+
+export function buildUKQueries(opts: {
+  template?: string                  // "state sweep" mode: uses {city} / {state} / {stateLabel}
+  cities: string[]
+  specialties?: string[]             // "specialty grid" mode
+}): string[] {
+  const cities = (opts.cities || []).filter(Boolean)
+  if (cities.length === 0) return []
+  if (opts.specialties && opts.specialties.length > 0) {
+    const out: string[] = []
+    for (const s of opts.specialties) {
+      for (const c of cities) {
+        out.push(`${s} in ${c}, UK`)
+      }
+    }
+    return out
+  }
+  if (opts.template) {
+    return cities
+      .map((city) =>
+        opts.template!
+          .replace(/\{city\}/g, city)
+          .replace(/\{state\}/g, "UK")
+          .replace(/\{stateLabel\}/g, "United Kingdom")
+          .trim(),
+      )
+      .filter(Boolean)
+  }
+  return []
+}
