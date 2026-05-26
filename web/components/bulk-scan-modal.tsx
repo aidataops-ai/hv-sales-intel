@@ -73,6 +73,10 @@ export default function BulkScanModal({
   const [running, setRunning] = useState(false)
   const [stats, setStats] = useState<RunStats>(EMPTY_STATS)
   const [stopRequested, setStopRequested] = useState(false)
+  // Hard cap so a big multi-state sweep doesn't run thousands of queries
+  // when the user only needed a few hundred leads. null = no cap.
+  const [maxLeads, setMaxLeads] = useState<number | null>(500)
+  const [hitCap, setHitCap] = useState(false)
 
   const queries = useMemo(() => {
     const usQs =
@@ -105,6 +109,7 @@ export default function BulkScanModal({
   function reset() {
     setStats(EMPTY_STATS)
     setStopRequested(false)
+    setHitCap(false)
   }
 
   function toggleSpecialty(s: string) {
@@ -141,8 +146,13 @@ export default function BulkScanModal({
     let total = 0
     const errors: RunStats["errors"] = []
     const seen = new Set<string>()
+    let cappedEarly = false
     for (const q of queries) {
       if (stopRequested) break
+      if (maxLeads != null && seen.size >= maxLeads) {
+        cappedEarly = true
+        break
+      }
       setStats({
         ranQueries: ran,
         totalPractices: total,
@@ -172,7 +182,12 @@ export default function BulkScanModal({
         currentQuery: q,
         done: false,
       })
+      if (maxLeads != null && seen.size >= maxLeads) {
+        cappedEarly = true
+        break
+      }
     }
+    if (cappedEarly) setHitCap(true)
     setStats({
       ranQueries: ran,
       totalPractices: total,
@@ -471,6 +486,56 @@ export default function BulkScanModal({
             </div>
           )}
 
+          {/* Cap on unique leads — stops the scan early once reached */}
+          <div className="flex items-center gap-3 text-xs">
+            <span className="font-medium text-gray-700 shrink-0">
+              Stop after
+            </span>
+            <input
+              disabled={running}
+              type="number"
+              min={10}
+              step={50}
+              value={maxLeads ?? ""}
+              placeholder="No cap"
+              onChange={(e) => {
+                const v = e.target.value.trim()
+                if (v === "") return setMaxLeads(null)
+                const n = parseInt(v, 10)
+                if (Number.isFinite(n) && n > 0) setMaxLeads(n)
+              }}
+              className="w-24 rounded-md border border-gray-200 px-2 py-1 text-sm tabular-nums"
+            />
+            <span className="text-gray-600">unique leads collected</span>
+            <div className="flex gap-1.5 ml-auto">
+              {[100, 250, 500, 1000].map((n) => (
+                <button
+                  key={n}
+                  disabled={running}
+                  onClick={() => setMaxLeads(n)}
+                  className={`text-[11px] px-2 py-0.5 rounded-full border transition ${
+                    maxLeads === n
+                      ? "bg-teal-50 border-teal-500 text-teal-700"
+                      : "bg-white border-gray-200 text-gray-600 hover:border-gray-400"
+                  }`}
+                >
+                  {n}
+                </button>
+              ))}
+              <button
+                disabled={running}
+                onClick={() => setMaxLeads(null)}
+                className={`text-[11px] px-2 py-0.5 rounded-full border transition ${
+                  maxLeads === null
+                    ? "bg-teal-50 border-teal-500 text-teal-700"
+                    : "bg-white border-gray-200 text-gray-600 hover:border-gray-400"
+                }`}
+              >
+                ∞
+              </button>
+            </div>
+          </div>
+
           <div className="rounded-lg bg-gray-50 border border-gray-200 px-3 py-2 text-xs text-gray-700">
             Will run{" "}
             <span className="font-semibold text-gray-900">{queries.length}</span>{" "}
@@ -486,9 +551,16 @@ export default function BulkScanModal({
                 UK cit{ukCities.length === 1 ? "y" : "ies"}
               </>
             )}
-            . Each query returns up to 60 leads. The 24-hour cache
-            short-circuits duplicate queries so re-running the same scan is
-            free.
+            . Each query returns up to 60 leads
+            {maxLeads != null && (
+              <>
+                {" "}and the scan stops once{" "}
+                <span className="font-semibold text-gray-900">{maxLeads}</span>{" "}
+                unique leads are collected
+              </>
+            )}
+            . The 24-hour cache short-circuits duplicate queries so re-running
+            the same scan is free.
           </div>
 
           {(running || stats.done) && (
@@ -515,6 +587,12 @@ export default function BulkScanModal({
               {stopRequested && !stats.done && (
                 <p className="text-xs text-amber-600">
                   Stopping after current query finishes…
+                </p>
+              )}
+              {hitCap && stats.done && (
+                <p className="text-xs text-amber-700">
+                  Stopped early — reached the {maxLeads}-lead cap after{" "}
+                  {stats.ranQueries} of {queries.length} queries.
                 </p>
               )}
               {stats.errors.length > 0 && (
