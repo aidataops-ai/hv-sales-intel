@@ -12,6 +12,7 @@ import CallButton from "./call-button"
 import EnrichButton from "./enrich-button"
 import OwnerMiniCard from "./owner-mini-card"
 import { useEnrichmentPoll } from "@/lib/use-enrichment-poll"
+import { useAuth } from "@/lib/auth"
 
 function StarRating({ rating }: { rating: number | null }) {
   if (!rating) return null
@@ -66,6 +67,12 @@ export default function PracticeCard({
   onEnrichmentUpdate,
 }: PracticeCardProps) {
   const [isExpanded, setIsExpanded] = useState(false)
+  const { currentCompany, user } = useAuth()
+  // Hide the Analyze button when the active tenant hasn't defined an
+  // ICP yet — admins should land on /admin/icp first. Existing analyses
+  // (isScored) keep their Re-analyze affordance regardless so the rep
+  // can still refresh known leads.
+  const canAnalyze = currentCompany?.has_icp !== false
 
   useEnrichmentPoll(practice, (next) => onEnrichmentUpdate?.(next))
   const isScored = practice.lead_score != null
@@ -195,6 +202,7 @@ export default function PracticeCard({
             <Globe className="w-3 h-3" /> Website
           </a>
         )}
+        {(canAnalyze || isScored) && (
         <button
           onClick={(e) => {
             e.stopPropagation()
@@ -210,6 +218,17 @@ export default function PracticeCard({
           )}
           {isAnalyzing ? "Analyzing..." : isScored ? "Re-analyze" : "Analyze"}
         </button>
+        )}
+        {!canAnalyze && !isScored && user?.role === "admin" && (
+          <Link
+            href="/admin/icp"
+            onClick={(e) => e.stopPropagation()}
+            className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg border border-amber-500 text-amber-700 hover:bg-amber-50 transition"
+            title="Define your ICP before analyzing leads"
+          >
+            <Brain className="w-3 h-3" /> Define ICP
+          </Link>
+        )}
         <EnrichButton
           practice={practice}
           onClick={(e) => e.stopPropagation()}

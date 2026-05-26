@@ -776,6 +776,16 @@ def signup(body: SignupRequest):
     }
 
 
+def _has_icp_defined(icp_parsed) -> bool:
+    """A company has a usable ICP iff icp_parsed has at least one
+    vertical in scope. Brand-new tenants signed up via /signup land
+    with icp_parsed = null and have_icp = false until the admin pastes
+    + saves their ICP on /admin/icp."""
+    if not isinstance(icp_parsed, dict):
+        return False
+    return bool(icp_parsed.get("verticals_in_scope"))
+
+
 @app.get("/api/me/companies")
 def list_my_companies(user: dict = Depends(get_current_user)):
     """List every company the current user is a member of."""
@@ -784,7 +794,7 @@ def list_my_companies(user: dict = Depends(get_current_user)):
         result = (
             client.table("company_members")
             .select(
-                "role,company:companies(id,slug,name,branding,archived_at)"
+                "role,company:companies(id,slug,name,branding,icp_parsed,archived_at)"
             )
             .eq("user_id", user["id"])
             .execute()
@@ -804,6 +814,7 @@ def list_my_companies(user: dict = Depends(get_current_user)):
             "branding": company.get("branding"),
             "role": row["role"],
             "is_current": company["id"] == user.get("company_id"),
+            "has_icp": _has_icp_defined(company.get("icp_parsed")),
         })
     return {"companies": out, "current_company_id": user.get("company_id")}
 

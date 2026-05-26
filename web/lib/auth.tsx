@@ -17,6 +17,9 @@ export interface Company {
   } | null
   role: "admin" | "sdr"
   is_current: boolean
+  /** True iff icp_parsed.verticals_in_scope is non-empty.
+   *  Drives whether the Analyze button on practice cards is shown. */
+  has_icp: boolean
 }
 
 interface AuthContextValue {

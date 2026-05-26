@@ -10,6 +10,8 @@ export type StateCode =
   | "NE" | "NV" | "NH" | "NJ" | "NM" | "NY" | "NC" | "ND" | "OH"
   | "OK" | "OR" | "PA" | "RI" | "SC" | "SD" | "TN" | "TX" | "UT"
   | "VT" | "VA" | "WA" | "WV" | "WI" | "WY"
+  // International (single-region pseudo-state; UK cities live under one bucket).
+  | "UK"
 
 export const STATE_LABELS: Record<StateCode, string> = {
   AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas",
@@ -25,6 +27,7 @@ export const STATE_LABELS: Record<StateCode, string> = {
   SD: "South Dakota", TN: "Tennessee", TX: "Texas", UT: "Utah",
   VT: "Vermont", VA: "Virginia", WA: "Washington", WV: "West Virginia",
   WI: "Wisconsin", WY: "Wyoming",
+  UK: "United Kingdom",
 }
 
 // State → incorporated city list. Significantly expanded from the original
@@ -716,6 +719,32 @@ export const STATE_CITIES: Record<StateCode, string[]> = {
     "Lander", "Torrington", "Powell", "Douglas", "Worland", "Buffalo",
     "Wheatland", "Newcastle", "Thermopolis", "Pinedale", "Kemmerer", "Saratoga",
   ],
+  // United Kingdom — top metros + nations' capitals + university cities.
+  UK: [
+    // London + ring
+    "London", "Croydon", "Bromley", "Romford", "Ealing",
+    // England — top metros
+    "Birmingham", "Manchester", "Leeds", "Sheffield", "Bristol",
+    "Liverpool", "Newcastle upon Tyne", "Nottingham", "Leicester",
+    "Coventry", "Bradford", "Hull", "Stoke-on-Trent", "Wolverhampton",
+    "Derby", "Plymouth", "Southampton", "Portsmouth", "Reading",
+    "Northampton", "Norwich", "Brighton", "Milton Keynes",
+    "Luton", "Bournemouth", "Swindon", "Peterborough", "Sunderland",
+    "Middlesbrough", "York", "Oxford", "Cambridge", "Bath", "Exeter",
+    "Preston", "Blackpool", "Blackburn", "Bolton", "Salford",
+    "Wigan", "Warrington", "Chester", "Lancaster", "Lincoln",
+    "Worcester", "Gloucester", "Cheltenham", "Stratford-upon-Avon",
+    "Slough", "Watford", "Maidstone", "Canterbury", "Crawley",
+    "Guildford", "Woking", "Basingstoke", "Ipswich", "Colchester",
+    "Chelmsford", "Southend-on-Sea",
+    // Scotland
+    "Edinburgh", "Glasgow", "Aberdeen", "Dundee", "Inverness",
+    "Stirling", "Perth", "Paisley",
+    // Wales
+    "Cardiff", "Swansea", "Newport", "Wrexham", "Bangor",
+    // Northern Ireland
+    "Belfast", "Derry", "Lisburn", "Newry",
+  ],
 }
 
 // Bulk Scan picks a vertical purely to drive query phrasing in the modal.
@@ -730,6 +759,7 @@ export type Vertical =
   | "alf_nh"
   | "hotel_resort"
   | "medspa_wellness"
+  | "fast_food"
 
 export const VERTICAL_LABELS: Record<Vertical, string> = {
   medical: "Medical practices (primary care, internal, family)",
@@ -738,6 +768,7 @@ export const VERTICAL_LABELS: Record<Vertical, string> = {
   alf_nh: "Assisted living / Nursing homes",
   hotel_resort: "Hotels / Resorts",
   medspa_wellness: "MedSpa / Spa / Wellness",
+  fast_food: "Fast food / QSR restaurants",
 }
 
 // Default search phrase per vertical — used to auto-fill the State sweep
@@ -749,6 +780,7 @@ export const VERTICAL_BASE_QUERIES: Record<Vertical, string> = {
   alf_nh: "assisted living facilities",
   hotel_resort: "hotels and resorts",
   medspa_wellness: "medspas and wellness clinics",
+  fast_food: "fast food restaurants",
 }
 
 export const SPECIALTIES_BY_VERTICAL: Record<Vertical, string[]> = {
@@ -800,6 +832,17 @@ export const SPECIALTIES_BY_VERTICAL: Record<Vertical, string[]> = {
     "wellness clinic",
     "day spa",
     "anti-aging clinic",
+  ],
+  fast_food: [
+    "fast food restaurant",
+    "quick service restaurant",
+    "burger restaurant",
+    "pizza restaurant",
+    "sandwich shop",
+    "chicken restaurant",
+    "taco restaurant",
+    "coffee shop chain",
+    "fried chicken",
   ],
 }
 

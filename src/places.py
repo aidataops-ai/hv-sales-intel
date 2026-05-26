@@ -223,16 +223,25 @@ MEDSPA_TYPES = frozenset({
     "spa", "beauty_salon", "wellness_center",
 })
 
+# Fast food / QSR / restaurant chain types. Google lumps these together
+# with general restaurants — we let them in and rely on name keywords
+# (KFC, McDonald's, Subway, etc.) to filter to actual chains downstream.
+FAST_FOOD_TYPES = frozenset({
+    "fast_food_restaurant", "restaurant", "meal_takeaway",
+    "meal_delivery", "cafe", "coffee_shop", "food", "bakery",
+})
+
 # Every Google type that signals an in-scope ICP segment. Replaces the old
 # healthcare-only check.
-IN_SCOPE_TYPES = HEALTHCARE_TYPES | ALF_TYPES | HOTEL_TYPES | MEDSPA_TYPES
+IN_SCOPE_TYPES = (
+    HEALTHCARE_TYPES | ALF_TYPES | HOTEL_TYPES | MEDSPA_TYPES | FAST_FOOD_TYPES
+)
 
 # Hard-disqualifiers — if Google tags the place with any of these alone
 # (and none of the in-scope types apply), it's definitely not target ICP
-# (e.g. "Doctors Café", "Dental Bar Restaurant", standalone gym).
+# (e.g. standalone gym, retail store, gas station).
 NEGATIVE_TYPES = frozenset({
-    "cafe", "coffee_shop", "restaurant", "food", "bar", "bakery",
-    "meal_takeaway", "meal_delivery", "night_club",
+    "bar", "night_club",
     "gym", "fitness_center", "hair_care",
     "store", "supermarket", "shopping_mall", "clothing_store",
     "convenience_store", "grocery_or_supermarket", "department_store",
@@ -273,6 +282,29 @@ MEDSPA_NAME_KEYWORDS = (
     "botox", "filler",
 )
 
+FAST_FOOD_NAME_KEYWORDS = (
+    # Generic descriptors
+    "fast food", "quick service", "qsr", "drive-thru", "drive thru",
+    "takeaway", "takeout",
+    # Mega-chains (US + UK)
+    "mcdonald", "burger king", "wendy", "kfc", "popeyes", "chick-fil-a",
+    "chick fil a", "raising cane", "in-n-out", "in n out", "five guys",
+    "shake shack", "white castle", "carl's jr", "carls jr", "hardee",
+    "jack in the box", "sonic drive", "whataburger", "culver",
+    "subway", "jimmy john", "jersey mike", "jersey mike's", "potbelly",
+    "panera", "firehouse subs", "quiznos",
+    "taco bell", "chipotle", "qdoba", "del taco", "moe's southwest",
+    "panda express", "pei wei",
+    "pizza hut", "domino", "papa john", "papa murphy", "little caesars",
+    "blaze pizza", "marco's pizza", "round table pizza",
+    "starbucks", "dunkin", "tim hortons", "costa coffee", "caffè nero",
+    "pret a manger", "pret",
+    "chipotle", "wingstop", "buffalo wild wings", "zaxby",
+    "dairy queen", "baskin-robbins", "baskin robbins", "auntie anne",
+    "cinnabon", "krispy kreme",
+    "greggs", "leon", "wagamama", "nando", "pizza express",
+)
+
 
 def _is_in_scope(types: list[str], name: str) -> bool:
     """True if the place looks like an in-scope ICP target (healthcare,
@@ -296,6 +328,7 @@ def _is_in_scope(types: list[str], name: str) -> bool:
         + ALF_NAME_KEYWORDS
         + HOTEL_NAME_KEYWORDS
         + MEDSPA_NAME_KEYWORDS
+        + FAST_FOOD_NAME_KEYWORDS
     )
     return any(k in name_lower for k in keywords)
 
@@ -388,6 +421,15 @@ def _classify_types(types: list[str], name: str = "") -> str:
         or any(k in name_lower for k in MEDSPA_NAME_KEYWORDS)
     ):
         return "medspa_wellness"
+
+    # Fast food / QSR — checked AFTER all healthcare so a "Doctor's
+    # Smoothie Bar" doesn't slip in here. Detection via either Google's
+    # food types OR brand-name keywords (KFC, Subway, Greggs, etc.).
+    if (
+        type_set & FAST_FOOD_TYPES
+        or any(k in name_lower for k in FAST_FOOD_NAME_KEYWORDS)
+    ):
+        return "fast_food"
 
     if type_set & {"doctor", "general_practitioner", "primary_care"}:
         return "primary_care"

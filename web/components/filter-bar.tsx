@@ -33,6 +33,7 @@ const CATEGORIES = [
   { value: "alf_nh", label: "Assisted Living / Nursing" },
   { value: "hotel_resort", label: "Hotels / Resorts" },
   { value: "medspa_wellness", label: "MedSpa / Wellness" },
+  { value: "fast_food", label: "Fast food / QSR" },
   { value: "specialty", label: "Specialty" },
 ]
 
