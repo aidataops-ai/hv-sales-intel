@@ -1,7 +1,7 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { Loader2, X, Search, Layers } from "lucide-react"
+import { Loader2, X, Search, Layers, Download } from "lucide-react"
 import { searchPractices } from "@/lib/api"
 import {
   STATE_LABELS,
@@ -28,6 +28,7 @@ interface BulkScanModalProps {
 interface RunStats {
   ranQueries: number
   totalPractices: number
+  uniquePlaceIds: string[]      // accumulated across every query in the run
   errors: { query: string; message: string }[]
   currentQuery: string | null
   done: boolean
@@ -36,12 +37,21 @@ interface RunStats {
 const EMPTY_STATS: RunStats = {
   ranQueries: 0,
   totalPractices: 0,
+  uniquePlaceIds: [],
   errors: [],
   currentQuery: null,
   done: false,
 }
 
-const ALL_STATES = Object.keys(STATE_LABELS).sort() as StateCode[]
+// Split for the picker so the international row gets a dedicated
+// section header instead of being buried at the bottom of the
+// alphabetical US list.
+const INTERNATIONAL_CODES = ["UK"] as const
+const US_STATES = (Object.keys(STATE_LABELS) as StateCode[])
+  .filter((s) => !INTERNATIONAL_CODES.includes(s as never))
+  .sort() as StateCode[]
+const INTERNATIONAL_STATES = INTERNATIONAL_CODES as readonly StateCode[]
+const ALL_STATES = [...US_STATES, ...INTERNATIONAL_STATES] as StateCode[]
 
 export default function BulkScanModal({
   open,
@@ -117,11 +127,13 @@ export default function BulkScanModal({
     let ran = 0
     let total = 0
     const errors: RunStats["errors"] = []
+    const seen = new Set<string>()
     for (const q of queries) {
       if (stopRequested) break
       setStats({
         ranQueries: ran,
         totalPractices: total,
+        uniquePlaceIds: Array.from(seen),
         errors,
         currentQuery: q,
         done: false,
@@ -129,6 +141,9 @@ export default function BulkScanModal({
       try {
         const results = await searchPractices(q, false)
         total += results.length
+        for (const r of results) {
+          if (r.place_id) seen.add(r.place_id)
+        }
       } catch (e) {
         errors.push({
           query: q,
@@ -139,6 +154,7 @@ export default function BulkScanModal({
       setStats({
         ranQueries: ran,
         totalPractices: total,
+        uniquePlaceIds: Array.from(seen),
         errors,
         currentQuery: q,
         done: false,
@@ -147,12 +163,51 @@ export default function BulkScanModal({
     setStats({
       ranQueries: ran,
       totalPractices: total,
+      uniquePlaceIds: Array.from(seen),
       errors,
       currentQuery: null,
       done: true,
     })
     setRunning(false)
     onComplete()
+  }
+
+  const [exporting, setExporting] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
+
+  async function exportScanResults() {
+    if (stats.uniquePlaceIds.length === 0 || exporting) return
+    setExporting(true)
+    setExportError(null)
+    try {
+      const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ""
+      const res = await fetch(`${API_URL}/api/practices/export.csv`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ place_ids: stats.uniquePlaceIds }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.detail || `Export failed (${res.status})`)
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = `apex-leads-bulkscan-${new Date()
+        .toISOString()
+        .replace(/[:.]/g, "-")
+        .slice(0, 16)}.csv`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setExporting(false)
+    }
   }
 
   function handleClose() {
@@ -261,26 +316,40 @@ export default function BulkScanModal({
                 </button>
               </div>
             </div>
-            <div className="flex flex-wrap gap-1 max-h-32 overflow-y-auto p-1 border border-gray-200 rounded-md bg-gray-50/40">
-              {ALL_STATES.map((s) => {
-                const active = states.includes(s)
-                const cityCount = STATE_CITIES[s]?.length ?? 0
-                return (
-                  <button
-                    key={s}
-                    disabled={running}
-                    onClick={() => toggleState(s)}
-                    className={`text-[11px] px-2 py-0.5 rounded-full border transition ${
-                      active
-                        ? "bg-teal-50 border-teal-500 text-teal-700"
-                        : "bg-white border-gray-200 text-gray-600 hover:border-gray-400"
-                    }`}
-                    title={`${STATE_LABELS[s]} — ${cityCount} cities`}
-                  >
-                    {s}
-                  </button>
-                )
-              })}
+            <div className="max-h-40 overflow-y-auto p-2 border border-gray-200 rounded-md bg-gray-50/40 space-y-2">
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+                  United States
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {US_STATES.map((s) => (
+                    <StateChip
+                      key={s}
+                      code={s}
+                      active={states.includes(s)}
+                      disabled={running}
+                      onToggle={toggleState}
+                    />
+                  ))}
+                </div>
+              </div>
+              <div>
+                <p className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">
+                  International
+                </p>
+                <div className="flex flex-wrap gap-1">
+                  {INTERNATIONAL_STATES.map((s) => (
+                    <StateChip
+                      key={s}
+                      code={s}
+                      active={states.includes(s)}
+                      disabled={running}
+                      onToggle={toggleState}
+                      label={STATE_LABELS[s]}
+                    />
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -410,6 +479,30 @@ export default function BulkScanModal({
                   </ul>
                 </details>
               )}
+
+              {stats.done && stats.uniquePlaceIds.length > 0 && (
+                <div className="mt-2 rounded-md bg-emerald-50 border border-emerald-200 px-3 py-2 flex items-center justify-between gap-3">
+                  <span className="text-xs text-emerald-900">
+                    Scan complete — {stats.uniquePlaceIds.length.toLocaleString()}{" "}
+                    unique leads collected.
+                  </span>
+                  <button
+                    onClick={exportScanResults}
+                    disabled={exporting}
+                    className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 transition"
+                  >
+                    {exporting ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Download className="w-3.5 h-3.5" />
+                    )}
+                    Export these to CSV
+                  </button>
+                </div>
+              )}
+              {exportError && (
+                <p className="text-xs text-rose-600">{exportError}</p>
+              )}
             </div>
           )}
         </div>
@@ -440,5 +533,32 @@ export default function BulkScanModal({
         </div>
       </div>
     </div>
+  )
+}
+
+
+function StateChip({
+  code, active, disabled, onToggle, label,
+}: {
+  code: StateCode
+  active: boolean
+  disabled: boolean
+  onToggle: (s: StateCode) => void
+  label?: string
+}) {
+  const cityCount = STATE_CITIES[code]?.length ?? 0
+  return (
+    <button
+      disabled={disabled}
+      onClick={() => onToggle(code)}
+      className={`text-[11px] px-2 py-0.5 rounded-full border transition ${
+        active
+          ? "bg-teal-50 border-teal-500 text-teal-700"
+          : "bg-white border-gray-200 text-gray-600 hover:border-gray-400"
+      }`}
+      title={`${STATE_LABELS[code]} — ${cityCount} cities`}
+    >
+      {label ?? code}
+    </button>
   )
 }

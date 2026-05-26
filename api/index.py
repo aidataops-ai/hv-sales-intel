@@ -1160,6 +1160,92 @@ _EXPORT_COLUMNS = [
 ]
 
 
+class BulkExportRequest(BaseModel):
+    place_ids: list[str]
+    max_exports: int | None = None
+
+
+@app.post("/api/practices/export.csv")
+def export_practices_csv_by_ids(
+    body: BulkExportRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Stream a CSV containing only the rows whose `place_id` is in the
+    posted list. Used by the Bulk Scan modal's "Export these results to
+    CSV" action — the modal accumulates the place_ids returned by every
+    query in the run and posts them here so the rep gets a CSV of *just
+    this scan*, not the whole DB.
+
+    `max_exports` still works the same way as the GET endpoint — pass
+    `0` to skip rows that were already exported."""
+    import csv
+    import io
+    from src.storage import _get_client, _flatten_attribution
+
+    place_ids = [p for p in (body.place_ids or []) if p]
+    if not place_ids:
+        raise HTTPException(status_code=400, detail="place_ids is empty")
+
+    client = _get_client()
+    rows: list[dict] = []
+    if client:
+        # PostgREST .in_() doesn't paginate, but it does enforce a max
+        # URL length; chunk to be safe at thousands of ids.
+        from src.storage import PROFILE_JOIN_SELECT
+        CHUNK = 500
+        for i in range(0, len(place_ids), CHUNK):
+            chunk = place_ids[i:i + CHUNK]
+            try:
+                q = client.table("practices").select(PROFILE_JOIN_SELECT).in_("place_id", chunk)
+                if body.max_exports is not None:
+                    q = q.lte("export_count", body.max_exports)
+                result = q.execute()
+            except Exception:
+                continue
+            for r in (result.data or []):
+                rows.append(_flatten_attribution(r))
+
+    # Resolve last_exported_by display names for the CSV.
+    exporter_ids = [r.get("last_exported_by") for r in rows if r.get("last_exported_by")]
+    name_by_id = resolve_user_names(exporter_ids) if exporter_ids else {}
+    for r in rows:
+        eid = r.get("last_exported_by")
+        r["last_exported_by_name"] = name_by_id.get(eid, "") if eid else ""
+
+    def _serialize(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, list):
+            return ", ".join(str(v) for v in value)
+        if isinstance(value, dict):
+            return json.dumps(value)
+        return str(value)
+
+    def iter_csv():
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(_EXPORT_COLUMNS)
+        yield buf.getvalue()
+        buf.seek(0); buf.truncate(0)
+        for row in rows:
+            writer.writerow([_serialize(row.get(col)) for col in _EXPORT_COLUMNS])
+            yield buf.getvalue()
+            buf.seek(0); buf.truncate(0)
+
+    increment_export_counts(
+        [r["place_id"] for r in rows if r.get("place_id")],
+        user_id=user.get("id"),
+        company_id=user.get("company_id"),
+    )
+
+    filename = f"apex-leads-bulk-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.csv"
+    return StreamingResponse(
+        iter_csv(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/api/practices/export.csv")
 def export_practices_csv(
     max_exports: str | None = Query(
