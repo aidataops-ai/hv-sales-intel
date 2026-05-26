@@ -57,7 +57,7 @@ interface UsageResponse {
     metadata: Record<string, unknown> | null
   }>
   pricing: {
-    openai_per_million_tokens: Record<string, { input: number; output: number }>
+    openai_per_million_tokens: Record<string, { input: number; cached_input?: number; output: number }>
     places_per_call: Record<string, number>
   }
 }
@@ -321,6 +321,7 @@ export default function UsagePage() {
                       <tr className="text-left text-xs text-gray-500 border-b">
                         <th className="py-1 pr-2">Model</th>
                         <th className="py-1 pr-2 text-right">Input ¢/M</th>
+                        <th className="py-1 pr-2 text-right">Cached ¢/M</th>
                         <th className="py-1 text-right">Output ¢/M</th>
                       </tr>
                     </thead>
@@ -329,11 +330,18 @@ export default function UsagePage() {
                         <tr key={m} className="border-b last:border-b-0">
                           <td className="py-1 pr-2 font-mono">{m}</td>
                           <td className="py-1 pr-2 text-right font-mono">{p.input}</td>
+                          <td className="py-1 pr-2 text-right font-mono text-gray-500">
+                            {p.cached_input ?? "—"}
+                          </td>
                           <td className="py-1 text-right font-mono">{p.output}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
+                  <p className="text-[11px] text-gray-400 mt-1.5">
+                    Cached input applies when OpenAI&apos;s prompt cache hits — fresh
+                    prompt tokens stay billed at the Input rate.
+                  </p>
                 </div>
                 <div>
                   <h3 className="text-xs font-semibold text-gray-700 mb-2 uppercase tracking-wide">

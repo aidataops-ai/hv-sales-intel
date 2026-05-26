@@ -25,20 +25,21 @@ log = logging.getLogger("hvsi.usage")
 # ---------------------------------------------------------------------------
 
 OPENAI_COST_PER_MILLION_TOKENS: dict[str, dict[str, float]] = {
-    # ¢ per 1M tokens. Values verified against OpenAI's published list
-    # pricing for the modern generation. Legacy gpt-4-turbo and 3.5-turbo
-    # are intentionally omitted — if anyone is still pinning to those,
-    # they'll fall through to `default` and be conservatively over-billed
-    # rather than silently under-billed.
-    "gpt-4.1":      {"input": 200, "output": 800},   # $2.00 / $8.00 per 1M
-    "gpt-4.1-mini": {"input": 40,  "output": 160},   # $0.40 / $1.60
-    "gpt-4o":       {"input": 500, "output": 1500},  # $5.00 / $15.00
-    "gpt-4o-mini":  {"input": 15,  "output": 60},    # $0.15 / $0.60
-    # Default mirrors gpt-4.1 because that's the analyzer's pinned model.
-    # If you bump settings.openai_model to a different default, also
-    # update this entry so legacy/uncategorized rows are estimated
-    # against the right band.
-    "default":      {"input": 200, "output": 800},
+    # ¢ per 1M tokens. Values sourced from
+    # https://developers.openai.com/api/docs/pricing
+    # Three bands per model: fresh-prompt input, cached-prompt input
+    # (when OpenAI's prompt-cache hits), and output. cached_input
+    # defaults to input/4 if a model is missing the explicit value.
+    "o4-mini":      {"input": 400,   "cached_input": 100,    "output": 1600},
+    "gpt-4.1":      {"input": 300,   "cached_input": 75,     "output": 1200},
+    "gpt-4.1-mini": {"input": 80,    "cached_input": 20,     "output": 320},
+    "gpt-4.1-nano": {"input": 20,    "cached_input": 5,      "output": 80},
+    "gpt-4o":       {"input": 375,   "cached_input": 187.5,  "output": 1500},
+    "gpt-4o-mini":  {"input": 30,    "cached_input": 15,     "output": 120},
+    # Default mirrors gpt-4.1 since that's the analyzer's pinned model.
+    # If settings.openai_model changes, update this band so unmapped
+    # rows are estimated against the right tier.
+    "default":      {"input": 300,   "cached_input": 75,     "output": 1200},
 }
 
 # Cents per Places-API call. Pro SKU Text Search is $0.032 = 3.2¢; Place
@@ -58,15 +59,27 @@ def estimate_openai_cost(
     model: str | None,
     input_tokens: int,
     output_tokens: int,
+    cached_input_tokens: int = 0,
 ) -> float:
-    """Return the estimated cost in cents (fractional) for an OpenAI call."""
+    """Return the estimated cost in cents (fractional) for an OpenAI call.
+
+    `input_tokens` is the TOTAL prompt token count as returned by OpenAI
+    (`response.usage.prompt_tokens`). `cached_input_tokens` is the subset
+    that hit the prompt cache (`prompt_tokens_details.cached_tokens`).
+    Fresh prompt tokens = max(0, input_tokens - cached_input_tokens) and
+    are billed at the `input` rate; the cached portion is billed at
+    `cached_input` (defaults to input/4 if the model band omits it).
+    """
     if not input_tokens and not output_tokens:
         return 0.0
     bands = OPENAI_COST_PER_MILLION_TOKENS.get(
         model or "", OPENAI_COST_PER_MILLION_TOKENS["default"]
     )
+    cached_rate = bands.get("cached_input", bands["input"] / 4.0)
+    fresh_input = max(0, (input_tokens or 0) - (cached_input_tokens or 0))
     cents = (
-        (input_tokens or 0) * bands["input"]
+        fresh_input * bands["input"]
+        + (cached_input_tokens or 0) * cached_rate
         + (output_tokens or 0) * bands["output"]
     ) / 1_000_000.0
     return round(cents, 4)
@@ -92,6 +105,7 @@ def record_event(
     model: str | None = None,
     input_tokens: int | None = None,
     output_tokens: int | None = None,
+    cached_input_tokens: int | None = None,
     calls: int = 1,
     cost_cents: float | None = None,
     metadata: dict[str, Any] | None = None,
@@ -102,20 +116,24 @@ def record_event(
     if cost_cents is None:
         if kind.startswith("openai_"):
             cost_cents = estimate_openai_cost(
-                model, input_tokens or 0, output_tokens or 0,
+                model,
+                input_tokens or 0,
+                output_tokens or 0,
+                cached_input_tokens or 0,
             )
         elif kind.startswith("places_"):
             cost_cents = estimate_places_cost(kind, calls)
         else:
             cost_cents = 0.0
 
-    payload = {
+    payload: dict[str, Any] = {
         "kind": kind,
         "company_id": company_id,
         "user_id": user_id,
         "model": model,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
+        "cached_input_tokens": cached_input_tokens,
         "calls": calls,
         "cost_cents": cost_cents,
         "metadata": metadata,
@@ -149,16 +167,25 @@ def record_openai(
     user_id: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> None:
-    """Extract usage from an OpenAI chat completion response and log it."""
+    """Extract usage from an OpenAI chat completion response and log it,
+    including the cached-prompt-token subset when the API reports it."""
+    in_tok = 0
+    out_tok = 0
+    cached_tok = 0
+    model = settings.openai_model
     try:
         usage = getattr(response, "usage", None)
-        in_tok = getattr(usage, "prompt_tokens", 0) or 0
-        out_tok = getattr(usage, "completion_tokens", 0) or 0
+        if usage is not None:
+            in_tok = getattr(usage, "prompt_tokens", 0) or 0
+            out_tok = getattr(usage, "completion_tokens", 0) or 0
+            details = getattr(usage, "prompt_tokens_details", None)
+            if details is not None:
+                cached_tok = getattr(details, "cached_tokens", 0) or 0
+            elif isinstance(usage, dict):
+                cached_tok = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0
         model = getattr(response, "model", None) or settings.openai_model
     except Exception:
-        in_tok = 0
-        out_tok = 0
-        model = settings.openai_model
+        pass
     record_event(
         kind=kind,
         company_id=company_id,
@@ -166,6 +193,7 @@ def record_openai(
         model=model,
         input_tokens=in_tok,
         output_tokens=out_tok,
+        cached_input_tokens=cached_tok,
         metadata=metadata,
     )
 

@@ -835,7 +835,7 @@ def admin_usage_recompute(admin: dict = Depends(require_admin)):
         try:
             batch = (
                 client.table("usage_events")
-                .select("id,kind,model,input_tokens,output_tokens,calls,cost_cents")
+                .select("id,kind,model,input_tokens,output_tokens,cached_input_tokens,calls,cost_cents")
                 .eq("company_id", admin["company_id"])
                 .order("id")
                 .range(start, end)
@@ -854,6 +854,7 @@ def admin_usage_recompute(admin: dict = Depends(require_admin)):
                     r.get("model"),
                     int(r.get("input_tokens") or 0),
                     int(r.get("output_tokens") or 0),
+                    int(r.get("cached_input_tokens") or 0),
                 )
             elif kind.startswith("places_"):
                 new_cost = estimate_places_cost(kind, int(r.get("calls") or 1))

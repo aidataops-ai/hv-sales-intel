@@ -296,6 +296,7 @@ create table if not exists usage_events (
   model           text,                 -- OpenAI model name; null for Places
   input_tokens   int,
   output_tokens  int,
+  cached_input_tokens int,           -- subset of input_tokens that hit the prompt cache
   calls           int default 1,         -- count of underlying API hits (Places pages > 1)
   cost_cents      numeric(12, 4),        -- estimated cost in cents (fractional)
   metadata        jsonb,                 -- free-form: query, place_id, error info
