@@ -13,6 +13,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
+from src.md_input import savings_summary, to_markdown
 from src.settings import settings
 
 log = logging.getLogger("hvsi.icp_parser")
@@ -117,9 +118,15 @@ async def parse_icp_doc(
     Falls back to a default skeleton if OpenAI isn't configured or the
     request fails (so the admin UI still has something to display).
     """
-    cleaned = (raw_text or "").strip()
-    if not cleaned:
+    raw = (raw_text or "").strip()
+    if not raw:
         raise ValueError("ICP document is empty")
+    # Normalize HTML / pasted-from-Word noise to Markdown before we hand
+    # it to GPT — typically cuts the prompt by 30-50% on copy-pasted web
+    # docs and keeps headings/bullets the model can reason over.
+    cleaned = to_markdown(raw)
+    if not cleaned:
+        cleaned = raw  # fall back if normalization wiped everything
     # Hard cap input — the parser doesn't need novel-length docs.
     snippet = cleaned[:16_000]
 
@@ -128,8 +135,8 @@ async def parse_icp_doc(
         return _validate(_skeleton())
 
     client = AsyncOpenAI(api_key=settings.openai_api_key)
-    log.info("[icp_parser.start] model=%s chars=%d",
-             settings.openai_model, len(snippet))
+    log.info("[icp_parser.start] model=%s %s",
+             settings.openai_model, savings_summary(raw, snippet))
     try:
         response = await client.chat.completions.create(
             model=settings.openai_model,

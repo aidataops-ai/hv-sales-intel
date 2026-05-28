@@ -1,9 +1,14 @@
+import logging
 import re
 from collections import Counter
 from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
+
+from src.md_input import savings_summary, to_markdown
+
+log = logging.getLogger(__name__)
 
 PRIORITY_PATTERNS = re.compile(
     r"(career|job|hiring|team|about|staff|service|contact|provider|doctor|meet)",
@@ -68,11 +73,10 @@ async def crawl_website(url: str) -> dict:
 
             soup = BeautifulSoup(resp.text, "html.parser")
             raw_html_chunks.append(resp.text)
-            for tag in soup(["script", "style", "nav", "footer", "header"]):
-                tag.decompose()
-            text = soup.get_text(separator=" ", strip=True)
-            if text:
-                texts.append(text[:5000])
+            # Markdown — used as the LLM input below (denser, structured).
+            page_md = to_markdown(resp.text, source_hint="html")
+            if page_md:
+                texts.append(page_md[:5000])
 
             if len(visited) <= 3:
                 for a in soup.find_all("a", href=True):
@@ -97,6 +101,11 @@ async def crawl_website(url: str) -> dict:
         combined_html,
         doctor_name=doctor_name,
         front_desk_phone=None,
+    )
+    log.info(
+        "[crawler.md] url=%s pages=%d %s",
+        url, len(visited),
+        savings_summary(combined_html, combined_text),
     )
     return {
         "text": combined_text,
