@@ -13,16 +13,25 @@ import { useCallback, useEffect, useState } from "react"
 // 1 credit = 33¢. Customer-facing price.
 export const CREDIT_VALUE_CENTS = 33
 
-// Display ranges for dynamic (OpenAI-driven) actions. The server
-// returns these too so the UI can sync if pricing changes — but
-// having local fallbacks lets us render instantly on first paint.
-export const ANALYZE_RANGE: [number, number]      = [0.3, 1.5]
-export const CALL_SCRIPT_RANGE: [number, number]  = [0.1, 0.4]
-export const EMAIL_DRAFT_RANGE: [number, number]  = [0.05, 0.20]
+// Universal multiple of vendor cost — every billable action runs the
+// customer at 10x our underlying cost. Mirrors COST_MULTIPLIER in
+// src/credits.py.
+export const COST_MULTIPLIER = 10
 
-// Fixed-cost actions.
-export const BULK_SCAN_QUERY_CREDITS = 1
-export const ENRICHMENT_CREDITS      = 2
+// Display ranges for dynamic actions. Every action is dynamic now —
+// even Bulk Scan, since a single Places search can fan out to 1-3
+// pages. The server returns the same ranges in /api/me/credits.rates
+// so this object stays in sync if constants change.
+export const ANALYZE_RANGE:         [number, number] = [0.3, 1.5]
+export const CALL_SCRIPT_RANGE:     [number, number] = [0.1, 0.4]
+export const EMAIL_DRAFT_RANGE:     [number, number] = [0.05, 0.20]
+// Bulk scan: 0.97 (1 page) → 2.91 (3 pages). We display the HIGH end
+// in the modal so users see the worst-case spend before pressing Start.
+export const BULK_SCAN_RANGE:       [number, number] = [0.97, 2.91]
+// Single Place Details call (1.7¢ × 10 / 33¢).
+export const PLACES_DETAILS_CREDITS = 0.52
+// Enrichment uses a representative cost (6.6¢ × 10 / 33¢ = 2).
+export const ENRICHMENT_CREDITS     = 2
 
 export type CreditAction =
   | "analyze"
@@ -51,12 +60,13 @@ export interface CreditsState {
   purchased: number
   consumed: number
   credit_value_cents: number
-  openai_multiplier: number
+  cost_multiplier: number
   rates: {
     analyze:         [number, number]
     call_script:     [number, number]
     email_draft:     [number, number]
-    bulk_scan_query: number
+    bulk_scan_query: [number, number]
+    places_details:  number
     enrichment:      number
   }
   transactions: CreditTransaction[]

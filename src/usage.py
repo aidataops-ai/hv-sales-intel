@@ -263,6 +263,7 @@ def record_places(
             kind=kind,
             company_id=company_id,
             user_id=user_id,
+            calls=calls,
             cost_cents=estimate_places_cost(kind, calls),
             related_id=related_id,
         )

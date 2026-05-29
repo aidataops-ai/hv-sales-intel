@@ -28,12 +28,15 @@ from src.auth import get_admin_client, get_current_user, require_admin
 from src.call_log import append_call_note, update_last_call_note
 from src.credits import (
     ANALYZE_RANGE_CREDITS,
+    BULK_SCAN_RANGE_CREDITS,
     CALL_SCRIPT_RANGE_CREDITS,
+    COST_MULTIPLIER,
     CREDIT_VALUE_CENTS,
     EMAIL_DRAFT_RANGE_CREDITS,
-    FIXED_CREDIT_COSTS,
+    ENRICHMENT_COST_CENTS,
     InsufficientCreditsError,
-    OPENAI_COST_MULTIPLIER,
+    PLACES_DETAILS_CREDITS,
+    cost_cents_to_credits,
     get_balance,
     topup as credits_topup,
 )
@@ -894,14 +897,15 @@ def my_credits(user: dict = Depends(get_current_user)):
         "balance":         round(balance, 4),
         "purchased":       round(purchased, 4),
         "consumed":        round(consumed, 4),
-        "credit_value_cents": CREDIT_VALUE_CENTS,
-        "openai_multiplier": OPENAI_COST_MULTIPLIER,
+        "credit_value_cents":  CREDIT_VALUE_CENTS,
+        "cost_multiplier":     COST_MULTIPLIER,
         "rates": {
             "analyze":          list(ANALYZE_RANGE_CREDITS),
             "call_script":      list(CALL_SCRIPT_RANGE_CREDITS),
             "email_draft":      list(EMAIL_DRAFT_RANGE_CREDITS),
-            "bulk_scan_query":  FIXED_CREDIT_COSTS["bulk_scan_query"],
-            "enrichment":       FIXED_CREDIT_COSTS["enrichment"],
+            "bulk_scan_query":  list(BULK_SCAN_RANGE_CREDITS),
+            "places_details":   PLACES_DETAILS_CREDITS,
+            "enrichment":       cost_cents_to_credits(ENRICHMENT_COST_CENTS),
         },
         "transactions":    transactions,
     }
@@ -1454,11 +1458,13 @@ async def search(body: SearchRequest, user: dict = Depends(get_current_user)):
         if cached:
             return {"practices": cached, "count": len(cached), "upserted": 0, "cached": True}
 
-    # Pre-flight credit check — 1 credit per Places search. Cached hits
-    # above are free (no Places call → no deduction).
+    # Pre-flight credit check — Bulk Scan is dynamic (1-3 Places pages
+    # per query, ~0.97-2.91 credits each). Gate on the LOW end of the
+    # range so a typical balance doesn't get blocked for a 1-page result.
+    # Cached hits above are free (no Places call → no deduction).
     if user.get("company_id"):
         bal = get_balance(user["company_id"])
-        needed = FIXED_CREDIT_COSTS["bulk_scan_query"]
+        needed = BULK_SCAN_RANGE_CREDITS[0]
         if bal < needed:
             raise HTTPException(
                 status_code=402,

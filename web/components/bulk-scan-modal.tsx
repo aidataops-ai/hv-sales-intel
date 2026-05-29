@@ -4,7 +4,7 @@ import { useMemo, useState } from "react"
 import { Loader2, X, Search, Layers, Download, Coins } from "lucide-react"
 import { searchPractices } from "@/lib/api"
 import {
-  BULK_SCAN_QUERY_CREDITS,
+  BULK_SCAN_RANGE,
   creditsToDollars,
   formatCredits,
   useCredits,
@@ -572,9 +572,11 @@ export default function BulkScanModal({
 
           {/* Credit estimate + balance check */}
           {(() => {
-            const totalCredits = queries.length * BULK_SCAN_QUERY_CREDITS
+            const [lo, hi] = BULK_SCAN_RANGE
+            const minCredits = queries.length * lo
+            const maxCredits = queries.length * hi
             const haveEnough =
-              credits == null ? true : credits.balance >= totalCredits
+              credits == null ? true : credits.balance >= minCredits
             const tone = haveEnough
               ? "bg-teal-50 border-teal-200 text-teal-900"
               : "bg-rose-50 border-rose-200 text-rose-900"
@@ -587,13 +589,13 @@ export default function BulkScanModal({
                   <span>
                     This scan will consume{" "}
                     <span className="font-semibold tabular-nums">
-                      {formatCredits(totalCredits)}
+                      {formatCredits(minCredits)}–{formatCredits(maxCredits)}
                     </span>{" "}
-                    credit{totalCredits === 1 ? "" : "s"}{" "}
+                    credits{" "}
                     <span className="opacity-70">
-                      (~{creditsToDollars(totalCredits)})
+                      (~{creditsToDollars(minCredits)} – {creditsToDollars(maxCredits)})
                     </span>
-                    {" "}— 1 credit per Places search.
+                    {" "}— 10× of Google Places cost (1-3 pages per query).
                   </span>
                 </div>
                 {credits != null && (
@@ -697,8 +699,7 @@ export default function BulkScanModal({
               running ||
               queries.length === 0 ||
               (credits != null &&
-                credits.balance <
-                  queries.length * BULK_SCAN_QUERY_CREDITS)
+                credits.balance < queries.length * BULK_SCAN_RANGE[0])
             }
             onClick={runScan}
             className="inline-flex items-center gap-1.5 text-sm px-4 py-1.5 rounded-md bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50 transition"
@@ -711,10 +712,9 @@ export default function BulkScanModal({
             ) : (
               <>
                 Start {queries.length} quer{queries.length === 1 ? "y" : "ies"}
-                {" "}—{" "}
-                {formatCredits(queries.length * BULK_SCAN_QUERY_CREDITS)}{" "}
-                credit
-                {queries.length * BULK_SCAN_QUERY_CREDITS === 1 ? "" : "s"}
+                {" "}— up to{" "}
+                {formatCredits(queries.length * BULK_SCAN_RANGE[1])}{" "}
+                credits
               </>
             )}
           </button>

@@ -2,23 +2,25 @@
 
 Customers buy credits in advance. A credit has a fixed cash value
 (`CREDIT_VALUE_CENTS = 33` → $0.33 per credit). Every billable action
-deducts credits from the company's balance.
+deducts credits from the company's balance at a universal multiple of
+our underlying vendor cost: `COST_MULTIPLIER = 10.0`.
 
-Two billing models live side-by-side here:
+That means a $0.016 OpenAI call bills the customer $0.16 (~0.48
+credits), and a $0.10 Google Places search bills $1.00 (~3 credits).
+The same rule applies everywhere — OpenAI tokens, Places calls,
+enrichment — so unit economics stay consistent across actions.
 
-  DYNAMIC (OpenAI-driven):
-    For `analyze`, `call_script`, `email_draft` — we charge a multiple
-    of our actual OpenAI cost. `OPENAI_COST_MULTIPLIER = 10.0` means
-    a $0.016 analyze becomes $0.16 customer cost → ~0.48 credits.
-    The exact amount isn't known until OpenAI returns usage tokens, so
-    the UI shows a RANGE upfront (see ANALYZE_RANGE_CREDITS) and the
-    server deducts the precise amount after the call returns.
+Two display modes follow from the one rule:
 
-  FIXED:
-    For `bulk_scan_query`, `enrichment` — flat per-action cost. Bulk
-    scan = 1 credit per Google Places search; enrichment = 2 credits
-    per Clay/Apollo lookup. Predictable so the modal can show a hard
-    total before the run starts.
+  DYNAMIC (`analyze`, `call_script`, `email_draft`, `bulk_scan_query`,
+    `places_details`): the exact cost isn't known until the vendor
+    response comes back (tokens / pages_fetched). The UI shows a
+    range upfront, and the server deducts the precise amount after.
+
+  TYPICAL (`enrichment`): we don't track a per-call cost from
+    Clay/Apollo yet so we use a representative cost
+    (`ENRICHMENT_COST_CENTS`) — still computed via the 10× rule, so
+    the constant captures the assumed vendor price, not a markup.
 
 Deduction is done via the `consume_credits` Postgres RPC (see the
 2026-05-29-credits migration) which atomically locks the company row,
@@ -33,7 +35,7 @@ import logging
 from dataclasses import dataclass
 from typing import Literal
 
-from src.usage import estimate_openai_cost
+from src.usage import estimate_openai_cost, estimate_places_cost, PLACES_COST_CENTS
 
 log = logging.getLogger(__name__)
 
@@ -42,27 +44,34 @@ log = logging.getLogger(__name__)
 # be reasoned about as `credits * CREDIT_VALUE_CENTS / 100` in USD.
 CREDIT_VALUE_CENTS: float = 33.0
 
-# Customer-charged multiple of our underlying OpenAI cost. 10× gives us
-# the gross-margin profile in docs/pricing-model.md (≈90% on AI usage)
-# and absorbs the variable overhead (Places lookups, crawler bandwidth,
-# the rest of the stack). Tune here to change the whole pricing curve.
-OPENAI_COST_MULTIPLIER: float = 10.0
+# Universal multiple of vendor cost. Applies to OpenAI tokens, Google
+# Places calls, and enrichment alike — every billable action runs the
+# customer at 10× our underlying cost. Change this number to retune
+# every action's price in one shot.
+COST_MULTIPLIER: float = 10.0
 
-# Fixed costs in CREDITS for actions whose underlying cost is either
-# predictable (Places API has a flat per-call rate) or paid to a
-# third-party provider (Clay/Apollo enrichment).
-FIXED_CREDIT_COSTS: dict[str, float] = {
-    "bulk_scan_query": 1.0,   # one Google Places search = 1 credit
-    "enrichment":      2.0,   # one Clay/Apollo enrichment = 2 credits
-}
+# Backwards-compatible alias for callers that imported the OpenAI-only
+# name from the previous design. Both point to the same constant.
+OPENAI_COST_MULTIPLIER: float = COST_MULTIPLIER
 
-# Range shown in the UI before an analyze runs. Pulled from observed
-# distributions in production logs: a thin practice page lands at
-# ~0.3 credits; a long dental site with 50 reviews → ~1.5 credits.
-# These are display-only — server still deducts the exact amount.
+# Representative cost (¢) of a single Clay/Apollo enrichment lookup.
+# We don't currently track per-call enrichment cost from the provider,
+# so the rate uses this assumption. Update if the provider changes.
+ENRICHMENT_COST_CENTS: float = 6.6   # → 2 credits at 10× / 33¢ per credit
+
+# Display ranges shown in the UI before an action runs. Derived from
+# observed distributions of underlying cost — server still deducts the
+# exact amount post-call.
+#   analyze:        gpt-4.1 @ 1k-15k prompt tokens + 0.5k-2k output
+#   call_script:    gpt-4.1 @ shorter prompts
+#   email_draft:    gpt-4.1 @ very short prompts
+#   bulk_scan_query: 1-3 Places pages per query (3.2¢ each, 10× = ~1c/p)
+#   places_details: single 1.7¢ call
 ANALYZE_RANGE_CREDITS: tuple[float, float] = (0.3, 1.5)
 CALL_SCRIPT_RANGE_CREDITS: tuple[float, float] = (0.1, 0.4)
 EMAIL_DRAFT_RANGE_CREDITS: tuple[float, float] = (0.05, 0.20)
+BULK_SCAN_RANGE_CREDITS: tuple[float, float] = (0.97, 2.91)   # 1-3 pages
+PLACES_DETAILS_CREDITS: float = 0.52                          # 1 call
 
 CreditAction = Literal[
     "analyze",
@@ -104,7 +113,7 @@ def cost_cents_to_credits(cost_cents: float) -> float:
     """
     if cost_cents <= 0:
         return 0.0
-    credits = (cost_cents * OPENAI_COST_MULTIPLIER) / CREDIT_VALUE_CENTS
+    credits = (cost_cents * COST_MULTIPLIER) / CREDIT_VALUE_CENTS
     return round(credits, 4)
 
 
@@ -115,8 +124,9 @@ def credits_to_dollars(credits: float) -> float:
 def quote(action: CreditAction, **kwargs) -> CreditQuote:
     """Return an upfront credit quote for `action`.
 
-    For dynamic actions we use the display range constants — the actual
-    deduction happens server-side after OpenAI reports usage.
+    Every action is priced at 10× our underlying vendor cost. Dynamic
+    actions (variable token count or page count) show a range upfront;
+    the server deducts the precise amount once the vendor reports.
     """
     if action == "analyze":
         low, high = ANALYZE_RANGE_CREDITS
@@ -127,8 +137,11 @@ def quote(action: CreditAction, **kwargs) -> CreditQuote:
     if action == "email_draft":
         low, high = EMAIL_DRAFT_RANGE_CREDITS
         return CreditQuote(action, low, high, False)
-    if action in FIXED_CREDIT_COSTS:
-        n = FIXED_CREDIT_COSTS[action]
+    if action == "bulk_scan_query":
+        low, high = BULK_SCAN_RANGE_CREDITS
+        return CreditQuote(action, low, high, False)
+    if action == "enrichment":
+        n = cost_cents_to_credits(ENRICHMENT_COST_CENTS)
         return CreditQuote(action, n, n, True)
     # Unknown actions don't consume credits (e.g. topup, adjustment).
     return CreditQuote(action, 0.0, 0.0, True)
@@ -161,14 +174,17 @@ def credits_for_openai_response(
 # ---------------------------------------------------------------------------
 
 
-# Maps usage_events.kind → (credit action label, predicate(record) → credits)
-# Returning None from the predicate means "don't deduct" (skip).
+# Maps usage_events.kind → (credit action label, credits to deduct).
+# Returning None means "don't deduct" (skip — e.g. operator-side calls
+# like openai_icp_parse which the customer doesn't pay for).
 def _kind_to_credits(
     kind: str,
+    *,
     model: str | None,
     in_tok: int,
     out_tok: int,
     cached_tok: int,
+    calls: int,
 ) -> tuple[CreditAction, float] | None:
     if kind == "openai_analyze":
         return ("analyze",     credits_for_openai_response(model, in_tok, out_tok, cached_tok))
@@ -177,8 +193,14 @@ def _kind_to_credits(
     if kind == "openai_email":
         return ("email_draft", credits_for_openai_response(model, in_tok, out_tok, cached_tok))
     if kind == "places_search":
-        return ("bulk_scan_query", FIXED_CREDIT_COSTS["bulk_scan_query"])
-    # openai_icp_parse / places_details / others — operator-side, not billed.
+        return ("bulk_scan_query", cost_cents_to_credits(
+            estimate_places_cost("places_search", max(1, calls))
+        ))
+    if kind == "places_details":
+        return ("places_details", cost_cents_to_credits(
+            estimate_places_cost("places_details", max(1, calls))
+        ))
+    # openai_icp_parse: admin-side internal — not billed.
     return None
 
 
@@ -191,6 +213,7 @@ def consume_for_record(
     input_tokens: int = 0,
     output_tokens: int = 0,
     cached_input_tokens: int = 0,
+    calls: int = 1,
     cost_cents: float = 0.0,
     related_id: str | None = None,
 ) -> float | None:
@@ -204,8 +227,12 @@ def consume_for_record(
     if not company_id:
         return None
     mapped = _kind_to_credits(
-        kind, model,
-        input_tokens or 0, output_tokens or 0, cached_input_tokens or 0,
+        kind,
+        model=model,
+        in_tok=input_tokens or 0,
+        out_tok=output_tokens or 0,
+        cached_tok=cached_input_tokens or 0,
+        calls=calls or 1,
     )
     if mapped is None:
         return None

@@ -196,17 +196,20 @@ export default function AdminCreditsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  <Rate label="Analyze a lead (dynamic — 10× OpenAI cost)" lo={data.rates.analyze[0]} hi={data.rates.analyze[1]} />
-                  <Rate label="Call playbook (dynamic)" lo={data.rates.call_script[0]} hi={data.rates.call_script[1]} />
-                  <Rate label="Email draft (dynamic)" lo={data.rates.email_draft[0]} hi={data.rates.email_draft[1]} />
-                  <Rate label="Bulk Scan — per Places search" fixed={data.rates.bulk_scan_query} />
-                  <Rate label="Enrichment — per Clay / Apollo lookup" fixed={data.rates.enrichment} />
+                  <Rate label="Analyze a lead (10× OpenAI cost)" lo={data.rates.analyze[0]} hi={data.rates.analyze[1]} />
+                  <Rate label="Call playbook (10× OpenAI cost)" lo={data.rates.call_script[0]} hi={data.rates.call_script[1]} />
+                  <Rate label="Email draft (10× OpenAI cost)" lo={data.rates.email_draft[0]} hi={data.rates.email_draft[1]} />
+                  <Rate label="Bulk Scan — per Places search (10× Places cost, 1-3 pages)" lo={data.rates.bulk_scan_query[0]} hi={data.rates.bulk_scan_query[1]} />
+                  <Rate label="Place Details refresh (10× Places cost)" fixed={data.rates.places_details} />
+                  <Rate label="Enrichment — per Clay / Apollo lookup (10× provider cost)" fixed={data.rates.enrichment} />
                 </tbody>
               </table>
               <p className="text-[11px] text-gray-400 mt-2">
-                Dynamic actions are billed on actual OpenAI usage at a{" "}
-                {data.openai_multiplier}× multiple. Bulk Scan + Enrichment are
-                flat per call.
+                Every action bills at{" "}
+                <span className="font-medium">{data.cost_multiplier}× </span>
+                our underlying vendor cost. Dynamic rows show a range because
+                the underlying cost varies with prompt size or Places pagination;
+                the server deducts the precise amount post-call.
               </p>
             </Card>
 
