@@ -25,21 +25,30 @@ log = logging.getLogger("hvsi.usage")
 # ---------------------------------------------------------------------------
 
 OPENAI_COST_PER_MILLION_TOKENS: dict[str, dict[str, float]] = {
-    # ¢ per 1M tokens. Values sourced from
-    # https://developers.openai.com/api/docs/pricing
+    # ¢ per 1M tokens. Pulled live from developers.openai.com/api/docs
+    # on 2026-05-29; see docs/pricing-model.md for context.
     # Three bands per model: fresh-prompt input, cached-prompt input
     # (when OpenAI's prompt-cache hits), and output. cached_input
     # defaults to input/4 if a model is missing the explicit value.
-    "o4-mini":      {"input": 400,   "cached_input": 100,    "output": 1600},
-    "gpt-4.1":      {"input": 300,   "cached_input": 75,     "output": 1200},
-    "gpt-4.1-mini": {"input": 80,    "cached_input": 20,     "output": 320},
-    "gpt-4.1-nano": {"input": 20,    "cached_input": 5,      "output": 80},
-    "gpt-4o":       {"input": 375,   "cached_input": 187.5,  "output": 1500},
-    "gpt-4o-mini":  {"input": 30,    "cached_input": 15,     "output": 120},
+    #
+    # Legacy GPT-4.x / GPT-4o family (still live on the API):
+    "o4-mini":      {"input": 110,   "cached_input": 27.5,   "output": 440},
+    "gpt-4.1":      {"input": 200,   "cached_input": 50,     "output": 800},
+    "gpt-4.1-mini": {"input": 40,    "cached_input": 10,     "output": 160},
+    "gpt-4.1-nano": {"input": 10,    "cached_input": 2.5,    "output": 40},
+    "gpt-4o":       {"input": 250,   "cached_input": 125,    "output": 1000},
+    "gpt-4o-mini":  {"input": 15,    "cached_input": 7.5,    "output": 60},
+    # Current GPT-5.x flagship line (on the main pricing page):
+    "gpt-5.5":      {"input": 500,   "cached_input": 50,     "output": 3000},
+    "gpt-5.5-pro":  {"input": 3000,  "cached_input": 750,    "output": 18000},
+    "gpt-5.4":      {"input": 250,   "cached_input": 25,     "output": 1500},
+    "gpt-5.4-mini": {"input": 75,    "cached_input": 7.5,    "output": 450},
+    "gpt-5.4-nano": {"input": 20,    "cached_input": 2,      "output": 125},
+    "gpt-5.4-pro":  {"input": 3000,  "cached_input": 750,    "output": 18000},
     # Default mirrors gpt-4.1 since that's the analyzer's pinned model.
     # If settings.openai_model changes, update this band so unmapped
     # rows are estimated against the right tier.
-    "default":      {"input": 300,   "cached_input": 75,     "output": 1200},
+    "default":      {"input": 200,   "cached_input": 50,     "output": 800},
 }
 
 # Cents per Places-API call. Pro SKU Text Search is $0.032 = 3.2¢; Place
