@@ -1,8 +1,14 @@
 "use client"
 
 import { useMemo, useState } from "react"
-import { Loader2, X, Search, Layers, Download } from "lucide-react"
+import { Loader2, X, Search, Layers, Download, Coins } from "lucide-react"
 import { searchPractices } from "@/lib/api"
+import {
+  BULK_SCAN_QUERY_CREDITS,
+  creditsToDollars,
+  formatCredits,
+  useCredits,
+} from "@/lib/credits"
 import {
   STATE_LABELS,
   STATE_CITIES,
@@ -79,6 +85,7 @@ export default function BulkScanModal({
   const [hitCap, setHitCap] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
+  const { data: credits, refresh: refreshCredits } = useCredits()
 
   const queries = useMemo(() => {
     const usQs =
@@ -199,6 +206,7 @@ export default function BulkScanModal({
       done: true,
     })
     setRunning(false)
+    refreshCredits()
     onComplete()
   }
 
@@ -562,6 +570,46 @@ export default function BulkScanModal({
             the same scan is free.
           </div>
 
+          {/* Credit estimate + balance check */}
+          {(() => {
+            const totalCredits = queries.length * BULK_SCAN_QUERY_CREDITS
+            const haveEnough =
+              credits == null ? true : credits.balance >= totalCredits
+            const tone = haveEnough
+              ? "bg-teal-50 border-teal-200 text-teal-900"
+              : "bg-rose-50 border-rose-200 text-rose-900"
+            return (
+              <div
+                className={`rounded-lg border px-3 py-2 text-xs flex items-center justify-between gap-3 ${tone}`}
+              >
+                <div className="flex items-center gap-2">
+                  <Coins className="w-4 h-4" />
+                  <span>
+                    This scan will consume{" "}
+                    <span className="font-semibold tabular-nums">
+                      {formatCredits(totalCredits)}
+                    </span>{" "}
+                    credit{totalCredits === 1 ? "" : "s"}{" "}
+                    <span className="opacity-70">
+                      (~{creditsToDollars(totalCredits)})
+                    </span>
+                    {" "}— 1 credit per Places search.
+                  </span>
+                </div>
+                {credits != null && (
+                  <span
+                    className={`text-[11px] font-medium tabular-nums ${
+                      haveEnough ? "opacity-70" : ""
+                    }`}
+                  >
+                    Balance: {formatCredits(credits.balance)}
+                    {!haveEnough && " — not enough"}
+                  </span>
+                )}
+              </div>
+            )
+          })()}
+
           {(running || stats.done) && (
             <div className="space-y-1.5">
               <div className="h-2 rounded-full bg-gray-200 overflow-hidden">
@@ -645,7 +693,13 @@ export default function BulkScanModal({
             {running ? "Stop" : "Close"}
           </button>
           <button
-            disabled={running || queries.length === 0}
+            disabled={
+              running ||
+              queries.length === 0 ||
+              (credits != null &&
+                credits.balance <
+                  queries.length * BULK_SCAN_QUERY_CREDITS)
+            }
             onClick={runScan}
             className="inline-flex items-center gap-1.5 text-sm px-4 py-1.5 rounded-md bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50 transition"
           >
@@ -657,6 +711,10 @@ export default function BulkScanModal({
             ) : (
               <>
                 Start {queries.length} quer{queries.length === 1 ? "y" : "ies"}
+                {" "}—{" "}
+                {formatCredits(queries.length * BULK_SCAN_QUERY_CREDITS)}{" "}
+                credit
+                {queries.length * BULK_SCAN_QUERY_CREDITS === 1 ? "" : "s"}
               </>
             )}
           </button>

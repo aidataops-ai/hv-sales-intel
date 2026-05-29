@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
-import { LogOut, UserCog, KeyRound, ChevronDown, Plug, Target, Activity } from "lucide-react"
+import { LogOut, UserCog, KeyRound, ChevronDown, Plug, Target, Activity, Coins } from "lucide-react"
 import { useAuth } from "@/lib/auth"
 import ChangePasswordModal from "./change-password-modal"
 
@@ -81,6 +81,13 @@ export default function UserMenu() {
                 className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
               >
                 <Activity className="w-4 h-4" /> Usage &amp; cost
+              </Link>
+              <Link
+                href="/admin/credits"
+                onClick={() => setOpen(false)}
+                className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+              >
+                <Coins className="w-4 h-4" /> Credits
               </Link>
             </>
           )}

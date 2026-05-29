@@ -177,7 +177,12 @@ def record_openai(
     metadata: dict[str, Any] | None = None,
 ) -> None:
     """Extract usage from an OpenAI chat completion response and log it,
-    including the cached-prompt-token subset when the API reports it."""
+    including the cached-prompt-token subset when the API reports it.
+
+    Also deducts the customer-facing credit charge from the active
+    company's prepaid balance. Insufficient-credit errors propagate so
+    the API layer can return HTTP 402.
+    """
     in_tok = 0
     out_tok = 0
     cached_tok = 0
@@ -205,6 +210,29 @@ def record_openai(
         cached_input_tokens=cached_tok,
         metadata=metadata,
     )
+    # Credit deduction is a no-op when company_id is None or the kind
+    # isn't billable (e.g. openai_icp_parse). Failures other than
+    # insufficient-credits are swallowed inside the helper.
+    try:
+        from src.credits import consume_for_record
+        cost_cents = estimate_openai_cost(model, in_tok, out_tok, cached_tok)
+        related_id = (metadata or {}).get("place_id") if metadata else None
+        consume_for_record(
+            kind=kind,
+            company_id=company_id,
+            user_id=user_id,
+            model=model,
+            input_tokens=in_tok,
+            output_tokens=out_tok,
+            cached_input_tokens=cached_tok,
+            cost_cents=cost_cents,
+            related_id=related_id,
+        )
+    except Exception:
+        # InsufficientCreditsError is allowed to propagate (caller may
+        # want to surface HTTP 402); other exceptions stay silent so
+        # credit bookkeeping never breaks the AI flow.
+        raise
 
 
 def record_places(
@@ -215,7 +243,12 @@ def record_places(
     user_id: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> None:
-    """Log a Places API call (one row per HTTP request, even for a paged search)."""
+    """Log a Places API call (one row per HTTP request, even for a paged search).
+
+    Also deducts 1 credit per Places SEARCH (not per page) — see
+    src/credits.py:FIXED_CREDIT_COSTS. places_details is operator-side
+    and not billed.
+    """
     record_event(
         kind=kind,
         calls=calls,
@@ -223,3 +256,15 @@ def record_places(
         user_id=user_id,
         metadata=metadata,
     )
+    try:
+        from src.credits import consume_for_record
+        related_id = (metadata or {}).get("query") if metadata else None
+        consume_for_record(
+            kind=kind,
+            company_id=company_id,
+            user_id=user_id,
+            cost_cents=estimate_places_cost(kind, calls),
+            related_id=related_id,
+        )
+    except Exception:
+        raise

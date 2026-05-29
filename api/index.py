@@ -26,6 +26,17 @@ log = logging.getLogger("hvsi.api")
 from src.analyzer import analyze_practice
 from src.auth import get_admin_client, get_current_user, require_admin
 from src.call_log import append_call_note, update_last_call_note
+from src.credits import (
+    ANALYZE_RANGE_CREDITS,
+    CALL_SCRIPT_RANGE_CREDITS,
+    CREDIT_VALUE_CENTS,
+    EMAIL_DRAFT_RANGE_CREDITS,
+    FIXED_CREDIT_COSTS,
+    InsufficientCreditsError,
+    OPENAI_COST_MULTIPLIER,
+    get_balance,
+    topup as credits_topup,
+)
 from src.salesforce import lead_view_url
 
 
@@ -376,15 +387,21 @@ async def get_email_draft_endpoint(
     if cached:
         return cached
 
-    draft = await generate_email_draft(
-        name=practice["name"],
-        category=practice.get("category"),
-        summary=practice.get("summary"),
-        pain_points=practice.get("pain_points"),
-        sales_angles=practice.get("sales_angles"),
-        company_id=user.get("company_id"),
-        user_id=user.get("id"),
-    )
+    try:
+        draft = await generate_email_draft(
+            name=practice["name"],
+            category=practice.get("category"),
+            summary=practice.get("summary"),
+            pain_points=practice.get("pain_points"),
+            sales_angles=practice.get("sales_angles"),
+            company_id=user.get("company_id"),
+            user_id=user.get("id"),
+        )
+    except InsufficientCreditsError:
+        raise HTTPException(
+            status_code=402,
+            detail={"error": "INSUFFICIENT_CREDITS", "action": "email_draft"},
+        )
     update_practice_fields(
         place_id,
         {
@@ -406,15 +423,21 @@ async def regenerate_email_draft_endpoint(
     if not practice:
         raise HTTPException(404, "Practice not found")
 
-    draft = await generate_email_draft(
-        name=practice["name"],
-        category=practice.get("category"),
-        summary=practice.get("summary"),
-        pain_points=practice.get("pain_points"),
-        sales_angles=practice.get("sales_angles"),
-        company_id=user.get("company_id"),
-        user_id=user.get("id"),
-    )
+    try:
+        draft = await generate_email_draft(
+            name=practice["name"],
+            category=practice.get("category"),
+            summary=practice.get("summary"),
+            pain_points=practice.get("pain_points"),
+            sales_angles=practice.get("sales_angles"),
+            company_id=user.get("company_id"),
+            user_id=user.get("id"),
+        )
+    except InsufficientCreditsError:
+        raise HTTPException(
+            status_code=402,
+            detail={"error": "INSUFFICIENT_CREDITS", "action": "email_draft"},
+        )
     update_practice_fields(
         place_id,
         {
@@ -817,6 +840,102 @@ def list_my_companies(user: dict = Depends(get_current_user)):
             "has_icp": _has_icp_defined(company.get("icp_parsed")),
         })
     return {"companies": out, "current_company_id": user.get("company_id")}
+
+
+# ---------------------------------------------------------------------------
+# Credits — balance, transactions, top-ups.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/me/credits")
+def my_credits(user: dict = Depends(get_current_user)):
+    """Current credit balance + recent transactions for the active
+    company. Every authenticated user can read their own tenant's
+    balance (so the topbar pill works for SDRs, not just admins).
+    """
+    company_id = user.get("company_id")
+    if not company_id:
+        return {"balance": 0, "purchased": 0, "consumed": 0, "transactions": []}
+
+    client = get_admin_client()
+    purchased = 0.0
+    consumed = 0.0
+    balance = 0.0
+    try:
+        row = (
+            client.table("companies")
+            .select("credit_balance,credits_purchased,credits_consumed")
+            .eq("id", company_id)
+            .limit(1)
+            .execute()
+        )
+        if row.data:
+            r0 = row.data[0]
+            balance   = float(r0.get("credit_balance") or 0)
+            purchased = float(r0.get("credits_purchased") or 0)
+            consumed  = float(r0.get("credits_consumed") or 0)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    try:
+        tx = (
+            client.table("credit_transactions")
+            .select("id,kind,delta,balance_after,action,related_id,cost_cents,notes,created_at")
+            .eq("company_id", company_id)
+            .order("created_at", desc=True)
+            .limit(50)
+            .execute()
+        )
+        transactions = tx.data or []
+    except Exception:
+        transactions = []
+
+    return {
+        "balance":         round(balance, 4),
+        "purchased":       round(purchased, 4),
+        "consumed":        round(consumed, 4),
+        "credit_value_cents": CREDIT_VALUE_CENTS,
+        "openai_multiplier": OPENAI_COST_MULTIPLIER,
+        "rates": {
+            "analyze":          list(ANALYZE_RANGE_CREDITS),
+            "call_script":      list(CALL_SCRIPT_RANGE_CREDITS),
+            "email_draft":      list(EMAIL_DRAFT_RANGE_CREDITS),
+            "bulk_scan_query":  FIXED_CREDIT_COSTS["bulk_scan_query"],
+            "enrichment":       FIXED_CREDIT_COSTS["enrichment"],
+        },
+        "transactions":    transactions,
+    }
+
+
+class CreditTopupRequest(BaseModel):
+    amount: float
+    notes: str | None = None
+    source: str | None = None
+
+
+@app.post("/api/admin/credits/topup")
+def admin_credits_topup(
+    body: CreditTopupRequest,
+    admin: dict = Depends(require_admin),
+):
+    """Admin grants credits to the active company. Mock-only for now —
+    a real billing integration (Stripe) would call add_credits from a
+    webhook handler instead.
+    """
+    if body.amount <= 0:
+        raise HTTPException(status_code=400, detail="amount must be > 0")
+    if body.amount > 1_000_000:
+        raise HTTPException(status_code=400, detail="amount too large")
+    new_balance = credits_topup(
+        company_id=admin["company_id"],
+        amount=body.amount,
+        user_id=admin.get("id"),
+        source=body.source or "admin_topup",
+        notes=body.notes,
+    )
+    if new_balance is None:
+        raise HTTPException(status_code=500, detail="Top-up failed")
+    return {"balance": round(new_balance, 4)}
 
 
 # ---------------------------------------------------------------------------
@@ -1335,11 +1454,37 @@ async def search(body: SearchRequest, user: dict = Depends(get_current_user)):
         if cached:
             return {"practices": cached, "count": len(cached), "upserted": 0, "cached": True}
 
-    practices = await search_places(
-        body.query,
-        company_id=user.get("company_id"),
-        user_id=user.get("id"),
-    )
+    # Pre-flight credit check — 1 credit per Places search. Cached hits
+    # above are free (no Places call → no deduction).
+    if user.get("company_id"):
+        bal = get_balance(user["company_id"])
+        needed = FIXED_CREDIT_COSTS["bulk_scan_query"]
+        if bal < needed:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "INSUFFICIENT_CREDITS",
+                    "balance": bal,
+                    "needed": needed,
+                    "action": "bulk_scan_query",
+                },
+            )
+
+    try:
+        practices = await search_places(
+            body.query,
+            company_id=user.get("company_id"),
+            user_id=user.get("id"),
+        )
+    except InsufficientCreditsError as e:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "INSUFFICIENT_CREDITS",
+                "action": "bulk_scan_query",
+                "message": str(e),
+            },
+        )
     relevant = [p for p in practices if "IRRELEVANT" not in p.tags]
     irrelevant = [p for p in practices if "IRRELEVANT" in p.tags]
 
@@ -1458,13 +1603,40 @@ async def analyze(
     ):
         return current_record
 
-    analysis = await analyze_practice(
-        place_id, name, website, category,
-        city=city, state=state,
-        rating=rating, review_count=review_count,
-        company_id=user.get("company_id"),
-        user_id=user.get("id"),
-    )
+    # Pre-flight credit check — fail fast before burning OpenAI tokens
+    # we won't bill for. Cost is dynamic; we gate on the low end of the
+    # observed range so the typical analyze isn't blocked at exactly
+    # the right balance.
+    if user.get("company_id"):
+        balance = get_balance(user["company_id"])
+        if balance < ANALYZE_RANGE_CREDITS[0]:
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "INSUFFICIENT_CREDITS",
+                    "balance": balance,
+                    "needed": ANALYZE_RANGE_CREDITS[0],
+                    "action": "analyze",
+                },
+            )
+
+    try:
+        analysis = await analyze_practice(
+            place_id, name, website, category,
+            city=city, state=state,
+            rating=rating, review_count=review_count,
+            company_id=user.get("company_id"),
+            user_id=user.get("id"),
+        )
+    except InsufficientCreditsError as e:
+        raise HTTPException(
+            status_code=402,
+            detail={
+                "error": "INSUFFICIENT_CREDITS",
+                "action": "analyze",
+                "message": str(e),
+            },
+        )
     analysis["analysis_input_hash"] = fingerprint
 
     if current_record:
@@ -1510,7 +1682,13 @@ async def get_script(place_id: str, user: dict = Depends(get_current_user)):
     if practice.get("call_script"):
         return json.loads(practice["call_script"])
 
-    script = await _build_personalized_script(practice, user)
+    try:
+        script = await _build_personalized_script(practice, user)
+    except InsufficientCreditsError:
+        raise HTTPException(
+            status_code=402,
+            detail={"error": "INSUFFICIENT_CREDITS", "action": "call_script"},
+        )
 
     update_practice_fields(place_id, {"call_script": json.dumps(script)}, touched_by=user["id"], company_id=user["company_id"])
     add_tags(place_id, ["SCRIPT_READY"], company_id=user["company_id"])
@@ -1528,7 +1706,13 @@ async def regenerate_script_endpoint(place_id: str, user: dict = Depends(get_cur
     if not practice:
         raise HTTPException(status_code=404, detail="Practice not found")
 
-    script = await _build_personalized_script(practice, user)
+    try:
+        script = await _build_personalized_script(practice, user)
+    except InsufficientCreditsError:
+        raise HTTPException(
+            status_code=402,
+            detail={"error": "INSUFFICIENT_CREDITS", "action": "call_script"},
+        )
 
     update_practice_fields(place_id, {"call_script": json.dumps(script)}, touched_by=user["id"], company_id=user["company_id"])
     add_tags(place_id, ["SCRIPT_READY"], company_id=user["company_id"])

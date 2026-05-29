@@ -199,6 +199,11 @@ create table if not exists companies (
   icp_parsed    jsonb,                  -- structured ICP — see icp_parser.py schema
   scoring_config jsonb,                 -- dimension-weight overrides; null = defaults
   integration_secrets jsonb,            -- per-tenant SF / RingCentral / etc.
+  -- Prepaid credits — see supabase/migrations/2026-05-29-credits.sql
+  -- for the ledger + RPCs. 1 credit = $0.33.
+  credit_balance     numeric(14, 4) not null default 0,
+  credits_purchased  numeric(14, 4) not null default 0,
+  credits_consumed   numeric(14, 4) not null default 0,
   created_by    uuid references auth.users(id),
   created_at    timestamptz default now(),
   archived_at   timestamptz
@@ -338,6 +343,8 @@ alter table company_practice_analyses enable row level security;
 alter table company_practice_state    enable row level security;
 alter table company_email_messages    enable row level security;
 alter table practices                 enable row level security;
+-- credit_transactions RLS lives in the 2026-05-29-credits.sql migration
+-- alongside the consume_credits / add_credits / debit_credits RPCs.
 
 -- A user can see / edit a company iff they're a member of it.
 drop policy if exists "tenant_membership_companies" on companies;

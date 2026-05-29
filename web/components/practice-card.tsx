@@ -13,6 +13,7 @@ import EnrichButton from "./enrich-button"
 import OwnerMiniCard from "./owner-mini-card"
 import { useEnrichmentPoll } from "@/lib/use-enrichment-poll"
 import { useAuth } from "@/lib/auth"
+import { ANALYZE_RANGE, rangeLabel } from "@/lib/credits"
 
 function StarRating({ rating }: { rating: number | null }) {
   if (!rating) return null
@@ -209,6 +210,7 @@ export default function PracticeCard({
             onAnalyze(practice.place_id, isScored)
           }}
           disabled={isAnalyzing}
+          title={`Costs ~${rangeLabel(ANALYZE_RANGE)} depending on website size`}
           className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg border border-teal-600 text-teal-700 hover:bg-teal-50 disabled:opacity-50 transition"
         >
           {isAnalyzing ? (
@@ -217,6 +219,9 @@ export default function PracticeCard({
             <Brain className="w-3 h-3" />
           )}
           {isAnalyzing ? "Analyzing..." : isScored ? "Re-analyze" : "Analyze"}
+          <span className="ml-1 text-[10px] font-normal opacity-70">
+            ~{rangeLabel(ANALYZE_RANGE)}
+          </span>
         </button>
         )}
         {!canAnalyze && !isScored && user?.role === "admin" && (
