@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useState } from "react"
 import Link from "next/link"
+import { notFound } from "next/navigation"
 import {
   ArrowLeft, RefreshCw, Loader2, Activity, DollarSign,
   Cloud, Sparkles, Calculator, Check,
 } from "lucide-react"
 import { useAuth } from "@/lib/auth"
+import { SHOW_BILLING } from "@/lib/flags"
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ""
 
@@ -126,6 +128,8 @@ export default function UsagePage() {
     }
   }
 
+  // Cost/credit surfaces are hidden for demo — see SHOW_BILLING in lib/flags.ts.
+  if (!SHOW_BILLING) notFound()
   if (!user) {
     return <Centered>Sign in to view usage.</Centered>
   }

@@ -17,7 +17,7 @@ const jakarta = Plus_Jakarta_Sans({
 
 export const metadata: Metadata = {
   title: "Apex Sales Intel",
-  description: "Account discovery for ApexVirtuals",
+  description: "Account discovery for Apex&Virtuals",
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -2,8 +2,10 @@
 
 import { useState } from "react"
 import Link from "next/link"
+import { notFound } from "next/navigation"
 import { Cloud, Sparkles, ArrowLeft, Check } from "lucide-react"
 import { useAuth } from "@/lib/auth"
+import { SHOW_INTEGRATIONS } from "@/lib/flags"
 
 /**
  * MOCK integrations page. Visual fidelity for the demo — accepts every
@@ -19,7 +21,7 @@ export default function IntegrationsPage() {
   const [salesforce, setSalesforce] = useState({
     apex_url: "",
     api_key: "",
-    lead_view_base_url: "https://acme.lightning.force.com/lightning/r/Lead",
+    lead_view_base_url: "",
   })
   const [clay, setClay] = useState({
     table_webhook_url: "",
@@ -37,6 +39,8 @@ export default function IntegrationsPage() {
     setSaved(null)
   }
 
+  // Mock integrations page is hidden for demo — see SHOW_INTEGRATIONS in lib/flags.ts.
+  if (!SHOW_INTEGRATIONS) notFound()
   if (!user) {
     return (
       <div className="min-h-screen grid place-items-center text-gray-500">

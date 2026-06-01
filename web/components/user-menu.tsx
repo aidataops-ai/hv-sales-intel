@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react"
 import Link from "next/link"
 import { LogOut, UserCog, KeyRound, ChevronDown, Plug, Target, Activity, Coins } from "lucide-react"
 import { useAuth } from "@/lib/auth"
+import { SHOW_BILLING, SHOW_INTEGRATIONS } from "@/lib/flags"
 import ChangePasswordModal from "./change-password-modal"
 
 export default function UserMenu() {
@@ -68,27 +69,35 @@ export default function UserMenu() {
               >
                 <UserCog className="w-4 h-4" /> Users
               </Link>
-              <Link
-                href="/admin/integrations"
-                onClick={() => setOpen(false)}
-                className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-              >
-                <Plug className="w-4 h-4" /> Integrations
-              </Link>
-              <Link
-                href="/admin/usage"
-                onClick={() => setOpen(false)}
-                className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-              >
-                <Activity className="w-4 h-4" /> Usage &amp; cost
-              </Link>
-              <Link
-                href="/admin/credits"
-                onClick={() => setOpen(false)}
-                className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
-              >
-                <Coins className="w-4 h-4" /> Credits
-              </Link>
+              {/* Integrations page is a mock — hidden for demo (SHOW_INTEGRATIONS in lib/flags.ts). */}
+              {SHOW_INTEGRATIONS && (
+                <Link
+                  href="/admin/integrations"
+                  onClick={() => setOpen(false)}
+                  className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                >
+                  <Plug className="w-4 h-4" /> Integrations
+                </Link>
+              )}
+              {/* Cost/credit pages hidden for demo — see SHOW_BILLING in lib/flags.ts. */}
+              {SHOW_BILLING && (
+                <>
+                  <Link
+                    href="/admin/usage"
+                    onClick={() => setOpen(false)}
+                    className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                  >
+                    <Activity className="w-4 h-4" /> Usage &amp; cost
+                  </Link>
+                  <Link
+                    href="/admin/credits"
+                    onClick={() => setOpen(false)}
+                    className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                  >
+                    <Coins className="w-4 h-4" /> Credits
+                  </Link>
+                </>
+              )}
             </>
           )}
           <button

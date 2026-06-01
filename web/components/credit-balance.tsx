@@ -4,6 +4,7 @@ import Link from "next/link"
 import { Coins } from "lucide-react"
 import { useCredits, formatCredits, creditsToDollars } from "@/lib/credits"
 import { useAuth } from "@/lib/auth"
+import { SHOW_BILLING } from "@/lib/flags"
 
 /**
  * Topbar pill showing the active company's prepaid credit balance.
@@ -19,6 +20,9 @@ import { useAuth } from "@/lib/auth"
 export default function CreditBalance() {
   const { data, loading } = useCredits()
   const { user } = useAuth()
+
+  // Hidden for demo — see SHOW_BILLING in lib/flags.ts.
+  if (!SHOW_BILLING) return null
 
   if (loading && !data) {
     return (

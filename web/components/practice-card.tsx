@@ -14,6 +14,7 @@ import OwnerMiniCard from "./owner-mini-card"
 import { useEnrichmentPoll } from "@/lib/use-enrichment-poll"
 import { useAuth } from "@/lib/auth"
 import { ANALYZE_RANGE, rangeLabel } from "@/lib/credits"
+import { SHOW_BILLING } from "@/lib/flags"
 
 function StarRating({ rating }: { rating: number | null }) {
   if (!rating) return null
@@ -210,7 +211,13 @@ export default function PracticeCard({
             onAnalyze(practice.place_id, isScored)
           }}
           disabled={isAnalyzing}
-          title={`Costs ~${rangeLabel(ANALYZE_RANGE)} depending on website size`}
+          title={
+            SHOW_BILLING
+              ? `Costs ~${rangeLabel(ANALYZE_RANGE)} depending on website size`
+              : isScored
+                ? "Re-run ICP analysis on this lead"
+                : "Run ICP analysis on this lead"
+          }
           className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg border border-teal-600 text-teal-700 hover:bg-teal-50 disabled:opacity-50 transition"
         >
           {isAnalyzing ? (
@@ -219,9 +226,12 @@ export default function PracticeCard({
             <Brain className="w-3 h-3" />
           )}
           {isAnalyzing ? "Analyzing..." : isScored ? "Re-analyze" : "Analyze"}
-          <span className="ml-1 text-[10px] font-normal opacity-70">
-            ~{rangeLabel(ANALYZE_RANGE)}
-          </span>
+          {/* Cost badge hidden for demo — see SHOW_BILLING in lib/flags.ts. */}
+          {SHOW_BILLING && (
+            <span className="ml-1 text-[10px] font-normal opacity-70">
+              ~{rangeLabel(ANALYZE_RANGE)}
+            </span>
+          )}
         </button>
         )}
         {!canAnalyze && !isScored && user?.role === "admin" && (

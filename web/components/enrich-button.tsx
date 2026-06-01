@@ -4,6 +4,7 @@ import { useState } from "react"
 import { Loader2, Sparkles } from "lucide-react"
 import type { Practice } from "@/lib/types"
 import { enrichPractice, type EnrichResponse } from "@/lib/api"
+import { SHOW_BILLING } from "@/lib/flags"
 
 interface EnrichButtonProps {
   practice: Practice
@@ -50,7 +51,13 @@ export default function EnrichButton({
       type="button"
       onClick={handleClick}
       disabled={isPending}
-      title={isAlreadyEnriched ? "Re-enrich (uses Clay credits)" : "Find owner via Clay"}
+      title={
+        isAlreadyEnriched
+          ? SHOW_BILLING
+            ? "Re-enrich (uses Clay credits)"
+            : "Re-enrich owner"
+          : "Find owner via Clay"
+      }
       className={className}
     >
       {isPending ? (

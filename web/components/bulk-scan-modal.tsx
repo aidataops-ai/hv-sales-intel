@@ -9,6 +9,7 @@ import {
   formatCredits,
   useCredits,
 } from "@/lib/credits"
+import { SHOW_BILLING } from "@/lib/flags"
 import {
   STATE_LABELS,
   STATE_CITIES,
@@ -567,11 +568,11 @@ export default function BulkScanModal({
               </>
             )}
             . The 24-hour cache short-circuits duplicate queries so re-running
-            the same scan is free.
+            the same scan returns instantly.
           </div>
 
-          {/* Credit estimate + balance check */}
-          {(() => {
+          {/* Credit estimate + balance check — hidden for demo (SHOW_BILLING in lib/flags.ts). */}
+          {SHOW_BILLING && (() => {
             const [lo, hi] = BULK_SCAN_RANGE
             const minCredits = queries.length * lo
             const maxCredits = queries.length * hi
@@ -698,7 +699,9 @@ export default function BulkScanModal({
             disabled={
               running ||
               queries.length === 0 ||
-              (credits != null &&
+              // Balance gate only applies when billing UI is shown — see SHOW_BILLING in lib/flags.ts.
+              (SHOW_BILLING &&
+                credits != null &&
                 credits.balance < queries.length * BULK_SCAN_RANGE[0])
             }
             onClick={runScan}
@@ -712,9 +715,14 @@ export default function BulkScanModal({
             ) : (
               <>
                 Start {queries.length} quer{queries.length === 1 ? "y" : "ies"}
-                {" "}— up to{" "}
-                {formatCredits(queries.length * BULK_SCAN_RANGE[1])}{" "}
-                credits
+                {/* Credit estimate suffix hidden for demo — see SHOW_BILLING in lib/flags.ts. */}
+                {SHOW_BILLING && (
+                  <>
+                    {" "}— up to{" "}
+                    {formatCredits(queries.length * BULK_SCAN_RANGE[1])}{" "}
+                    credits
+                  </>
+                )}
               </>
             )}
           </button>
