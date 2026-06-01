@@ -1,6 +1,6 @@
 # HV Sales Intel
 
-Map-based sales intelligence tool for **Health & Virtuals** — a healthcare staffing / talent-acquisition company. Helps reps find healthcare practices, analyze staffing signals with AI, generate cold-call playbooks, and track each practice through a CRM pipeline.
+Map-based sales intelligence tool for **Apex & Virtuals** — a healthcare staffing / talent-acquisition company. Helps reps find healthcare practices, analyze staffing signals with AI, generate cold-call playbooks, and track each practice through a CRM pipeline.
 
 The app runs end-to-end with **zero external config** (mock fallbacks everywhere). Wire in API keys to enable live data.
 

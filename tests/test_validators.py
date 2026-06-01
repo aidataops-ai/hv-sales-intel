@@ -22,7 +22,7 @@ def test_validate_email_accepts_any_domain():
     # address must be accepted regardless of domain.
     validate_email("sarah@anywhere.com")
     validate_email("sarah@example.org")
-    validate_email("sarah@healthandvirtuals.com")
+    validate_email("sarah@apexvirtuals.com")
 
 
 def test_validate_email_rejects_missing_at():

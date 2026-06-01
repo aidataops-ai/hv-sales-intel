@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add AI-powered practice analysis (website crawl + Google reviews + GPT-4o) so Health & Virtuals' sales team sees hiring signals, pain points, sales angles, and lead scores — on-demand per card or in bulk — with mock fallback for zero-config operation.
+**Goal:** Add AI-powered practice analysis (website crawl + Google reviews + GPT-4o) so Apex & Virtuals' sales team sees hiring signals, pain points, sales angles, and lead scores — on-demand per card or in bulk — with mock fallback for zero-config operation.
 
 **Architecture:** Three new Python modules (`crawler.py`, `reviews.py`, `analyzer.py`) orchestrate data collection and LLM analysis. One new FastAPI endpoint (`POST /api/practices/{place_id}/analyze`) exposes it. Frontend gets an "Analyze" button per card, "Score All" in the top bar, score badges, inline analysis expansion, and color-coded map pins.
 
@@ -369,19 +369,19 @@ from src.crawler import crawl_website
 from src.reviews import fetch_reviews, format_reviews_for_prompt
 from src.settings import settings
 
-SYSTEM_PROMPT = """You are a healthcare sales intelligence analyst for Health & Virtuals, a healthcare staffing and talent acquisition company.
+SYSTEM_PROMPT = """You are a healthcare sales intelligence analyst for Apex & Virtuals, a healthcare staffing and talent acquisition company.
 
 Your job is to analyze healthcare practices and identify:
 1. Staffing-related pain points (understaffed, high turnover, hiring difficulties)
 2. Hiring signals (job postings, "we're hiring" pages, open positions for front desk, medical assistants, clinical staff, admin/VA roles)
-3. Sales angles for pitching Health & Virtuals' staffing services
+3. Sales angles for pitching Apex & Virtuals' staffing services
 
-Focus specifically on roles Health & Virtuals can fill: front desk staff, medical assistants, clinical staff, administrative assistants, virtual assistants.
+Focus specifically on roles Apex & Virtuals can fill: front desk staff, medical assistants, clinical staff, administrative assistants, virtual assistants.
 
 Scoring (0-100 each):
 - lead_score: Overall composite. Weight hiring signals 50%, urgency 30%, practice size/growth 20%.
 - urgency_score: How urgently they need staffing help NOW (negative reviews about wait times, staff shortages, understaffed signals).
-- hiring_signal_score: Direct evidence of hiring for roles H&V fills (job postings, careers page, open positions).
+- hiring_signal_score: Direct evidence of hiring for roles Apex fills (job postings, careers page, open positions).
 
 Return ONLY valid JSON with this exact structure, no other text:
 {
@@ -548,7 +548,7 @@ def _mock_analysis(name: str, category: str | None) -> dict:
     lead = max(0, min(100, lead))
 
     return {
-        "summary": f"{name} shows signs of staffing challenges typical of {cat.replace('_', ' ')} practices. Review analysis and website signals suggest opportunities for Health & Virtuals staffing services.",
+        "summary": f"{name} shows signs of staffing challenges typical of {cat.replace('_', ' ')} practices. Review analysis and website signals suggest opportunities for Apex & Virtuals staffing services.",
         "pain_points": json.dumps(selected_pains),
         "sales_angles": json.dumps(selected_angles),
         "lead_score": lead,
@@ -793,7 +793,7 @@ function mockAnalysis(placeId: string): Practice {
 
   return {
     ...practice,
-    summary: `${practice.name} shows staffing challenges typical of ${(practice.category ?? "healthcare").replace("_", " ")} practices. Opportunities exist for Health & Virtuals staffing solutions.`,
+    summary: `${practice.name} shows staffing challenges typical of ${(practice.category ?? "healthcare").replace("_", " ")} practices. Opportunities exist for Apex & Virtuals staffing solutions.`,
     pain_points: JSON.stringify(painPoints),
     sales_angles: JSON.stringify(salesAngles),
     lead_score: Math.min(100, lead),

@@ -650,9 +650,9 @@ from openai import AsyncOpenAI
 
 from src.settings import settings
 
-SYSTEM_PROMPT = """You are a cold outreach email writer for Health & Virtuals, a healthcare staffing and talent acquisition company.
+SYSTEM_PROMPT = """You are a cold outreach email writer for Apex & Virtuals, a healthcare staffing and talent acquisition company.
 
-Given information about a healthcare practice (name, category, analysis summary, pain points, sales angles), write a short personalized cold email (80-140 words) to the practice from a Health & Virtuals rep.
+Given information about a healthcare practice (name, category, analysis summary, pain points, sales angles), write a short personalized cold email (80-140 words) to the practice from a Apex & Virtuals rep.
 
 Reference ONE specific pain point and ONE specific sales angle from the analysis. End with a clear ask: a 15-minute call.
 
@@ -662,7 +662,7 @@ Return ONLY valid JSON with this exact structure, no other text:
   "body": "the email body as plain text with paragraph breaks as \\n\\n"
 }
 
-Tone: warm, direct, not pushy. First person ("I", "we at Health & Virtuals")."""
+Tone: warm, direct, not pushy. First person ("I", "we at Apex & Virtuals")."""
 
 
 async def generate_email_draft(
@@ -712,7 +712,7 @@ def _mock_draft(name: str, category: str | None) -> dict:
         "subject": f"Staffing support for {name}",
         "body": (
             f"Hi there,\n\n"
-            f"I'm reaching out from Health & Virtuals — we specialize in staffing "
+            f"I'm reaching out from Apex & Virtuals — we specialize in staffing "
             f"for {cat} practices. I noticed {name} could benefit from front-desk "
             f"or admin support, and wanted to introduce myself.\n\n"
             f"We place pre-vetted healthcare staff (front desk, medical assistants, "
@@ -722,7 +722,7 @@ def _mock_draft(name: str, category: str | None) -> dict:
             f"a fit for your practice?\n\n"
             f"Best,\n"
             f"[Your Name]\n"
-            f"Health & Virtuals"
+            f"Apex & Virtuals"
         ),
     }
 ```
@@ -1139,7 +1139,7 @@ Also update `_mock_analysis` at the bottom of the same file. Find its return dic
 
 ```python
     return {
-        "summary": f"{name} shows signs of staffing challenges typical of {cat.replace('_', ' ')} practices. Review analysis and website signals suggest opportunities for Health & Virtuals staffing services.",
+        "summary": f"{name} shows signs of staffing challenges typical of {cat.replace('_', ' ')} practices. Review analysis and website signals suggest opportunities for Apex & Virtuals staffing services.",
         "pain_points": json.dumps(selected_pains),
         "sales_angles": json.dumps(selected_angles),
         "lead_score": lead,

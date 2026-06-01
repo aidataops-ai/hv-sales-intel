@@ -110,7 +110,7 @@ from openai import AsyncOpenAI
 
 from src.settings import settings
 
-SYSTEM_PROMPT = """You are a cold call script writer for Health & Virtuals, a healthcare staffing and talent acquisition company.
+SYSTEM_PROMPT = """You are a cold call script writer for Apex & Virtuals, a healthcare staffing and talent acquisition company.
 
 Given information about a healthcare practice (name, category, analysis summary, pain points, sales angles), generate a structured cold call playbook.
 
@@ -148,11 +148,11 @@ Return ONLY valid JSON with this exact structure:
 Guidelines:
 - Opening: Reference the practice by name, mention something specific about them (category, size, detail from analysis)
 - Discovery Questions: Ask about staffing challenges, hiring timeline, current workflow pain points
-- Pitch: Directly address their specific pain points. Mention Health & Virtuals by name. Focus on staffing solutions they need.
+- Pitch: Directly address their specific pain points. Mention Apex & Virtuals by name. Focus on staffing solutions they need.
 - Objection Handling: Include "We already have a recruiter", "We can't afford it", "We're not hiring right now", and one specific to their situation
 - Closing: Suggest a 15-minute meeting, offer a free staffing assessment, provide follow-up framing
 
-Keep each section 3-6 sentences. Be conversational, not robotic. Use the rep's perspective ("I", "we at Health & Virtuals")."""
+Keep each section 3-6 sentences. Be conversational, not robotic. Use the rep's perspective ("I", "we at Apex & Virtuals")."""
 
 
 async def generate_script(
@@ -202,7 +202,7 @@ MOCK_SCRIPTS = {
             {
                 "title": "Opening",
                 "icon": "phone",
-                "content": "Hi, this is [Your Name] calling from Health & Virtuals. I'm reaching out because we specialize in staffing solutions for dental practices, and I noticed {name} may benefit from some of our services. Do you have a quick moment?"
+                "content": "Hi, this is [Your Name] calling from Apex & Virtuals. I'm reaching out because we specialize in staffing solutions for dental practices, and I noticed {name} may benefit from some of our services. Do you have a quick moment?"
             },
             {
                 "title": "Discovery Questions",
@@ -212,7 +212,7 @@ MOCK_SCRIPTS = {
             {
                 "title": "Pitch",
                 "icon": "target",
-                "content": "At Health & Virtuals, we provide pre-vetted front desk staff, dental assistants, and administrative support specifically for dental practices like {name}. We handle recruiting, screening, and onboarding so you can focus on patient care. Our placements typically reduce scheduling delays by 40% and free up 10+ hours per week of admin time for your existing team."
+                "content": "At Apex & Virtuals, we provide pre-vetted front desk staff, dental assistants, and administrative support specifically for dental practices like {name}. We handle recruiting, screening, and onboarding so you can focus on patient care. Our placements typically reduce scheduling delays by 40% and free up 10+ hours per week of admin time for your existing team."
             },
             {
                 "title": "Objection Handling",
@@ -231,7 +231,7 @@ MOCK_SCRIPTS = {
             {
                 "title": "Opening",
                 "icon": "phone",
-                "content": "Hi, this is [Your Name] from Health & Virtuals. We work with chiropractic practices to solve staffing challenges — from front desk coverage to clinical support. I came across {name} and thought we might be able to help. Do you have a moment?"
+                "content": "Hi, this is [Your Name] from Apex & Virtuals. We work with chiropractic practices to solve staffing challenges — from front desk coverage to clinical support. I came across {name} and thought we might be able to help. Do you have a moment?"
             },
             {
                 "title": "Discovery Questions",
@@ -241,7 +241,7 @@ MOCK_SCRIPTS = {
             {
                 "title": "Pitch",
                 "icon": "target",
-                "content": "Health & Virtuals provides trained front desk staff and virtual assistants who specialize in chiropractic practice workflows. We can handle patient scheduling, insurance verification, and intake processing so your providers can focus entirely on patient care. Our clients typically see a 30% reduction in patient wait times and significantly improved phone answer rates."
+                "content": "Apex & Virtuals provides trained front desk staff and virtual assistants who specialize in chiropractic practice workflows. We can handle patient scheduling, insurance verification, and intake processing so your providers can focus entirely on patient care. Our clients typically see a 30% reduction in patient wait times and significantly improved phone answer rates."
             },
             {
                 "title": "Objection Handling",
@@ -624,9 +624,9 @@ function mockScript(placeId: string): Script {
   const name = practice.name
   return {
     sections: [
-      { title: "Opening", icon: "phone", content: `Hi, this is [Your Name] from Health & Virtuals. I'm calling about ${name} — we specialize in healthcare staffing and I noticed your practice may benefit from our services. Do you have a quick moment?` },
+      { title: "Opening", icon: "phone", content: `Hi, this is [Your Name] from Apex & Virtuals. I'm calling about ${name} — we specialize in healthcare staffing and I noticed your practice may benefit from our services. Do you have a quick moment?` },
       { title: "Discovery Questions", icon: "search", content: "1. How are you currently handling front desk coverage during peak hours or when staff call out?\n2. Are you finding it challenging to recruit qualified clinical staff in this market?\n3. How much admin time do your providers spend that could be handled by support staff?\n4. If you could add one team member tomorrow, what role would it be?" },
-      { title: "Pitch", icon: "target", content: `At Health & Virtuals, we provide pre-vetted healthcare staff — front desk, medical assistants, and admin support — specifically for practices like ${name}. We handle the recruiting and screening so you can focus on patients.` },
+      { title: "Pitch", icon: "target", content: `At Apex & Virtuals, we provide pre-vetted healthcare staff — front desk, medical assistants, and admin support — specifically for practices like ${name}. We handle the recruiting and screening so you can focus on patients.` },
       { title: "Objection Handling", icon: "shield", content: "Objection: \"We already have a recruiter.\"\nResponse: We complement recruiters with healthcare-specific candidates ready from day one.\n\nObjection: \"We can't afford it.\"\nResponse: Our model often saves money by eliminating bad hires and reducing overtime.\n\nObjection: \"We're not hiring.\"\nResponse: Many practices use us proactively so qualified candidates are ready when a need arises." },
       { title: "Closing", icon: "check", content: "I'd love to set up a 15-minute call to learn more about your practice and share how we've helped similar offices. We also offer a free staffing assessment. Would later this week work?" },
     ],

@@ -5,7 +5,7 @@
 
 ## Goal
 
-Give Health & Virtuals' sales reps a dedicated Call Prep page with a GPT-generated cold call playbook (opening, discovery questions, pitch, objection handling, closing), a notepad for call notes, and a CRM pipeline to track each practice from NEW through CLOSED WON/LOST.
+Give Apex & Virtuals' sales reps a dedicated Call Prep page with a GPT-generated cold call playbook (opening, discovery questions, pitch, objection handling, closing), a notepad for call notes, and a CRM pipeline to track each practice from NEW through CLOSED WON/LOST.
 
 ## Non-goals (deferred to later phases)
 
@@ -22,7 +22,7 @@ When a rep opens the Call Prep page for a practice, the system checks for a cach
 
 1. **Opening** — personalized intro referencing the practice by name, category, and a specific detail from the website crawl or reviews
 2. **Discovery Questions** — 3-4 questions designed to surface staffing pain points identified in the analysis
-3. **Pitch** — tailored value prop for Health & Virtuals staffing services, directly addressing the practice's specific pain points and sales angles
+3. **Pitch** — tailored value prop for Apex & Virtuals staffing services, directly addressing the practice's specific pain points and sales angles
 4. **Objection Handling** — 3-4 common objections with prepared rebuttals (e.g., "We already have a recruiter," "We can't afford it," "We're not hiring right now")
 5. **Closing** — next steps language, meeting request, follow-up framing
 
@@ -70,7 +70,7 @@ Full-width page with three columns on cream background.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│  ← Back to Map    Health&Virtuals    [Status: CONTACTED ▾]   │
+│  ← Back to Map    Apex&Virtuals    [Status: CONTACTED ▾]   │
 ├────────────────┬─────────────────────┬───────────────────────┤
 │  PRACTICE INFO │   CALL PLAYBOOK     │   NOTES & ACTIONS     │
 │  (280px)       │   (flex-1)          │   (320px)             │

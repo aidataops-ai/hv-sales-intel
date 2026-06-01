@@ -5,18 +5,18 @@
 
 ## Goal
 
-Add AI-powered analysis to each practice card so Health & Virtuals' sales team can instantly see pain points, hiring signals, and staffing-specific sales angles — powered by website crawling, Google reviews, and GPT-4o. Works on-demand per practice or in bulk via "Score All."
+Add AI-powered analysis to each practice card so Apex & Virtuals' sales team can instantly see pain points, hiring signals, and staffing-specific sales angles — powered by website crawling, Google reviews, and GPT-4o. Works on-demand per practice or in bulk via "Score All."
 
 ## Non-goals (deferred to later phases)
 
 - Cold call script generator (Phase 3)
 - CRM status tracking, notes (Phase 3)
 - Scheduled scraping, review sentiment trending, competitor insight (Phase 4)
-- Recommendations for other H&V divisions (Billing, IT, Marketing, etc.) — this tool focuses solely on staffing signals for Health & Virtuals
+- Recommendations for other Apex divisions (Billing, IT, Marketing, etc.) — this tool focuses solely on staffing signals for Apex & Virtuals
 
-## Context: Health & Virtuals
+## Context: Apex & Virtuals
 
-Health & Virtuals is a healthcare staffing/talent acquisition company. The AI analysis focuses on finding practices that need staffing help — front desk, medical assistants, clinical staff, admin/VA positions. The `hiring_signal_score` is the most important signal.
+Apex & Virtuals is a healthcare staffing/talent acquisition company. The AI analysis focuses on finding practices that need staffing help — front desk, medical assistants, clinical staff, admin/VA positions. The `hiring_signal_score` is the most important signal.
 
 ## Data Collection Pipeline
 
@@ -33,11 +33,11 @@ All scores are 0–100 integers.
 
 - **lead_score** — Overall composite. Weighted: hiring signals (50%), urgency indicators (30%), practice size/growth (20%). Used for pin color and sorting.
 - **urgency_score** — Needs staffing help NOW: negative reviews about wait times/staff shortages, outdated website, understaffed signals, complaints about responsiveness.
-- **hiring_signal_score** — Specifically looks for roles H&V can fill: front desk, medical assistants, clinical staff, admin/VA positions, job postings, "we're hiring" pages, career page existence, recent job listings.
+- **hiring_signal_score** — Specifically looks for roles Apex can fill: front desk, medical assistants, clinical staff, admin/VA positions, job postings, "we're hiring" pages, career page existence, recent job listings.
 
 ## GPT-4o Prompt Strategy
 
-System prompt tells GPT-4o it is a healthcare sales intelligence analyst for Health & Virtuals, a staffing/talent acquisition company. Instructs it to focus on hiring signals and staffing pain points. User prompt contains the crawled website text + review text. Returns strict JSON:
+System prompt tells GPT-4o it is a healthcare sales intelligence analyst for Apex & Virtuals, a staffing/talent acquisition company. Instructs it to focus on hiring signals and staffing pain points. User prompt contains the crawled website text + review text. Returns strict JSON:
 
 ```json
 {
@@ -143,7 +143,7 @@ After scoring, practices auto-sort by `lead_score` descending (hot leads float t
 - **Single-pass GPT-4o** over two-stage pipeline — simpler, one LLM call per practice, cost is marginal at sales team volume.
 - **Full site crawl (10 pages)** over homepage-only — richer signal, especially for careers pages.
 - **Google Places reviews** over scraping — clean, reliable, 5 most relevant reviews per practice.
-- **Staffing-only focus** — tool recommends Health & Virtuals staffing services only, not other H&V divisions.
+- **Staffing-only focus** — tool recommends Apex & Virtuals staffing services only, not other Apex divisions.
 - **On-demand + bulk** — individual Analyze button per card + Score All for the full list.
 - **Inline expansion** over detail drawer — keeps the workflow in the sidebar, no context switch.
 - **Mock fallback** — consistent with Phase 1 pattern, UI works with zero config.

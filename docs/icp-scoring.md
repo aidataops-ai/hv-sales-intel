@@ -1,6 +1,6 @@
-# ICP Scoring — H&V Universal ICP
+# ICP Scoring — Apex Universal ICP
 
-Every lead is scored **0–100** against H&V's [Universal ICP Qualification Model](../ICP%20Documents/). The scorer assigns each account to one of five **verticals** and one of four **tiers**, then evaluates it across **seven dimensions**.
+Every lead is scored **0–100** against Apex's [Universal ICP Qualification Model](../ICP%20Documents/). The scorer assigns each account to one of five **verticals** and one of four **tiers**, then evaluates it across **seven dimensions**.
 
 ## The five verticals
 
@@ -33,7 +33,7 @@ The vertical and tier are inferred by the analyzer from the website + reviews + 
 | 4 | **Remote readiness** | 15 | Uses digital systems we can plug into — EHR/PMS/CRM (Dentrix, Open Dental, PointClickCare, Opera, Aesthetic Record, etc.), online booking, patient portals. AI-inferred. |
 | 5 | **Role clarity** | 15 | Can a narrow remote role be defined today? Specific job postings, named functions, clearly non-clinical scope. AI-inferred. |
 | 6 | **Budget maturity** | 10 | Can they support a recurring monthly seat cost (not a one-time project)? Practice size, software stack, multi-location, market positioning. AI-inferred. |
-| 7 | **Compliance boundary** | 10 | Does the engagement stay within H&V's non-clinical, non-physical scope? AI-inferred — lower if they appear to expect remote staff to do licensed clinical work or in-person tasks. |
+| 7 | **Compliance boundary** | 10 | Does the engagement stay within Apex's non-clinical, non-physical scope? AI-inferred — lower if they appear to expect remote staff to do licensed clinical work or in-person tasks. |
 
 ## Score interpretation
 
@@ -61,7 +61,7 @@ This is the only dimension whose ceiling is structural — the other six are AI-
 
 ## Design rationale
 
-- **Florida focus is enforced by the geography multiplier.** Florida is H&V's launch market per the ICP doc. Outside-US leads cap at 85 and outside-FL US leads cap at 94 — making it nearly impossible for an off-geography lead to outrank an in-geography one of comparable quality.
+- **Florida focus is enforced by the geography multiplier.** Florida is Apex's launch market per the ICP doc. Outside-US leads cap at 85 and outside-FL US leads cap at 94 — making it nearly impossible for an off-geography lead to outrank an in-geography one of comparable quality.
 - **Six of seven dimensions are AI-inferred** because they're interpretive — pain, decision-maker access, remote readiness, role clarity, budget maturity, and compliance boundary all require reading the website and reviews. Pure structural data (Google Places category, review count) can't tell you whether the owner is engaged or whether they use Dentrix.
 - **AI signals are bounded at 85 combined points.** They're powerful but noisier than the structural Vertical fit signal. A target in a wrong geography or a non-ICP vertical can't be carried into the top tier by AI scores alone.
 - **Tier-aware fit.** Tier B (growth stage) scores higher than Tier A (single location) because the PDFs flag B as "Very High" fit across every vertical — those accounts can support multi-seat expansion.

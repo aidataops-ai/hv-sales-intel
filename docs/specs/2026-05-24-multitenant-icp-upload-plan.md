@@ -158,7 +158,7 @@ Eight phases, each shippable independently. Phases 1-3 are invisible to users (z
   - `web/components/icp-review-form.tsx` — reusable component for editing the parsed structure.
 
 **Acceptance**
-- Paste the H&V universal ICP text → see it parse into the expected verticals, geographies, weights, disqualifiers.
+- Paste the Apex universal ICP text → see it parse into the expected verticals, geographies, weights, disqualifiers.
 - Edit a vertical, change a weight slider — the live prompt preview updates.
 - Save → DB has the new `icp_parsed`. No analyses re-run automatically (next manual Analyze picks up the new prompt).
 
@@ -170,7 +170,7 @@ Eight phases, each shippable independently. Phases 1-3 are invisible to users (z
 
 ## Phase 6 — Per-company analyzer + scorer
 
-**Goal:** The Analyze and Bulk Scan flows actually use each company's `icp_parsed` instead of the hardcoded H&V prompt. Lead scores reflect the company's weight config.
+**Goal:** The Analyze and Bulk Scan flows actually use each company's `icp_parsed` instead of the hardcoded Apex prompt. Lead scores reflect the company's weight config.
 
 **Deliverables**
 - `src/analyzer.py`
@@ -250,7 +250,7 @@ Eight phases, each shippable independently. Phases 1-3 are invisible to users (z
   - Read-after-write: A's writes never appear in B's reads.
   - Switch endpoint: cookie change actually changes `company_id` on subsequent requests.
   - RLS policy: anon-key client cannot select rows for a company the user isn't a member of (even with a manually crafted request).
-- `tests/test_icp_parser.py` — golden tests for the H&V universal ICP, a hotel-ops sample, a dental DSO sample.
+- `tests/test_icp_parser.py` — golden tests for the Apex universal ICP, a hotel-ops sample, a dental DSO sample.
 - All existing tests get a `company_id` argument passthrough; behavior unchanged.
 
 ### Integration risk: Salesforce

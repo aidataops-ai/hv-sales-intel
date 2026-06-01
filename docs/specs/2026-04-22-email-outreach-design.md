@@ -134,7 +134,7 @@ async def generate_email_draft(
     """Return {subject, body}. GPT if OPENAI_API_KEY set, mock otherwise."""
 ```
 
-- System prompt: "Write a short cold outreach email (80–140 words) from a Health & Virtuals rep. Reference one specific pain point and one sales angle from the analysis. End with a clear ask (15-min call)."
+- System prompt: "Write a short cold outreach email (80–140 words) from a Apex & Virtuals rep. Reference one specific pain point and one sales angle from the analysis. End with a clear ask (15-min call)."
 - JSON output: `{subject, body}`.
 - Mock fallback: category-appropriate canned subject + body, same shape as `scriptgen._mock_script`.
 
@@ -224,7 +224,7 @@ MS_TENANT_ID=
 MS_CLIENT_ID=
 MS_CLIENT_SECRET=
 MS_REFRESH_TOKEN=        # from one-time bootstrap
-MS_SENDER_EMAIL=         # e.g. sales@healthandvirtuals.com
+MS_SENDER_EMAIL=         # e.g. sales@apexvirtuals.com
 EMAIL_REPLY_LOOKBACK_DAYS=30
 ```
 

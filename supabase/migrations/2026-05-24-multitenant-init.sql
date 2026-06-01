@@ -25,7 +25,7 @@ values (
     'short_name',   'Apex',
     'accent_color', '#0d9488'
   ),
-  -- Seed with a permissive ICP roughly matching today's hardcoded H&V
+  -- Seed with a permissive ICP roughly matching today's hardcoded Apex
   -- behavior so the analyzer keeps scoring the same way until an admin
   -- uploads a tighter ICP.
   jsonb_build_object(

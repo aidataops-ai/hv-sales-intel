@@ -1710,7 +1710,7 @@ const jakarta = Plus_Jakarta_Sans({
 
 export const metadata: Metadata = {
   title: "HV Sales Intel",
-  description: "Healthcare practice discovery for Health & Virtuals",
+  description: "Healthcare practice discovery for Apex & Virtuals",
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -2216,7 +2216,7 @@ In `.env` at repo root:
 SUPABASE_URL=...
 SUPABASE_KEY=<anon>
 SUPABASE_SERVICE_ROLE_KEY=<service_role>
-BOOTSTRAP_ADMIN_EMAIL=admin@healthandvirtuals.com
+BOOTSTRAP_ADMIN_EMAIL=admin@apexvirtuals.com
 BOOTSTRAP_ADMIN_PASSWORD=<temp-password>
 OPENAI_API_KEY=...
 ```
@@ -2231,7 +2231,7 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=...
 - [ ] **Step 2: Start both servers**
 
 Terminal 1: `uvicorn api.index:app --reload --port 8000`
-Expected log: `[bootstrap] Seeded admin: admin@healthandvirtuals.com`
+Expected log: `[bootstrap] Seeded admin: admin@apexvirtuals.com`
 
 Terminal 2: `cd web && npm run dev`
 

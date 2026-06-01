@@ -5,7 +5,7 @@
 
 ## Goal
 
-Give Health & Virtuals' sales team a map-based tool to search healthcare practices by city/specialty, see them as pins on an interactive map, browse details in a sidebar, and store everything in Supabase. Works immediately with mock data; swap in Google Places API when ready.
+Give Apex & Virtuals' sales team a map-based tool to search healthcare practices by city/specialty, see them as pins on an interactive map, browse details in a sidebar, and store everything in Supabase. Works immediately with mock data; swap in Google Places API when ready.
 
 ## Non-goals (deferred to later phases)
 
@@ -126,7 +126,7 @@ Full-viewport. Top bar with logo + search. Map takes remaining space. Sidebar fl
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  Health&Virtuals    [🔍 Search...]           [+Scan City]│
+│  Apex&Virtuals    [🔍 Search...]           [+Scan City]│
 ├──────────────────┬──────────────────────────────────────┤
 │  SIDEBAR (390px) │            LEAFLET MAP               │
 │  glass panel     │                                      │

@@ -1202,7 +1202,7 @@ from openai import AsyncOpenAI
 
 from src.settings import settings
 
-SYSTEM_PROMPT = """You are a cold call script writer for Health & Virtuals, a healthcare staffing and talent acquisition company.
+SYSTEM_PROMPT = """You are a cold call script writer for Apex & Virtuals, a healthcare staffing and talent acquisition company.
 
 Given information about a healthcare practice (name, category, location, lead doctor, owner, analysis summary, pain points, sales angles, review excerpts), generate a personalized cold call playbook tailored to THIS specific practice.
 
@@ -1220,11 +1220,11 @@ Return ONLY valid JSON with this exact structure:
 Personalization requirements:
 - Opening: If a lead doctor name is provided, ask for them by name ("Hi, may I speak with Dr. Smith?"). Otherwise greet the practice. Reference the city if provided.
 - Discovery Questions: Reference 1-2 specific items from the provided pain_points by name (not generic). 3-4 numbered questions total.
-- Pitch: If review_excerpts are provided, quote ONE excerpt verbatim with leading attribution ("One of your patient reviews mentioned, '...'") and tie it to a Health & Virtuals staffing solution. Mention Health & Virtuals by name.
+- Pitch: If review_excerpts are provided, quote ONE excerpt verbatim with leading attribution ("One of your patient reviews mentioned, '...'") and tie it to a Apex & Virtuals staffing solution. Mention Apex & Virtuals by name.
 - Objection Handling: Cover "We already have a recruiter", "We can't afford it", "We're not hiring right now", and one objection specific to this category.
 - Closing: Reference the city when present ("we've placed staff at multiple [city]-area clinics"). Suggest a 15-minute meeting and a free staffing assessment.
 
-Keep each section 3-6 sentences. Be conversational, not robotic. Use the rep's perspective ("I", "we at Health & Virtuals")."""
+Keep each section 3-6 sentences. Be conversational, not robotic. Use the rep's perspective ("I", "we at Apex & Virtuals")."""
 
 
 async def generate_script(
@@ -1303,7 +1303,7 @@ def _mock_script(
     doctor_greeting = (
         f"Hi, may I speak with {website_doctor_name}?"
         if website_doctor_name
-        else f"Hi, this is [Your Name] calling from Health & Virtuals about {name}."
+        else f"Hi, this is [Your Name] calling from Apex & Virtuals about {name}."
     )
     city_phrase = f" in the {city} area" if city else ""
 
@@ -1312,7 +1312,7 @@ def _mock_script(
             {
                 "title": "Opening",
                 "icon": "phone",
-                "content": f"{doctor_greeting} I'm reaching out because Health & Virtuals helps {cat_label} practices{city_phrase} with staffing solutions. Do you have a quick moment?",
+                "content": f"{doctor_greeting} I'm reaching out because Apex & Virtuals helps {cat_label} practices{city_phrase} with staffing solutions. Do you have a quick moment?",
             },
             {
                 "title": "Discovery Questions",
@@ -1322,7 +1322,7 @@ def _mock_script(
             {
                 "title": "Pitch",
                 "icon": "target",
-                "content": f"At Health & Virtuals, we provide pre-vetted front desk staff, medical assistants, and administrative support specifically for practices like {name}. We handle recruiting, screening, and onboarding so you can focus on patient care.",
+                "content": f"At Apex & Virtuals, we provide pre-vetted front desk staff, medical assistants, and administrative support specifically for practices like {name}. We handle recruiting, screening, and onboarding so you can focus on patient care.",
             },
             {
                 "title": "Objection Handling",

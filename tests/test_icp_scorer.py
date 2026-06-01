@@ -1,4 +1,4 @@
-"""Tests for the H&V Universal ICP scorer (7 dimensions, 100 pts)."""
+"""Tests for the Apex Universal ICP scorer (7 dimensions, 100 pts)."""
 
 from src.icp_scorer import classify, score_icp
 

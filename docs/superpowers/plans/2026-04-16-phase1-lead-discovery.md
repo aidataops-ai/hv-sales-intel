@@ -892,7 +892,7 @@ const jakarta = Plus_Jakarta_Sans({
 
 export const metadata: Metadata = {
   title: "HV Sales Intel",
-  description: "Healthcare practice discovery for Health & Virtuals",
+  description: "Healthcare practice discovery for Apex & Virtuals",
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -1610,7 +1610,7 @@ Note: The `PracticeList` component from Task 13 can be used instead of inlining 
 Run: `cd "c:/Users/Moiz Ahmed/hv-sales-intel/web" && npm run dev`
 
 Expected:
-1. Page loads with cream background and top bar showing "Health&Virtuals Sales Intel".
+1. Page loads with cream background and top bar showing "Apex&Virtuals Sales Intel".
 2. Left sidebar shows 20 mock practices in frosted-glass cards.
 3. Map displays with teal teardrop pins at practice locations.
 4. Clicking a pin highlights the corresponding card in the sidebar.
@@ -1710,7 +1710,7 @@ Run: `cd "c:/Users/Moiz Ahmed/hv-sales-intel/web" && npm run dev`
 
 Verify in browser:
 - Cream background, Fraunces serif headings, Plus Jakarta Sans body text.
-- Top bar with "Health&Virtuals" logo and search input.
+- Top bar with "Apex&Virtuals" logo and search input.
 - Frosted-glass sidebar with practice cards (star ratings in amber, teal action buttons).
 - Leaflet map with teal teardrop pins showing ratings.
 - Pin click highlights card. Card click pans map.

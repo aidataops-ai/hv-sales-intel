@@ -5,7 +5,7 @@
 
 ## Goal
 
-Let any company sign up, upload (or paste) their Ideal Customer Profile document, and immediately get a personalized lead list scored against *their* ICP — not the hardcoded H&V universal one. The shared lead universe (Google Places businesses) is deduped across every tenant; the analysis, scoring, status, notes, and exports are private to each company.
+Let any company sign up, upload (or paste) their Ideal Customer Profile document, and immediately get a personalized lead list scored against *their* ICP — not the hardcoded Apex universal one. The shared lead universe (Google Places businesses) is deduped across every tenant; the analysis, scoring, status, notes, and exports are private to each company.
 
 ## Non-goals
 
@@ -394,7 +394,7 @@ This is the riskiest part — existing data has to move without downtime.
 
 -- Step 2: create the "default" company that owns all current data.
 insert into companies (slug, name, icp_parsed)
-values ('default', 'Default', '{... seed with the universal H&V ICP ...}'::jsonb);
+values ('default', 'Default', '{... seed with the universal Apex ICP ...}'::jsonb);
 
 -- Step 3: backfill memberships. Every existing user joins the default company
 -- with their current role.

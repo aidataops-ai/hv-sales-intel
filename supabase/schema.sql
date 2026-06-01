@@ -138,7 +138,7 @@ alter table practices add column if not exists website_doctor_phone text;
 -- ICP score breakdown (per-dimension reasoning) — populated by the analyzer
 alter table practices add column if not exists icp_breakdown jsonb;
 
--- H&V Universal ICP — classified vertical + tier (populated by the analyzer)
+-- Apex Universal ICP — classified vertical + tier (populated by the analyzer)
 alter table practices add column if not exists icp_vertical text;  -- medical | dental | alf_nh | hotel_resort | medspa_wellness
 alter table practices add column if not exists icp_tier text;       -- A | B | C | D
 create index if not exists idx_practices_icp_vertical on practices (icp_vertical);
