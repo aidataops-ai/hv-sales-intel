@@ -93,6 +93,7 @@ from src.storage import (
     list_outbound_message_ids,
     query_for_export,
     query_practices,
+    query_practices_page,
     resolve_user_names,
     save_search_cache,
     update_practice_analysis,
@@ -1253,16 +1254,41 @@ def switch_company(
 
 @app.get("/api/practices")
 def list_practices(
-    city: str | None = Query(None),
+    search: str | None = Query(None),
     category: str | None = Query(None),
+    vertical: str | None = Query(None),
+    geo: str | None = Query(None),              # "US" | "UK" | "<state code>"
+    tier: str | None = Query(None),             # A | B | C | D
+    status: str | None = Query(None),           # pipeline status
     min_rating: float | None = Query(None),
-    # Bumped 5000 → 50000 so operators can explore a five-figure book of leads.
-    limit: int = Query(10_000, ge=1, le=50_000),
+    min_score: int | None = Query(None),        # lead_score lower bound
+    max_score: int | None = Query(None),        # lead_score upper bound
+    enriched: str | None = Query(None),         # "yes" | "no"
+    owner: str | None = Query(None),            # profiles.id
+    tags: str | None = Query(None),             # comma-separated
+    sort: str = Query("lead_score"),
+    dir: str = Query("desc"),                   # "asc" | "desc"
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
     user: dict = Depends(get_current_user),
 ):
-    rows = query_practices(city=city, category=category, min_rating=min_rating, limit=limit)
+    tag_list = [t for t in (tags.split(",") if tags else []) if t]
+    rows, total = query_practices_page(
+        search=search, category=category, vertical=vertical, geo=geo,
+        tier=tier, status=status, min_rating=min_rating,
+        min_score=min_score, max_score=max_score, enriched=enriched,
+        owner=owner, tags=tag_list, sort=sort, direction=dir,
+        offset=offset, limit=limit,
+    )
     rows = [_attach_lead_url(r) for r in rows]
-    return {"practices": rows, "count": len(rows)}
+    return {
+        "practices": rows,
+        "count": len(rows),
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": offset + len(rows) < total,
+    }
 
 
 # CSV column order — kept in sync with the export endpoint below.

@@ -43,22 +43,72 @@ export async function searchPractices(
   }
 }
 
-export async function listPractices(params?: {
-  city?: string
+export interface ListParams {
+  search?: string
   category?: string
+  vertical?: string
+  geo?: string                 // "US" | "UK" | "<state code>"
+  tier?: string                // A | B | C | D
+  status?: string              // pipeline status
   min_rating?: number
+  min_score?: number
+  max_score?: number
+  enriched?: "" | "yes" | "no"
+  owner?: string
+  tags?: string[]
+  sort?: string
+  dir?: "asc" | "desc"
+  offset?: number
   limit?: number
-}): Promise<Practice[]> {
+}
+
+export interface ListResult {
+  practices: Practice[]
+  total: number
+  hasMore: boolean
+}
+
+export async function listPractices(params: ListParams = {}): Promise<ListResult> {
   try {
     const qs = new URLSearchParams()
-    if (params?.city) qs.set("city", params.city)
-    if (params?.category) qs.set("category", params.category)
-    if (params?.min_rating) qs.set("min_rating", String(params.min_rating))
-    if (params?.limit) qs.set("limit", String(params.limit))
-    const data = await apiFetch<{ practices: Practice[] }>(`/api/practices?${qs}`)
-    return data.practices
+    if (params.search) qs.set("search", params.search)
+    if (params.category) qs.set("category", params.category)
+    if (params.vertical) qs.set("vertical", params.vertical)
+    if (params.geo) qs.set("geo", params.geo)
+    if (params.tier) qs.set("tier", params.tier)
+    if (params.status) qs.set("status", params.status)
+    if (params.min_rating) qs.set("min_rating", String(params.min_rating))
+    if (params.min_score) qs.set("min_score", String(params.min_score))
+    if (params.max_score != null && params.max_score < 100)
+      qs.set("max_score", String(params.max_score))
+    if (params.enriched) qs.set("enriched", params.enriched)
+    if (params.owner) qs.set("owner", params.owner)
+    if (params.tags && params.tags.length) qs.set("tags", params.tags.join(","))
+    if (params.sort) qs.set("sort", params.sort)
+    if (params.dir) qs.set("dir", params.dir)
+    qs.set("offset", String(params.offset ?? 0))
+    qs.set("limit", String(params.limit ?? 100))
+    const data = await apiFetch<{
+      practices: Practice[]
+      total?: number
+      has_more?: boolean
+    }>(`/api/practices?${qs}`)
+    return {
+      practices: data.practices,
+      total: data.total ?? data.practices.length,
+      hasMore: !!data.has_more,
+    }
   } catch {
-    return mockPractices
+    // Backend unreachable → mock fallback. Only the first page returns rows so
+    // infinite scroll terminates cleanly.
+    if ((params.offset ?? 0) > 0) {
+      return { practices: [], total: mockPractices.length, hasMore: false }
+    }
+    return {
+      practices: mockPractices,
+      total: mockPractices.length,
+      hasMore: false,
+    }
   }
 }
 

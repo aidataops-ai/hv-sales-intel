@@ -10,6 +10,7 @@ const TTL_MS = 30 * 60 * 1000 // 30 min
 export interface Snapshot {
   practices: Practice[]
   filters: FilterState
+  total: number
   scrollTop: number
   savedAt: number
 }
@@ -47,6 +48,7 @@ export function clearSnapshot() {
 export function useSessionSnapshot(
   practices: Practice[],
   filters: FilterState,
+  total: number,
   scrollContainerRef: React.RefObject<HTMLElement | null>,
 ) {
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -56,11 +58,12 @@ export function useSessionSnapshot(
       writeSnapshot({
         practices,
         filters,
+        total,
         scrollTop: scrollContainerRef.current?.scrollTop ?? 0,
       })
     }, 200)
     return () => {
       if (timer.current) clearTimeout(timer.current)
     }
-  }, [practices, filters, scrollContainerRef])
+  }, [practices, filters, total, scrollContainerRef])
 }

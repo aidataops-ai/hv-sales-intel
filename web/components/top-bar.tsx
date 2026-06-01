@@ -67,7 +67,7 @@ export default function TopBar({
           className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-teal-600 text-teal-700 text-sm font-medium hover:bg-teal-50 disabled:opacity-50 transition"
         >
           <Brain className="w-4 h-4" />
-          {scoreProgress ?? "Score All"}
+          {scoreProgress ?? "Score loaded"}
         </button>
         <ExportButton />
         <CreditBalance />

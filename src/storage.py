@@ -542,6 +542,148 @@ def query_practices(
     return [_flatten_attribution(r) for r in rows]
 
 
+# Whitelist of user-facing sort keys -> real DB columns. Anything not in here
+# falls back to lead_score so a bad ?sort= value can't reach the query builder.
+_SORT_COLUMNS: dict[str, str] = {
+    "lead_score": "lead_score",
+    "rating": "rating",
+    "review_count": "review_count",
+    "last_touched": "last_touched_at",
+    "name": "name",
+    "country": "state",        # groups UK vs US states
+    "vertical": "icp_vertical",
+}
+
+
+def _escape_or_value(text: str) -> str:
+    """Strip characters that would break a PostgREST or=() filter string.
+
+    Commas separate OR members and parens delimit groups; `*` is the ilike
+    wildcard. We drop all of them so a free-text search term can be embedded
+    safely as `*term*` without corrupting the filter.
+    """
+    for ch in (",", "(", ")", "*"):
+        text = text.replace(ch, " ")
+    return text.strip()
+
+
+def query_practices_page(
+    *,
+    search: str | None = None,
+    category: str | None = None,
+    vertical: str | None = None,
+    geo: str | None = None,          # "US" | "UK" | "<2-letter state code>"
+    tier: str | None = None,
+    status: str | None = None,
+    min_rating: float | None = None,
+    min_score: int | None = None,
+    max_score: int | None = None,
+    enriched: str | None = None,     # "yes" | "no"
+    owner: str | None = None,        # profiles.id (uuid)
+    tags: list[str] | None = None,
+    sort: str = "lead_score",
+    direction: str = "desc",
+    offset: int = 0,
+    limit: int = 100,
+) -> tuple[list[dict], int]:
+    """Server-side filtered + sorted + paginated practice list.
+
+    Returns ``(rows, total)`` where ``total`` is the exact count of rows
+    matching the filters (ignoring pagination), so the caller can drive
+    "load more" / infinite scroll. Returns ``([], 0)`` if unconfigured.
+
+    Replaces the all-rows ``query_practices`` for the main list view: a single
+    ``.range()`` request per page instead of the serial 1000-row loop.
+    """
+    client = _get_client()
+    if not client:
+        return [], 0
+
+    col = _SORT_COLUMNS.get(sort, "lead_score")
+    desc = (direction or "desc").lower() != "asc"
+    start = max(0, offset)
+    end = start + max(1, limit) - 1  # .range() is inclusive
+
+    def _build(include_icp: bool):
+        """Build the query. ``include_icp`` lets us retry without the icp_*
+        filter/sort on deployments that haven't run the ICP migration."""
+        q = client.table("practices").select(PROFILE_JOIN_SELECT, count="exact")
+
+        # Filters: each .or_ is its own OR-group; multiple groups AND-combine.
+        if search and search.strip():
+            safe = _escape_or_value(search)
+            if safe:
+                like = f"*{safe}*"
+                q = q.or_(
+                    f"name.ilike.{like},address.ilike.{like},city.ilike.{like},"
+                    f"owner_name.ilike.{like},website_doctor_name.ilike.{like}"
+                )
+        if category:
+            q = q.eq("category", category)
+        if vertical and include_icp:
+            q = q.eq("icp_vertical", vertical)
+        if geo:
+            if geo == "UK":
+                q = q.eq("state", "UK")
+            elif geo == "US":
+                # "not UK" must also keep rows with an unresolved state: in SQL
+                # `state <> 'UK'` is UNKNOWN for NULL, so .neq alone drops them.
+                q = q.or_("state.is.null,state.neq.UK")
+            else:
+                q = q.eq("state", geo)
+        if tier and include_icp:
+            q = q.eq("icp_tier", tier)
+        if status:
+            q = q.eq("status", status)
+        if min_rating:
+            q = q.gte("rating", min_rating)
+        if min_score is not None:
+            q = q.gte("lead_score", min_score)
+        if max_score is not None:
+            q = q.lte("lead_score", max_score)
+        if enriched == "yes":
+            q = q.eq("enrichment_status", "enriched")
+        elif enriched == "no":
+            # "not enriched" includes rows that were never analyzed (null status).
+            q = q.or_("enrichment_status.is.null,enrichment_status.neq.enriched")
+        if owner:
+            q = q.or_(f"assigned_to.eq.{owner},last_touched_by.eq.{owner}")
+        if tags:
+            q = q.overlaps("tags", tags)
+
+        # Single combined ORDER string — passed as the column with desc=False so
+        # postgrest-py emits it verbatim. This sidesteps two version pitfalls:
+        #  - the nullsfirst kwarg only ever emits ".nullsfirst" (never
+        #    ".nullslast"), and Postgres defaults DESC -> NULLS FIRST, which
+        #    would float unscored (NULL) leads to the TOP. We spell ".nullslast"
+        #    so unscored leads always sort last, in any direction.
+        #  - chaining two .order() calls only comma-combines on postgrest
+        #    >=0.16.11; older versions send two params and silently drop the
+        #    tiebreak, which would duplicate/skip rows across pages.
+        sort_col = col if (include_icp or col != "icp_vertical") else "lead_score"
+        order_str = f"{sort_col}.{'desc' if desc else 'asc'}.nullslast"
+        if sort_col != "place_id":
+            order_str += ",place_id.asc"
+        return q.order(order_str, desc=False, nullsfirst=False)
+
+    try:
+        result = _build(include_icp=True).range(start, end).execute()
+    except Exception as exc:
+        # Degrade gracefully if this deployment lacks the icp_* columns:
+        # retry once without the icp filter/sort. Other errors keep the old
+        # fail-soft ([], 0) so a transient hiccup never blanks the UI hard.
+        if any(c in str(exc) for c in _OPTIONAL_COLUMNS):
+            try:
+                result = _build(include_icp=False).range(start, end).execute()
+            except Exception:
+                return [], 0
+        else:
+            return [], 0
+    rows = result.data or []
+    total = result.count if result.count is not None else len(rows)
+    return [_flatten_attribution(r) for r in rows], total
+
+
 def get_practice(place_id: str) -> dict | None:
     """Get single practice with profile join. Returns None if not found."""
     client = _get_client()
