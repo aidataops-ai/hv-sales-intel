@@ -70,30 +70,30 @@ from src.validators import validate_email, validate_password
 # ---------- email ----------
 
 def test_validate_email_accepts_basic_company_address():
-    validate_email("sarah@healthandgroup.com")
+    validate_email("sarah@apexvirtuals.com")
 
 
 def test_validate_email_accepts_dots_and_plus():
-    validate_email("sarah.khan+team@healthandgroup.com")
+    validate_email("sarah.khan+team@apexvirtuals.com")
 
 
 def test_validate_email_accepts_uppercase_local_part():
-    validate_email("Sarah.Khan@healthandgroup.com")
+    validate_email("Sarah.Khan@apexvirtuals.com")
 
 
 def test_validate_email_rejects_missing_at():
     with pytest.raises(ValueError, match="format"):
-        validate_email("sarahhealthandgroup.com")
+        validate_email("sarahapexvirtuals.com")
 
 
 def test_validate_email_rejects_wrong_domain():
-    with pytest.raises(ValueError, match="@healthandgroup.com"):
+    with pytest.raises(ValueError, match="@apexvirtuals.com"):
         validate_email("sarah@example.com")
 
 
 def test_validate_email_rejects_double_dash_anywhere():
     with pytest.raises(ValueError, match="--"):
-        validate_email("sarah--khan@healthandgroup.com")
+        validate_email("sarah--khan@apexvirtuals.com")
 
 
 def test_validate_email_rejects_empty_string():
@@ -103,7 +103,7 @@ def test_validate_email_rejects_empty_string():
 
 def test_validate_email_rejects_malformed_tld():
     with pytest.raises(ValueError, match="format"):
-        validate_email("sarah@healthandgroup.")
+        validate_email("sarah@apexvirtuals.")
 
 
 # ---------- password ----------
@@ -153,7 +153,7 @@ Expected: all tests FAIL with `ModuleNotFoundError: No module named 'src.validat
 import re
 
 EMAIL_REGEX = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
-ALLOWED_DOMAIN = "@healthandgroup.com"
+ALLOWED_DOMAIN = "@apexvirtuals.com"
 
 
 def validate_email(email: str) -> None:
@@ -213,21 +213,21 @@ from src.auth import is_bootstrap_admin
 
 
 def test_is_bootstrap_admin_matches_email_case_insensitive():
-    user = {"email": "Admin@HealthAndGroup.com"}
+    user = {"email": "Admin@ApexVirtuals.com"}
     with patch("src.auth.settings") as s:
-        s.bootstrap_admin_email = "admin@healthandgroup.com"
+        s.bootstrap_admin_email = "admin@apexvirtuals.com"
         assert is_bootstrap_admin(user) is True
 
 
 def test_is_bootstrap_admin_returns_false_for_non_bootstrap():
-    user = {"email": "other@healthandgroup.com"}
+    user = {"email": "other@apexvirtuals.com"}
     with patch("src.auth.settings") as s:
-        s.bootstrap_admin_email = "admin@healthandgroup.com"
+        s.bootstrap_admin_email = "admin@apexvirtuals.com"
         assert is_bootstrap_admin(user) is False
 
 
 def test_is_bootstrap_admin_returns_false_when_setting_empty():
-    user = {"email": "admin@healthandgroup.com"}
+    user = {"email": "admin@apexvirtuals.com"}
     with patch("src.auth.settings") as s:
         s.bootstrap_admin_email = ""
         assert is_bootstrap_admin(user) is False
@@ -235,7 +235,7 @@ def test_is_bootstrap_admin_returns_false_when_setting_empty():
 
 def test_is_bootstrap_admin_handles_user_without_email():
     with patch("src.auth.settings") as s:
-        s.bootstrap_admin_email = "admin@healthandgroup.com"
+        s.bootstrap_admin_email = "admin@apexvirtuals.com"
         assert is_bootstrap_admin({}) is False
 ```
 
@@ -308,26 +308,26 @@ def cleanup():
 
 
 def test_me_returns_is_bootstrap_admin_true_for_bootstrap(sample_admin_profile):
-    bootstrap_user = {**sample_admin_profile, "email": "boss@healthandgroup.com"}
+    bootstrap_user = {**sample_admin_profile, "email": "boss@apexvirtuals.com"}
     _override_user(bootstrap_user)
 
     with patch("api.index.app_settings") as s:
-        s.bootstrap_admin_email = "boss@healthandgroup.com"
+        s.bootstrap_admin_email = "boss@apexvirtuals.com"
         client = TestClient(app)
         resp = client.get("/api/me")
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["email"] == "boss@healthandgroup.com"
+    assert body["email"] == "boss@apexvirtuals.com"
     assert body["is_bootstrap_admin"] is True
 
 
 def test_me_returns_is_bootstrap_admin_false_for_other_admin(sample_admin_profile):
-    other_admin = {**sample_admin_profile, "email": "other@healthandgroup.com"}
+    other_admin = {**sample_admin_profile, "email": "other@apexvirtuals.com"}
     _override_user(other_admin)
 
     with patch("api.index.app_settings") as s:
-        s.bootstrap_admin_email = "boss@healthandgroup.com"
+        s.bootstrap_admin_email = "boss@apexvirtuals.com"
         client = TestClient(app)
         resp = client.get("/api/me")
 
@@ -420,14 +420,14 @@ def test_create_user_rejects_bad_email_domain(sample_admin_profile):
         "password": "Healthy123!",
     })
     assert resp.status_code == 400
-    assert "@healthandgroup.com" in resp.json()["detail"]
+    assert "@apexvirtuals.com" in resp.json()["detail"]
 
 
 def test_create_user_rejects_double_dash_email(sample_admin_profile):
     _override_admin(sample_admin_profile)
     client = TestClient(app)
     resp = client.post("/api/admin/users", json={
-        "email": "rep--admin@healthandgroup.com",
+        "email": "rep--admin@apexvirtuals.com",
         "name": "Rep",
         "password": "Healthy123!",
     })
@@ -439,7 +439,7 @@ def test_create_user_rejects_weak_password(sample_admin_profile):
     _override_admin(sample_admin_profile)
     client = TestClient(app)
     resp = client.post("/api/admin/users", json={
-        "email": "rep@healthandgroup.com",
+        "email": "rep@apexvirtuals.com",
         "name": "Rep",
         "password": "weak",
     })
@@ -457,7 +457,7 @@ def test_create_user_maps_duplicate_email_to_friendly_message(sample_admin_profi
     with patch("api.index.get_admin_client", return_value=fake_admin):
         client = TestClient(app)
         resp = client.post("/api/admin/users", json={
-            "email": "rep@healthandgroup.com",
+            "email": "rep@apexvirtuals.com",
             "name": "Rep",
             "password": "Healthy123!",
         })
@@ -476,7 +476,7 @@ def test_create_user_happy_path(sample_admin_profile):
     profile_select = MagicMock()
     profile_select.execute.return_value.data = {
         "id": "new-user-id",
-        "email": "rep@healthandgroup.com",
+        "email": "rep@apexvirtuals.com",
         "name": "Rep",
         "role": "sdr",
         "created_at": "2026-04-27T00:00:00Z",
@@ -486,14 +486,14 @@ def test_create_user_happy_path(sample_admin_profile):
     with patch("api.index.get_admin_client", return_value=fake_admin):
         client = TestClient(app)
         resp = client.post("/api/admin/users", json={
-            "email": "rep@healthandgroup.com",
+            "email": "rep@apexvirtuals.com",
             "name": "Rep",
             "password": "Healthy123!",
             "role": "sdr",
         })
 
     assert resp.status_code == 200
-    assert resp.json()["email"] == "rep@healthandgroup.com"
+    assert resp.json()["email"] == "rep@apexvirtuals.com"
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -657,7 +657,7 @@ def test_reset_admin_target_blocked_for_non_bootstrap(sample_admin_profile):
     _override_admin(sample_admin_profile)
     target_admin = {
         "id": "target-admin-id",
-        "email": "other@healthandgroup.com",
+        "email": "other@apexvirtuals.com",
         "role": "admin",
     }
 
@@ -666,7 +666,7 @@ def test_reset_admin_target_blocked_for_non_bootstrap(sample_admin_profile):
 
     with patch("api.index.get_admin_client", return_value=fake_admin):
         with patch("api.index.app_settings") as s:
-            s.bootstrap_admin_email = "boss@healthandgroup.com"
+            s.bootstrap_admin_email = "boss@apexvirtuals.com"
             # caller is sample_admin_profile (admin@example.com), NOT bootstrap
             client = TestClient(app)
             resp = client.post(
@@ -679,11 +679,11 @@ def test_reset_admin_target_blocked_for_non_bootstrap(sample_admin_profile):
 
 
 def test_reset_admin_target_allowed_for_bootstrap(sample_admin_profile):
-    bootstrap = {**sample_admin_profile, "email": "boss@healthandgroup.com"}
+    bootstrap = {**sample_admin_profile, "email": "boss@apexvirtuals.com"}
     _override_admin(bootstrap)
     target_admin = {
         "id": "target-admin-id",
-        "email": "other@healthandgroup.com",
+        "email": "other@apexvirtuals.com",
         "role": "admin",
     }
 
@@ -692,7 +692,7 @@ def test_reset_admin_target_allowed_for_bootstrap(sample_admin_profile):
 
     with patch("api.index.get_admin_client", return_value=fake_admin):
         with patch("api.index.app_settings") as s:
-            s.bootstrap_admin_email = "boss@healthandgroup.com"
+            s.bootstrap_admin_email = "boss@apexvirtuals.com"
             client = TestClient(app)
             resp = client.post(
                 "/api/admin/users/target-admin-id/reset-password",
@@ -707,7 +707,7 @@ def test_reset_sdr_target_allowed_for_any_admin(sample_admin_profile):
     _override_admin(sample_admin_profile)
     target_sdr = {
         "id": "target-sdr-id",
-        "email": "rep@healthandgroup.com",
+        "email": "rep@apexvirtuals.com",
         "role": "sdr",
     }
 
@@ -716,7 +716,7 @@ def test_reset_sdr_target_allowed_for_any_admin(sample_admin_profile):
 
     with patch("api.index.get_admin_client", return_value=fake_admin):
         with patch("api.index.app_settings") as s:
-            s.bootstrap_admin_email = "boss@healthandgroup.com"
+            s.bootstrap_admin_email = "boss@apexvirtuals.com"
             client = TestClient(app)
             resp = client.post(
                 "/api/admin/users/target-sdr-id/reset-password",
@@ -1553,9 +1553,9 @@ Expected: startup completes; if `BOOTSTRAP_ADMIN_PASSWORD` is non-compliant, loo
 - [ ] **Step 5: Smoke — Admin creates user**
 
 1. As admin, go to **/admin/users**.
-2. Try creating with `email: foo@example.com` → expect 400 `"Email must be a @healthandgroup.com address."` shown inline.
-3. Try `email: a--b@healthandgroup.com` → 400 `"--"` message.
-4. Try `email: legit@healthandgroup.com`, `password: weak` → 400 password message.
+2. Try creating with `email: foo@example.com` → expect 400 `"Email must be a @apexvirtuals.com address."` shown inline.
+3. Try `email: a--b@apexvirtuals.com` → 400 `"--"` message.
+4. Try `email: legit@apexvirtuals.com`, `password: weak` → 400 password message.
 5. Submit a compliant user → row appears, role displayed as `SDR`.
 
 - [ ] **Step 6: Smoke — Cross-admin reset gating**

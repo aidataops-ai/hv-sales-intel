@@ -150,7 +150,7 @@ Configured via the Vercel project settings UI for the **Production** environment
 | `OPENAI_API_KEY`, `OPENAI_MODEL` | OpenAI dashboard                                        | `OPENAI_MODEL=gpt-4o-mini` default.                            |
 | `BOOTSTRAP_ADMIN_EMAIL/PASSWORD` | Operator-defined                                        | Only seeds an admin if `profiles` has zero admins.             |
 | `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`, `MS_REFRESH_TOKEN`, `MS_SENDER_EMAIL` | M365 Graph app reg              | Email outreach.                                                |
-| `SF_APEX_URL`, `SF_API_KEY`      | Health & Group SF admin                                 | See [Salesforce spec](2026-04-23-salesforce-integration-design.md). |
+| `SF_APEX_URL`, `SF_API_KEY`      | Apex SF admin                                 | See [Salesforce spec](2026-04-23-salesforce-integration-design.md). |
 | `CLAY_TABLE_WEBHOOK_URL`, `CLAY_TABLE_API_KEY`, `CLAY_INBOUND_SECRET` | Clay workspace             | See [Clay spec](2026-04-24-clay-enrichment-design.md).          |
 | `GOOGLE_MAPS_API_KEY`            | Google Cloud project                                    | Places API enabled.                                            |
 | `NEXT_PUBLIC_API_URL`            | Set to **empty string** in production                   | Empty = same-origin. Override in preview/dev only when pointing the deployed UI at a non-Vercel API. |

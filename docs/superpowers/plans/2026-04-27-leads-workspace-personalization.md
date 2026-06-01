@@ -1577,7 +1577,7 @@ If `sample_sdr_profile` doesn't exist in `conftest.py`, add it next to `sample_a
 def sample_sdr_profile():
     return {
         "id": "sdr-id",
-        "email": "sdr@healthandgroup.com",
+        "email": "sdr@apexvirtuals.com",
         "name": "SDR User",
         "role": "sdr",
     }

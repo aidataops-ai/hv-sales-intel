@@ -6,7 +6,7 @@
 ## Goal
 
 Tighten the existing admin-managed auth flow with three guardrails:
-1. Validate email format and domain (`@healthandgroup.com` only, no `--`, no duplicates).
+1. Validate email format and domain (`@apexvirtuals.com` only, no `--`, no duplicates).
 2. Validate password complexity (8+ chars, ≥1 upper, ≥1 lower, ≥1 digit, ≥1 special).
 3. Add self-service password change for any signed-in user.
 4. Tighten admin password-reset privileges so only the bootstrap admin can reset other admins' passwords.
@@ -41,7 +41,7 @@ Raises `ValueError(<message>)` on failure.
 
 Rules (in order — first failure wins):
 1. **Non-empty + format**: regex `^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$` must match. Message: `"Email format is invalid."`.
-2. **Domain**: lowercased local-part-stripped suffix must equal `"@healthandgroup.com"`. Message: `"Email must be a @healthandgroup.com address."`.
+2. **Domain**: lowercased local-part-stripped suffix must equal `"@apexvirtuals.com"`. Message: `"Email must be a @apexvirtuals.com address."`.
 3. **No `--`**: substring `"--"` must not appear anywhere in the email. Message: `"Email cannot contain '--'."`.
 
 Duplicate detection is NOT in this validator — it's enforced by Supabase Auth's unique constraint, which surfaces a clear error message that the endpoint maps to a 400 with `"Email already in use."`.
@@ -215,7 +215,7 @@ The existing reset-password prompt accepts any string. Add the same complexity r
 
 | Situation                                              | Behavior                                                                            |
 | ------------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| Admin tries to create user with non-domain email       | 400 `"Email must be a @healthandgroup.com address."`                                |
+| Admin tries to create user with non-domain email       | 400 `"Email must be a @apexvirtuals.com address."`                                |
 | Admin tries to create user with weak password          | 400 with the specific failing rule.                                                 |
 | Admin tries to create user with `--` in email          | 400 `"Email cannot contain '--'."`                                                  |
 | Admin tries to create user with duplicate email        | 400 `"Email already in use."`                                                       |
@@ -297,7 +297,7 @@ No new env vars. Reuses `BOOTSTRAP_ADMIN_EMAIL` to identify the bootstrap admin 
 ## Decision log (proposed; resolves on user approval)
 
 1. **Bootstrap admin identified by email match, not DB flag.** Simpler, no migration. Trade-off: rotating bootstrap admin requires env change + redeploy. Acceptable.
-2. **`@healthandgroup.com` is hardcoded.** No multi-tenant variation expected. If we ever need to support multiple domains, swap to a `Settings.allowed_email_domains: list[str]`.
+2. **`@apexvirtuals.com` is hardcoded.** No multi-tenant variation expected. If we ever need to support multiple domains, swap to a `Settings.allowed_email_domains: list[str]`.
 3. **Special char defined as "anything non-alphanumeric"**. Avoids OWASP-style explicit lists that get stale.
 4. **Self-service requires current password.** Stolen-session protection.
 5. **Modal, not `/account` page.** Compact; no separate route to maintain. Future settings page can host this modal as one of multiple sections.

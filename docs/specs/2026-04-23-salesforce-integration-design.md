@@ -3,11 +3,11 @@
 **Date:** 2026-04-23 (revised 2026-04-27 after Apex REST switch)
 **Status:** Implemented and shipped
 
-> **2026-04-27 revision summary.** The original design proposed standard Salesforce REST (`sobjects/Lead`) authenticated via username-password OAuth. Health & Group's Salesforce admin team published a custom **Apex REST endpoint** instead (a `lead/webhook/` path on `*.my.salesforce-sites.com`), authenticated by a static `x-api-key` header. We pivoted the implementation to that endpoint. The user-facing behavior, data model, and sequence are unchanged; the auth module (`sf_auth.py`) is gone, the request shapes changed, and call notes are now stored verbatim instead of GPT-polished.
+> **2026-04-27 revision summary.** The original design proposed standard Salesforce REST (`sobjects/Lead`) authenticated via username-password OAuth. Apex's Salesforce admin team published a custom **Apex REST endpoint** instead (a `lead/webhook/` path on `*.my.salesforce-sites.com`), authenticated by a static `x-api-key` header. We pivoted the implementation to that endpoint. The user-facing behavior, data model, and sequence are unchanged; the auth module (`sf_auth.py`) is gone, the request shapes changed, and call notes are now stored verbatim instead of GPT-polished.
 
 ## Goal
 
-When a rep clicks **Call** on a practice for the first time, create a Salesforce Lead through Health & Group's Apex REST endpoint. On every subsequent call, update the same Lead — pushing the full call history and an incrementing call count. The Salesforce Lead ID is stored on the practice so the team can see which lead is which without leaving the app. The rep's free-text notes (in the Notes tab on Call Prep) are also pushed to the same Lead's `Call_Notes__c` field, separately from the per-call timestamped log.
+When a rep clicks **Call** on a practice for the first time, create a Salesforce Lead through Apex's Apex REST endpoint. On every subsequent call, update the same Lead — pushing the full call history and an incrementing call count. The Salesforce Lead ID is stored on the practice so the team can see which lead is which without leaving the app. The rep's free-text notes (in the Notes tab on Call Prep) are also pushed to the same Lead's `Call_Notes__c` field, separately from the per-call timestamped log.
 
 ## Scope
 
@@ -88,7 +88,7 @@ create index idx_practices_sf_lead_id on practices(salesforce_lead_id);
 
 Note vs. original spec: `salesforce_owner_id` was specified but never stored — the Apex endpoint doesn't return it. The model still has the field (kept for backwards compatibility) but the call-log path doesn't write to it.
 
-### Salesforce custom fields (Health & Group's SF admin owns)
+### Salesforce custom fields (Apex's SF admin owns)
 
 | API name           | Type                          | Purpose                                                |
 | ------------------ | ----------------------------- | ------------------------------------------------------ |
@@ -117,7 +117,7 @@ Free-form text. Whatever the rep types, full string, no formatting. PATCH handle
 
 ## Auth: Apex REST with `x-api-key`
 
-### One-time setup (Health & Group SF admin owns)
+### One-time setup (Apex SF admin owns)
 1. Build an Apex REST class with `@HttpPost`, `@HttpPut` handlers under a path like `/services/apexrest/hv-sales-intel/lead/`.
 2. Expose it via a Salesforce Site so it's reachable at `https://*.my.salesforce-sites.com/...`.
 3. Define the `x-api-key` shared secret. Apex validates it on every call. We store it in our `.env`.
@@ -310,7 +310,7 @@ Activity tab repurposed as Call log tab — unchanged from original spec. Same-o
 `.env`:
 
 ```
-SF_APEX_URL=https://healthandgroup.my.salesforce-sites.com/.../services/apexrest/hv-sales-intel/lead/
+SF_APEX_URL=https://apexvirtuals.my.salesforce-sites.com/.../services/apexrest/hv-sales-intel/lead/
 SF_API_KEY=<the static x-api-key value>
 ```
 

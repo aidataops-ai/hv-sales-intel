@@ -35,7 +35,7 @@ def test_create_user_rejects_double_dash_email(sample_admin_profile):
     _override_admin(sample_admin_profile)
     client = TestClient(app)
     resp = client.post("/api/admin/users", json={
-        "email": "rep--admin@healthandgroup.com",
+        "email": "rep--admin@apexvirtuals.com",
         "name": "Rep",
         "password": "Healthy123!",
     })
@@ -47,7 +47,7 @@ def test_create_user_rejects_weak_password(sample_admin_profile):
     _override_admin(sample_admin_profile)
     client = TestClient(app)
     resp = client.post("/api/admin/users", json={
-        "email": "rep@healthandgroup.com",
+        "email": "rep@apexvirtuals.com",
         "name": "Rep",
         "password": "weak",
     })
@@ -65,7 +65,7 @@ def test_create_user_maps_duplicate_email_to_friendly_message(sample_admin_profi
     with patch("api.index.get_admin_client", return_value=fake_admin):
         client = TestClient(app)
         resp = client.post("/api/admin/users", json={
-            "email": "rep@healthandgroup.com",
+            "email": "rep@apexvirtuals.com",
             "name": "Rep",
             "password": "Healthy123!",
         })
@@ -84,7 +84,7 @@ def test_create_user_happy_path(sample_admin_profile):
     profile_select = MagicMock()
     profile_select.execute.return_value.data = {
         "id": "new-user-id",
-        "email": "rep@healthandgroup.com",
+        "email": "rep@apexvirtuals.com",
         "name": "Rep",
         "role": "sdr",
         "created_at": "2026-04-27T00:00:00Z",
@@ -94,14 +94,14 @@ def test_create_user_happy_path(sample_admin_profile):
     with patch("api.index.get_admin_client", return_value=fake_admin):
         client = TestClient(app)
         resp = client.post("/api/admin/users", json={
-            "email": "rep@healthandgroup.com",
+            "email": "rep@apexvirtuals.com",
             "name": "Rep",
             "password": "Healthy123!",
             "role": "sdr",
         })
 
     assert resp.status_code == 200
-    assert resp.json()["email"] == "rep@healthandgroup.com"
+    assert resp.json()["email"] == "rep@apexvirtuals.com"
 
 
 # ---------- reset password ----------
@@ -121,7 +121,7 @@ def test_reset_admin_target_blocked_for_non_bootstrap(sample_admin_profile):
     _override_admin(sample_admin_profile)
     target_admin = {
         "id": "target-admin-id",
-        "email": "other@healthandgroup.com",
+        "email": "other@apexvirtuals.com",
         "role": "admin",
     }
 
@@ -130,7 +130,7 @@ def test_reset_admin_target_blocked_for_non_bootstrap(sample_admin_profile):
 
     with patch("api.index.get_admin_client", return_value=fake_admin):
         with patch("src.auth.settings") as s:
-            s.bootstrap_admin_email = "boss@healthandgroup.com"
+            s.bootstrap_admin_email = "boss@apexvirtuals.com"
             client = TestClient(app)
             resp = client.post(
                 "/api/admin/users/target-admin-id/reset-password",
@@ -142,11 +142,11 @@ def test_reset_admin_target_blocked_for_non_bootstrap(sample_admin_profile):
 
 
 def test_reset_admin_target_allowed_for_bootstrap(sample_admin_profile):
-    bootstrap = {**sample_admin_profile, "email": "boss@healthandgroup.com"}
+    bootstrap = {**sample_admin_profile, "email": "boss@apexvirtuals.com"}
     _override_admin(bootstrap)
     target_admin = {
         "id": "target-admin-id",
-        "email": "other@healthandgroup.com",
+        "email": "other@apexvirtuals.com",
         "role": "admin",
     }
 
@@ -155,7 +155,7 @@ def test_reset_admin_target_allowed_for_bootstrap(sample_admin_profile):
 
     with patch("api.index.get_admin_client", return_value=fake_admin):
         with patch("src.auth.settings") as s:
-            s.bootstrap_admin_email = "boss@healthandgroup.com"
+            s.bootstrap_admin_email = "boss@apexvirtuals.com"
             client = TestClient(app)
             resp = client.post(
                 "/api/admin/users/target-admin-id/reset-password",
@@ -170,7 +170,7 @@ def test_reset_sdr_target_allowed_for_any_admin(sample_admin_profile):
     _override_admin(sample_admin_profile)
     target_sdr = {
         "id": "target-sdr-id",
-        "email": "rep@healthandgroup.com",
+        "email": "rep@apexvirtuals.com",
         "role": "sdr",
     }
 
@@ -179,7 +179,7 @@ def test_reset_sdr_target_allowed_for_any_admin(sample_admin_profile):
 
     with patch("api.index.get_admin_client", return_value=fake_admin):
         with patch("src.auth.settings") as s:
-            s.bootstrap_admin_email = "boss@healthandgroup.com"
+            s.bootstrap_admin_email = "boss@apexvirtuals.com"
             client = TestClient(app)
             resp = client.post(
                 "/api/admin/users/target-sdr-id/reset-password",
@@ -203,7 +203,7 @@ def _patch_with_target(target: dict, body: dict, fake_admin: MagicMock | None = 
 
     with patch("api.index.get_admin_client", return_value=fake_admin):
         with patch("src.auth.settings") as s:
-            s.bootstrap_admin_email = "boss@healthandgroup.com"
+            s.bootstrap_admin_email = "boss@apexvirtuals.com"
             client = TestClient(app)
             resp = client.patch(
                 f"/api/admin/users/{target['id']}",
@@ -224,7 +224,7 @@ def test_patch_user_404_when_target_missing(sample_admin_profile):
 
 def test_patch_user_renames_sdr(sample_admin_profile):
     _override_admin(sample_admin_profile)
-    target = {"id": "sdr-1", "email": "sdr@healthandgroup.com", "role": "sdr"}
+    target = {"id": "sdr-1", "email": "sdr@apexvirtuals.com", "role": "sdr"}
     resp, fake = _patch_with_target(target, {"name": "New Name"})
     assert resp.status_code == 200
     update_args = fake.table.return_value.update.call_args.args[0]
@@ -233,7 +233,7 @@ def test_patch_user_renames_sdr(sample_admin_profile):
 
 def test_patch_user_disable_sets_timestamp(sample_admin_profile):
     _override_admin(sample_admin_profile)
-    target = {"id": "sdr-1", "email": "sdr@healthandgroup.com", "role": "sdr"}
+    target = {"id": "sdr-1", "email": "sdr@apexvirtuals.com", "role": "sdr"}
     resp, fake = _patch_with_target(target, {"disabled": True})
     assert resp.status_code == 200
     update_args = fake.table.return_value.update.call_args.args[0]
@@ -242,7 +242,7 @@ def test_patch_user_disable_sets_timestamp(sample_admin_profile):
 
 def test_patch_user_enable_clears_timestamp(sample_admin_profile):
     _override_admin(sample_admin_profile)
-    target = {"id": "sdr-1", "email": "sdr@healthandgroup.com", "role": "sdr"}
+    target = {"id": "sdr-1", "email": "sdr@apexvirtuals.com", "role": "sdr"}
     resp, fake = _patch_with_target(target, {"disabled": False})
     assert resp.status_code == 200
     update_args = fake.table.return_value.update.call_args.args[0]
@@ -259,36 +259,36 @@ def test_patch_user_cannot_disable_self(sample_admin_profile):
 
 def test_patch_user_blocks_editing_other_admin_for_non_bootstrap(sample_admin_profile):
     _override_admin(sample_admin_profile)
-    target = {"id": "admin-2", "email": "other@healthandgroup.com", "role": "admin"}
+    target = {"id": "admin-2", "email": "other@apexvirtuals.com", "role": "admin"}
     resp, _ = _patch_with_target(target, {"name": "Renamed"})
     assert resp.status_code == 403
 
 
 def test_patch_user_allows_editing_other_admin_for_bootstrap(sample_admin_profile):
-    bootstrap = {**sample_admin_profile, "email": "boss@healthandgroup.com"}
+    bootstrap = {**sample_admin_profile, "email": "boss@apexvirtuals.com"}
     _override_admin(bootstrap)
-    target = {"id": "admin-2", "email": "other@healthandgroup.com", "role": "admin"}
+    target = {"id": "admin-2", "email": "other@apexvirtuals.com", "role": "admin"}
     resp, _ = _patch_with_target(target, {"name": "Renamed"})
     assert resp.status_code == 200
 
 
 def test_patch_user_blocks_promotion_to_admin_for_non_bootstrap(sample_admin_profile):
     _override_admin(sample_admin_profile)
-    target = {"id": "sdr-1", "email": "sdr@healthandgroup.com", "role": "sdr"}
+    target = {"id": "sdr-1", "email": "sdr@apexvirtuals.com", "role": "sdr"}
     resp, _ = _patch_with_target(target, {"role": "admin"})
     assert resp.status_code == 403
 
 
 def test_patch_user_rejects_invalid_role(sample_admin_profile):
-    bootstrap = {**sample_admin_profile, "email": "boss@healthandgroup.com"}
+    bootstrap = {**sample_admin_profile, "email": "boss@apexvirtuals.com"}
     _override_admin(bootstrap)
-    target = {"id": "sdr-1", "email": "sdr@healthandgroup.com", "role": "sdr"}
+    target = {"id": "sdr-1", "email": "sdr@apexvirtuals.com", "role": "sdr"}
     resp, _ = _patch_with_target(target, {"role": "owner"})
     assert resp.status_code == 400
 
 
 def test_patch_user_rejects_empty_body(sample_admin_profile):
     _override_admin(sample_admin_profile)
-    target = {"id": "sdr-1", "email": "sdr@healthandgroup.com", "role": "sdr"}
+    target = {"id": "sdr-1", "email": "sdr@apexvirtuals.com", "role": "sdr"}
     resp, _ = _patch_with_target(target, {})
     assert resp.status_code == 400
