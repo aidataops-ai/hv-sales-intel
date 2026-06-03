@@ -41,17 +41,17 @@ export default function TagsFilter({ selected, onChange }: Props) {
         : `${selected.length} tags`
 
   return (
-    <div className="relative" ref={wrapperRef}>
+    <div className="relative w-full" ref={wrapperRef}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="text-sm rounded-lg border border-gray-200 bg-white/80 px-3 py-1.5 inline-flex items-center gap-1.5"
+        className="w-full text-sm rounded-lg border border-gray-200 bg-white/80 px-3 py-2 inline-flex items-center justify-between gap-1.5 text-gray-700"
       >
-        {label}
-        <ChevronDown className="w-3.5 h-3.5" />
+        <span className="truncate">{label}</span>
+        <ChevronDown className="w-3.5 h-3.5 shrink-0 text-gray-400" />
       </button>
       {open && (
-        <div className="absolute z-30 mt-1 w-44 bg-white rounded-lg border border-gray-200 shadow-md">
+        <div className="absolute z-30 mt-1 w-full min-w-[11rem] bg-white rounded-lg border border-gray-200 shadow-md">
           {ALL_TAGS.map((tag) => {
             const isSelected = selected.includes(tag)
             return (

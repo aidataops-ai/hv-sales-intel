@@ -93,11 +93,12 @@ export default function PracticeCard({
       id={`practice-card-${practice.place_id}`}
       onClick={isIrrelevant ? undefined : handleCardClick}
       className={cn(
-        "w-full text-left p-4 rounded-xl transition-all",
+        "w-full text-left p-4 rounded-xl transition-all border-l-[3px]",
         isIrrelevant
-          ? "bg-gray-100/40 opacity-60 cursor-default"
-          : "cursor-pointer hover:bg-ivory-200/60",
-        isSelected && !isIrrelevant ? "bg-teal-50 ring-1 ring-teal-600/30" : "bg-white/60"
+          ? "border-transparent bg-gray-100/40 opacity-60 cursor-default"
+          : "border-teal-500 cursor-pointer hover:bg-ivory-200/60",
+        !isIrrelevant &&
+          (isSelected ? "bg-teal-50 ring-1 ring-teal-600/30" : "bg-white/60")
       )}
     >
       {/* Header row */}
@@ -248,7 +249,7 @@ export default function PracticeCard({
           practice={practice}
           onClick={(e) => e.stopPropagation()}
           onEnriched={(response) => onEnrichmentUpdate?.(response.practice)}
-          className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg border border-amber-500 text-amber-700 hover:bg-amber-50 disabled:opacity-50 transition"
+          className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-50 transition"
         />
         <Link
           href={`/practice/${practice.place_id}`}

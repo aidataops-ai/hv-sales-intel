@@ -88,25 +88,25 @@ const GEO_OPTIONS: { value: string; label: string }[] = [
 ]
 
 const selectClass =
-  "text-sm rounded-lg border border-gray-200 bg-white/80 px-3 py-1.5"
+  "w-full text-sm rounded-lg border border-gray-200 bg-white/80 px-3 py-2 text-gray-700 focus:outline-none focus:ring-2 focus:ring-teal-500/30"
 
 export default function FilterBar(p: FilterBarProps) {
   return (
-    <div className="flex flex-col gap-2 px-5 py-3 border-b border-gray-200/50">
+    <div className="flex flex-col gap-3 px-5 py-3 border-b border-gray-200/50">
       <div className="relative">
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
         <input
           type="search"
           placeholder="Search name, address, doctor…"
           value={p.search}
           onChange={(e) => p.onSearchChange(e.target.value)}
-          className="w-full pl-8 pr-3 py-1.5 text-sm rounded-lg border border-gray-200 bg-white/80 focus:outline-none focus:ring-2 focus:ring-teal-500/40"
+          className="w-full pl-9 pr-3 py-2 text-sm rounded-lg border border-gray-200 bg-white/80 focus:outline-none focus:ring-2 focus:ring-teal-500/40"
         />
       </div>
 
       {/* Sort */}
       <div className="flex items-center gap-2">
-        <span className="text-xs text-gray-500">Sort</span>
+        <span className="text-sm text-gray-500 shrink-0">Sort by</span>
         <select
           value={p.sort}
           onChange={(e) => p.onSortChange(e.target.value)}
@@ -122,7 +122,7 @@ export default function FilterBar(p: FilterBarProps) {
           type="button"
           onClick={() => p.onDirChange(p.dir === "asc" ? "desc" : "asc")}
           title={p.dir === "asc" ? "Ascending" : "Descending"}
-          className="p-1.5 rounded-lg border border-gray-200 bg-white/80 text-gray-600 hover:bg-gray-50"
+          className="shrink-0 w-9 h-9 grid place-items-center rounded-lg border border-gray-200 bg-white/80 text-gray-600 hover:bg-gray-50 transition"
         >
           {p.dir === "asc" ? (
             <ArrowUp className="w-4 h-4" />
@@ -132,8 +132,8 @@ export default function FilterBar(p: FilterBarProps) {
         </button>
       </div>
 
-      {/* Filters */}
-      <div className="flex items-center gap-2 flex-wrap">
+      {/* Filter grid */}
+      <div className="grid grid-cols-2 gap-2">
         <select
           value={p.category}
           onChange={(e) => p.onCategoryChange(e.target.value)}
@@ -206,8 +206,12 @@ export default function FilterBar(p: FilterBarProps) {
           onChange={p.onOwnerChange}
           currentUser={p.currentUser}
         />
-        <label className="flex items-center gap-1.5 text-sm text-gray-600">
-          Min rating
+      </div>
+
+      {/* Sliders */}
+      <div className="flex flex-col gap-2 pt-1">
+        <div className="flex items-center gap-3 text-sm text-gray-600">
+          <span className="w-16 shrink-0">Min rating</span>
           <input
             type="range"
             min={0}
@@ -215,23 +219,24 @@ export default function FilterBar(p: FilterBarProps) {
             step={0.5}
             value={p.minRating}
             onChange={(e) => p.onMinRatingChange(Number(e.target.value))}
-            className="w-20 accent-teal-600"
+            className="flex-1 accent-teal-600"
           />
-          <span className="text-xs font-medium w-6">{p.minRating || "Any"}</span>
-        </label>
-        <label className="flex items-center gap-1.5 text-sm text-gray-600">
-          ICP score
+          <span className="text-xs font-medium text-gray-500 w-8 text-right">
+            {p.minRating || "Any"}
+          </span>
+        </div>
+        <div className="flex items-center gap-3 text-sm text-gray-600">
+          <span className="w-16 shrink-0">ICP score</span>
           <input
             type="range"
             min={0}
             max={100}
             step={5}
             value={p.minIcp}
-            onChange={(e) => {
-              const v = Number(e.target.value)
-              p.onMinIcpChange(Math.min(v, p.maxIcp))
-            }}
-            className="w-20 accent-teal-600"
+            onChange={(e) =>
+              p.onMinIcpChange(Math.min(Number(e.target.value), p.maxIcp))
+            }
+            className="flex-1 accent-teal-600"
           />
           <input
             type="range"
@@ -239,16 +244,15 @@ export default function FilterBar(p: FilterBarProps) {
             max={100}
             step={5}
             value={p.maxIcp}
-            onChange={(e) => {
-              const v = Number(e.target.value)
-              p.onMaxIcpChange(Math.max(v, p.minIcp))
-            }}
-            className="w-20 accent-teal-600"
+            onChange={(e) =>
+              p.onMaxIcpChange(Math.max(Number(e.target.value), p.minIcp))
+            }
+            className="flex-1 accent-teal-600"
           />
-          <span className="text-xs font-medium w-14">
-            {p.minIcp || 0}–{p.maxIcp}
+          <span className="text-xs font-medium text-gray-500 w-14 text-right">
+            {p.minIcp || 0} – {p.maxIcp}
           </span>
-        </label>
+        </div>
       </div>
     </div>
   )

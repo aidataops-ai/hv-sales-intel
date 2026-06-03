@@ -19,6 +19,24 @@
   height: 100%;
 }
 
+/* Custom marker cluster: solid teal core with a soft translucent ring. */
+.av-cluster-wrap {
+  background: transparent;
+}
+.av-cluster {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  background: #0d9488;
+  color: #fff;
+  font-weight: 700;
+  font-size: 13px;
+  border: 4px solid rgba(13, 148, 136, 0.25);
+  background-clip: padding-box;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.25);
+}
+
 /* Custom scrollbar for sidebar */
 .sidebar-scroll::-webkit-scrollbar {
   width: 6px;
