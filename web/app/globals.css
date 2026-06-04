@@ -23,6 +23,18 @@
   height: 100%;
 }
 
+/* Tint the basemap toward the palette. Applied to the tile pane only, so
+   markers / clusters / controls keep their own colours. Light: desaturate +
+   faint cool wash; Dark: push the Carto-dark tiles toward palette navy/teal. */
+.leaflet-tile-pane {
+  filter: grayscale(0.55) sepia(0.4) hue-rotate(150deg) saturate(0.5)
+    brightness(1.02);
+}
+.dark .leaflet-tile-pane {
+  filter: brightness(0.82) contrast(1.05) sepia(0.6) hue-rotate(170deg)
+    saturate(0.75);
+}
+
 /* Custom marker cluster: solid teal core with a soft translucent ring. */
 .av-cluster-wrap {
   background: transparent;
