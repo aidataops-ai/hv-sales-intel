@@ -2,7 +2,11 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import { Globe, Star, Brain, Loader2, FileText, ChevronDown, ChevronUp } from "lucide-react"
+import {
+  Globe, Star, Brain, Loader2, FileText, ChevronDown, ChevronUp,
+  Lightbulb, ChevronRight, User, Users, ShieldCheck, MapPin, Briefcase,
+  type LucideIcon,
+} from "lucide-react"
 import type { Practice } from "@/lib/types"
 import type { CallLogResponse } from "@/lib/api"
 import { parseJsonArray, parseIcpBreakdown } from "@/lib/types"
@@ -49,6 +53,17 @@ function ScoreBadge({ score }: { score: number }) {
   )
 }
 
+// Pick a friendly icon for an ICP-breakdown dimension by its label.
+function highlightIcon(label: string): LucideIcon {
+  const l = label.toLowerCase()
+  if (/review|reput|demand|patient|rating|custom/.test(l)) return Users
+  if (/web|digital|tech|online|present|booking|site/.test(l)) return Globe
+  if (/oper|process|role|staff|team|compli|admin/.test(l)) return ShieldCheck
+  if (/geo|locat|region|market|area/.test(l)) return MapPin
+  if (/hir|grow|signal|expan/.test(l)) return Briefcase
+  return Lightbulb
+}
+
 interface PracticeCardProps {
   practice: Practice
   isSelected: boolean
@@ -69,6 +84,7 @@ export default function PracticeCard({
   onEnrichmentUpdate,
 }: PracticeCardProps) {
   const [isExpanded, setIsExpanded] = useState(false)
+  const [showSummary, setShowSummary] = useState(false)
   const { currentCompany, user } = useAuth()
   // Hide the Analyze button when the active tenant hasn't defined an
   // ICP yet — admins should land on /admin/icp first. Existing analyses
@@ -82,10 +98,22 @@ export default function PracticeCard({
   const painPoints = parseJsonArray(practice.pain_points ?? null)
   const salesAngles = parseJsonArray(practice.sales_angles ?? null)
   const icpBreakdown = parseIcpBreakdown(practice.icp_breakdown ?? null)
+  // The three strongest ICP dimensions = "why it stands out".
+  const topHighlights = [...icpBreakdown]
+    .filter((r) => r.max > 0)
+    .sort((a, b) => b.score / b.max - a.score / a.max)
+    .slice(0, 3)
+
+  // Collapsing the card also hides the deeper "View summary" disclosure.
+  const toggleExpand = () =>
+    setIsExpanded((v) => {
+      if (v) setShowSummary(false)
+      return !v
+    })
 
   function handleCardClick() {
     onSelect(practice.place_id)
-    if (isScored) setIsExpanded((v) => !v)
+    if (isScored) toggleExpand()
   }
 
   return (
@@ -153,6 +181,7 @@ export default function PracticeCard({
       )}
       {practice.website_doctor_name && (
         <div className="flex items-center gap-1.5 text-xs text-gray-600 mt-1">
+          <User className="w-3.5 h-3.5 text-gray-400 shrink-0" />
           <span className="font-medium">{practice.website_doctor_name}</span>
           {practice.website_doctor_phone && (
             <a
@@ -262,7 +291,7 @@ export default function PracticeCard({
           <button
             onClick={(e) => {
               e.stopPropagation()
-              setIsExpanded((v) => !v)
+              toggleExpand()
             }}
             className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 transition ml-auto"
             title={isExpanded ? "Hide analysis" : "Show analysis"}
@@ -274,67 +303,111 @@ export default function PracticeCard({
       </div>
       )}
 
-      {/* Inline analysis results — only when expanded */}
-      {!isIrrelevant && isScored && isExpanded && (
-        <div className="mt-3 pt-3 border-t border-gray-200/50 space-y-3">
-          {practice.summary && (
-            <p className="text-xs text-gray-600 leading-relaxed">{practice.summary}</p>
-          )}
-
-          {painPoints.length > 0 && (
-            <div>
-              <h4 className="text-xs font-semibold text-gray-700 mb-1">Pain Points</h4>
-              <ul className="space-y-0.5">
-                {painPoints.map((p, i) => (
-                  <li key={i} className="text-xs text-gray-500 flex gap-1.5">
-                    <span className="text-rose-400 shrink-0">&bull;</span>
-                    {p}
-                  </li>
-                ))}
-              </ul>
+      {/* Why it stands out — highlights from the strongest ICP dimensions,
+          with "View summary" disclosing the full analysis. */}
+      {!isIrrelevant && isScored && isExpanded && (() => {
+        const hasSummary =
+          !!practice.summary || painPoints.length > 0 || salesAngles.length > 0
+        return (
+          <div className="mt-3 pt-3 border-t border-gray-200/50">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <Lightbulb className="w-4 h-4 text-teal-600" />
+                <span className="text-sm font-semibold text-gray-900">
+                  Why it stands out
+                </span>
+              </div>
+              {hasSummary && topHighlights.length > 0 && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    setShowSummary((v) => !v)
+                  }}
+                  className="inline-flex items-center gap-0.5 text-xs font-medium text-teal-700 hover:text-teal-800"
+                >
+                  {showSummary ? "Hide summary" : "View summary"}
+                  <ChevronRight
+                    className={cn(
+                      "w-3.5 h-3.5 transition-transform",
+                      showSummary && "rotate-90",
+                    )}
+                  />
+                </button>
+              )}
             </div>
-          )}
 
-          {salesAngles.length > 0 && (
-            <div>
-              <h4 className="text-xs font-semibold text-gray-700 mb-1">Sales Angles</h4>
-              <ul className="space-y-0.5">
-                {salesAngles.map((a, i) => (
-                  <li key={i} className="text-xs text-gray-500 flex gap-1.5">
-                    <span className="text-teal-500 shrink-0">&rarr;</span>
-                    {a}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+            {topHighlights.length > 0 && (
+              <div className="grid grid-cols-3 gap-2 mt-3">
+                {topHighlights.map((h, i) => {
+                  const Icon = highlightIcon(h.label)
+                  return (
+                    <div
+                      key={i}
+                      className="rounded-lg border border-gray-200/70 bg-gray-50/60 p-3"
+                    >
+                      <Icon className="w-5 h-5 text-teal-600" />
+                      <p className="text-[13px] font-semibold text-teal-800 mt-2 leading-tight">
+                        {h.label}
+                      </p>
+                      <p className="text-[11px] text-gray-500 mt-1 leading-snug line-clamp-3">
+                        {h.reason}
+                      </p>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
 
-          <div>
-            <h4 className="text-xs font-semibold text-gray-700 mb-1">
-              ICP score breakdown ({practice.lead_score}/100)
-            </h4>
-            {icpBreakdown.length > 0 ? (
-              <ul className="space-y-1">
-                {icpBreakdown.map((row, i) => (
-                  <li key={i} className="text-[11px] text-gray-600 flex items-start gap-2">
-                    <span className="font-mono text-gray-400 shrink-0 w-12 tabular-nums">
-                      {row.score}/{row.max}
-                    </span>
-                    <span className="font-medium text-gray-700 shrink-0 w-28">
-                      {row.label}
-                    </span>
-                    <span className="text-gray-500">{row.reason}</span>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-[11px] text-gray-400 italic">
-                Legacy score — click &quot;Re-analyze&quot; to populate the ICP breakdown.
+            {/* Full analysis: shown via "View summary", or inline when there
+                are no highlight tiles (legacy scores without a breakdown). */}
+            {hasSummary && (showSummary || topHighlights.length === 0) && (
+              <div className="space-y-3 mt-3">
+                {practice.summary && (
+                  <p className="text-xs text-gray-600 leading-relaxed">
+                    {practice.summary}
+                  </p>
+                )}
+                {painPoints.length > 0 && (
+                  <div>
+                    <h4 className="text-xs font-semibold text-gray-700 mb-1">
+                      Pain Points
+                    </h4>
+                    <ul className="space-y-0.5">
+                      {painPoints.map((p, i) => (
+                        <li key={i} className="text-xs text-gray-500 flex gap-1.5">
+                          <span className="text-rose-400 shrink-0">&bull;</span>
+                          {p}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {salesAngles.length > 0 && (
+                  <div>
+                    <h4 className="text-xs font-semibold text-gray-700 mb-1">
+                      Sales Angles
+                    </h4>
+                    <ul className="space-y-0.5">
+                      {salesAngles.map((a, i) => (
+                        <li key={i} className="text-xs text-gray-500 flex gap-1.5">
+                          <span className="text-teal-500 shrink-0">&rarr;</span>
+                          {a}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {topHighlights.length === 0 && !hasSummary && (
+              <p className="text-[11px] text-gray-400 italic mt-3">
+                Re-analyze to populate insights.
               </p>
             )}
           </div>
-        </div>
-      )}
+        )
+      })()}
     </div>
   )
 }
