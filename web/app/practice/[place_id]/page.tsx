@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react"
 import { useParams, useRouter } from "next/navigation"
-import { ArrowLeft } from "lucide-react"
+import { ArrowLeft, MoreVertical } from "lucide-react"
 import type { Practice, ScriptSection } from "@/lib/types"
 import { getScript, regenerateScript, updatePractice } from "@/lib/api"
 import { mockPractices } from "@/lib/mock-data"
@@ -137,11 +137,38 @@ export default function CallPrepPage() {
               />
             </>
           )}
-          {practice.last_touched_by_name && practice.last_touched_at && (
-            <span className="text-xs text-gray-400">
-              by {practice.last_touched_by_name} · {timeAgo(practice.last_touched_at)}
-            </span>
+          {practice.last_touched_by_name && (
+            <div className="flex items-center gap-2 ml-2">
+              <div className="w-8 h-8 rounded-full bg-teal-600 text-white grid place-items-center text-xs font-semibold">
+                {practice.last_touched_by_name[0]?.toUpperCase()}
+              </div>
+              <div className="leading-tight">
+                <p className="text-xs font-medium text-gray-700">
+                  by {practice.last_touched_by_name}
+                </p>
+                {practice.last_touched_at && (
+                  <p className="text-[11px] text-gray-400">
+                    {timeAgo(practice.last_touched_at)}
+                  </p>
+                )}
+              </div>
+            </div>
           )}
+          <button
+            onClick={() =>
+              window.open(
+                `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+                  `${practice.name} ${practice.address}`,
+                )}`,
+                "_blank",
+                "noopener",
+              )
+            }
+            title="Open in Google Maps"
+            className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 transition"
+          >
+            <MoreVertical className="w-4 h-4" />
+          </button>
         </div>
       </header>
 
@@ -154,7 +181,6 @@ export default function CallPrepPage() {
 
         {/* Center: Call Playbook */}
         <main className="flex-1 overflow-y-auto p-6">
-          <h2 className="font-serif text-xl font-bold text-gray-900 mb-6">Call Playbook</h2>
           <ScriptView
             sections={sections}
             isLoading={isLoadingScript}

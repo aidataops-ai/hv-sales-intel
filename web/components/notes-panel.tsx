@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Save, Loader2 } from "lucide-react"
+import { Save, Loader2, Sparkles } from "lucide-react"
 
 interface NotesPanelProps {
   notes: string
@@ -54,6 +54,17 @@ export default function NotesPanel({ notes: initialNotes, onSave }: NotesPanelPr
         )}
         {saved ? "Saved!" : isSaving ? "Saving..." : "Save Notes"}
       </button>
+
+      <div className="flex gap-2 rounded-lg bg-teal-50/60 border border-teal-100 p-3 mt-2">
+        <Sparkles className="w-4 h-4 text-teal-600 shrink-0 mt-0.5" />
+        <div>
+          <p className="text-xs font-semibold text-gray-800">Pro tips</p>
+          <p className="text-xs text-gray-500 mt-0.5 leading-snug">
+            Add notes, log calls, or draft emails here to keep your outreach
+            organized and your team aligned.
+          </p>
+        </div>
+      </div>
     </div>
   )
 }
