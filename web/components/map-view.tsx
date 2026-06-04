@@ -10,11 +10,11 @@ import type { Practice } from "@/lib/types"
 
 // Lead-score → marker colour. Mirrors the legend buckets exactly.
 function scoreColor(score: number | null): string {
-  if (score == null) return "#cbd5e1" // slate-300 — unscored
-  if (score >= 80) return "#0f766e" // teal-700
-  if (score >= 60) return "#0d9488" // teal-600
-  if (score >= 40) return "#f59e0b" // amber-500
-  return "#fda4af" // rose-300 — 0–39
+  if (score == null) return "#c2c2c2" // unscored — light gray
+  if (score >= 80) return "#3c6e71" // teal (brand)
+  if (score >= 60) return "#284b63" // navy
+  if (score >= 40) return "#9b9b9b" // mid gray
+  return "#d9d9d9" // light gray — 0–39
 }
 
 function createPinIcon(leadScore: number | null): L.DivIcon {
@@ -75,10 +75,10 @@ interface MapViewProps {
 }
 
 const LEGEND = [
-  { color: "#0f766e", label: "80 – 100" },
-  { color: "#0d9488", label: "60 – 79" },
-  { color: "#f59e0b", label: "40 – 59" },
-  { color: "#fda4af", label: "0 – 39" },
+  { color: "#3c6e71", label: "80 – 100" },
+  { color: "#284b63", label: "60 – 79" },
+  { color: "#9b9b9b", label: "40 – 59" },
+  { color: "#d9d9d9", label: "0 – 39" },
 ]
 
 export default function MapView({

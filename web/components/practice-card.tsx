@@ -42,10 +42,10 @@ function StarRating({ rating }: { rating: number | null }) {
 function ScoreBadge({ score }: { score: number }) {
   const color =
     score >= 75
-      ? "bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300"
+      ? "bg-teal-600 text-white dark:bg-teal-500/30 dark:text-teal-100"
       : score >= 50
-        ? "bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300"
-        : "bg-teal-100 text-teal-700 dark:bg-teal-500/20 dark:text-teal-300"
+        ? "bg-teal-100 text-teal-700 dark:bg-teal-500/20 dark:text-teal-300"
+        : "bg-gray-200 text-gray-700 dark:bg-white/10 dark:text-[#d9d9d9]"
   return (
     <span className={cn("text-xs font-bold px-1.5 py-0.5 rounded-full", color)} title="ICP score (0-100)">
       ICP {score}
