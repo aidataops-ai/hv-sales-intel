@@ -127,9 +127,16 @@ export default function PracticeInfo({
           <OwnerMiniCard practice={practice} />
         ) : (
           <p className="text-xs text-gray-400 dark:text-gray-500">
-            {practice.enrichment_status === "failed"
-              ? "No owner found."
-              : "No owner info yet — enrich from the map."}
+            {practice.enrichment_status === "failed" ? (
+              "No owner found."
+            ) : (
+              <>
+                No owner info yet{" "}
+                <span className="text-teal-700 dark:text-teal-400">
+                  — enrich from the map.
+                </span>
+              </>
+            )}
           </p>
         )}
       </div>
@@ -174,9 +181,14 @@ export default function PracticeInfo({
               ) : (
                 <button
                   onClick={() => setShowAngles(true)}
-                  className="inline-flex items-center gap-1 text-xs font-medium text-teal-700 dark:text-teal-400 hover:text-teal-800"
+                  className="group flex items-center justify-between w-full"
                 >
-                  View sales angles <ArrowRight className="w-3.5 h-3.5" />
+                  <span className="text-xs font-medium text-teal-700 dark:text-teal-400 group-hover:text-teal-800">
+                    View sales angles
+                  </span>
+                  <span className="w-7 h-7 grid place-items-center rounded-full border border-gray-200 dark:border-white/10 text-teal-600 dark:text-teal-400 group-hover:bg-teal-50 dark:group-hover:bg-[#284b63]/40 transition">
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </span>
                 </button>
               )}
             </div>

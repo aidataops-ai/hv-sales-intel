@@ -66,14 +66,14 @@ function SectionBody({ section }: { section: ScriptSection }) {
               className="rounded-lg border border-gray-200/70 dark:border-white/10 bg-gray-50/40 dark:bg-white/5 p-3 space-y-1.5"
             >
               <p className="text-sm leading-relaxed flex gap-1.5">
-                <MessageSquare className="w-3.5 h-3.5 text-rose-500 shrink-0 mt-0.5" />
+                <MessageSquare className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400 shrink-0 mt-0.5" />
                 <span>
                   <span className="font-semibold text-gray-800 dark:text-[#d9d9d9]">Objection:</span>{" "}
                   <span className="text-gray-600 dark:text-[#d9d9d9]">{p.objection}</span>
                 </span>
               </p>
               <p className="text-sm leading-relaxed flex gap-1.5">
-                <ArrowRight className="w-3.5 h-3.5 text-teal-600 shrink-0 mt-0.5" />
+                <ArrowRight className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400 shrink-0 mt-0.5" />
                 <span>
                   <span className="font-semibold text-gray-800 dark:text-[#d9d9d9]">Response:</span>{" "}
                   <span className="text-gray-600 dark:text-[#d9d9d9]">{p.response}</span>
@@ -117,7 +117,7 @@ export default function ScriptView({ sections, isLoading, onRegenerate }: Script
         return (
           <div key={i} className="space-y-3">
             <div className="flex items-center gap-2">
-              <Icon className="w-4 h-4 text-teal-600" />
+              <Icon className="w-4 h-4 text-teal-600 dark:text-teal-400" />
               <h3 className="font-semibold text-gray-900 dark:text-white">{section.title}</h3>
             </div>
             <div className="pl-6">
@@ -130,7 +130,7 @@ export default function ScriptView({ sections, isLoading, onRegenerate }: Script
       <button
         onClick={onRegenerate}
         disabled={isLoading}
-        className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg border border-teal-600 text-teal-700 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-[#284b63]/40 disabled:opacity-50 transition"
+        className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50 transition"
       >
         {isLoading ? (
           <Loader2 className="w-4 h-4 animate-spin" />
