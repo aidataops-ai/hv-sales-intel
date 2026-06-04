@@ -89,6 +89,7 @@ export default function MapView({
 }: MapViewProps) {
   const [map, setMap] = useState<L.Map | null>(null)
   const [layer, setLayer] = useState<"street" | "light">("street")
+  const [isDark, setIsDark] = useState(false)
   const markerRefs = useRef<Record<string, L.Marker>>({})
 
   const points = practices.filter((p) => p.lat != null && p.lng != null)
@@ -98,6 +99,22 @@ export default function MapView({
       markerRefs.current[selectedId].openPopup()
     }
   }, [selectedId])
+
+  // Follow the app theme: switch to a dark basemap when dark mode is active.
+  useEffect(() => {
+    const el = document.documentElement
+    const update = () => setIsDark(el.classList.contains("dark"))
+    update()
+    const obs = new MutationObserver(update)
+    obs.observe(el, { attributes: true, attributeFilter: ["class"] })
+    return () => obs.disconnect()
+  }, [])
+
+  const tileUrl = isDark
+    ? layer === "light"
+      ? "https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png"
+      : "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+    : TILES[layer].url
 
   const fitView = () => {
     if (!map) return
@@ -118,7 +135,7 @@ export default function MapView({
         zoomControl={false}
         attributionControl={false}
       >
-        <TileLayer url={TILES[layer].url} />
+        <TileLayer key={tileUrl} url={tileUrl} />
         <FitBounds points={points} />
         <MarkerClusterGroup
           iconCreateFunction={createClusterIcon}
