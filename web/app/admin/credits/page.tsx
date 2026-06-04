@@ -28,7 +28,7 @@ export default function AdminCreditsPage() {
   if (!SHOW_BILLING) notFound()
   if (user?.role !== "admin") {
     return (
-      <div className="min-h-screen flex items-center justify-center text-gray-600">
+      <div className="min-h-screen flex items-center justify-center text-gray-600 dark:text-[#d9d9d9]">
         Admins only.
       </div>
     )
@@ -57,21 +57,21 @@ export default function AdminCreditsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-ivory-50 text-gray-900">
-      <header className="sticky top-0 z-10 backdrop-blur bg-white/80 border-b border-gray-200/50">
+    <div className="min-h-screen bg-ivory-50 dark:bg-night text-gray-900 dark:text-white">
+      <header className="sticky top-0 z-10 backdrop-blur bg-white/80 dark:bg-night-800 border-b border-gray-200/50 dark:border-white/10">
         <div className="max-w-6xl mx-auto flex items-center justify-between px-6 py-3">
           <div className="flex items-center gap-3">
             <Link
               href="/"
-              className="inline-flex items-center gap-1 text-sm text-gray-600 hover:text-gray-900"
+              className="inline-flex items-center gap-1 text-sm text-gray-600 dark:text-[#d9d9d9] hover:text-gray-900 dark:hover:text-white"
             >
               <ArrowLeft className="w-4 h-4" /> Back
             </Link>
-            <h1 className="font-serif text-lg font-semibold text-gray-900 flex items-center gap-2">
+            <h1 className="font-serif text-lg font-semibold text-gray-900 dark:text-white flex items-center gap-2">
               <Coins className="w-5 h-5 text-amber-600" /> Credits
             </h1>
           </div>
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-gray-500 dark:text-gray-400">
             1 credit = ${(CREDIT_VALUE_CENTS / 100).toFixed(2)}
           </p>
         </div>
@@ -79,7 +79,7 @@ export default function AdminCreditsPage() {
 
       <main className="max-w-6xl mx-auto p-6 space-y-6">
         {loading && !data && (
-          <div className="flex items-center justify-center text-gray-600 py-12">
+          <div className="flex items-center justify-center text-gray-600 dark:text-[#d9d9d9] py-12">
             <Loader2 className="w-5 h-5 animate-spin mr-2" />
             Loading credits…
           </div>
@@ -114,7 +114,7 @@ export default function AdminCreditsPage() {
 
             {/* Top-up form */}
             <Card title="Add credits">
-              <p className="text-xs text-gray-500 mb-3">
+              <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
                 Mock top-up — wire this to Stripe for production. Each credit
                 costs the customer ${(CREDIT_VALUE_CENTS / 100).toFixed(2)}.
               </p>
@@ -131,8 +131,8 @@ export default function AdminCreditsPage() {
                       onClick={() => setTopupAmount(n)}
                       className={`text-xs px-3 py-1.5 rounded-full border transition ${
                         topupAmount === n
-                          ? "bg-teal-50 border-teal-500 text-teal-700"
-                          : "bg-white border-gray-200 text-gray-600 hover:border-gray-400"
+                          ? "bg-teal-50 dark:bg-[#284b63]/40 border-teal-500 text-teal-700 dark:text-teal-400"
+                          : "bg-white dark:bg-night-800 border-gray-200 dark:border-white/10 text-gray-600 dark:text-[#d9d9d9] hover:border-gray-400"
                       }`}
                     >
                       {n} credits
@@ -143,7 +143,7 @@ export default function AdminCreditsPage() {
                   ))}
                 </div>
                 <div className="flex items-center gap-3">
-                  <label className="text-xs font-medium text-gray-700 w-20">Amount</label>
+                  <label className="text-xs font-medium text-gray-700 dark:text-[#d9d9d9] w-20">Amount</label>
                   <input
                     type="number"
                     min={1}
@@ -151,21 +151,21 @@ export default function AdminCreditsPage() {
                     value={topupAmount}
                     disabled={submitting}
                     onChange={(e) => setTopupAmount(parseInt(e.target.value || "0", 10))}
-                    className="w-32 text-sm rounded-md border border-gray-200 px-3 py-1.5 tabular-nums"
+                    className="w-32 text-sm rounded-md border border-gray-200 dark:border-white/10 dark:bg-white/5 dark:text-white px-3 py-1.5 tabular-nums"
                   />
-                  <span className="text-xs text-gray-500">
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
                     = ${((topupAmount * CREDIT_VALUE_CENTS) / 100).toFixed(2)}
                   </span>
                 </div>
                 <div className="flex items-center gap-3">
-                  <label className="text-xs font-medium text-gray-700 w-20">Notes</label>
+                  <label className="text-xs font-medium text-gray-700 dark:text-[#d9d9d9] w-20">Notes</label>
                   <input
                     type="text"
                     value={topupNotes}
                     disabled={submitting}
                     onChange={(e) => setTopupNotes(e.target.value)}
                     placeholder="e.g. monthly retainer top-up — March 2026"
-                    className="flex-1 text-sm rounded-md border border-gray-200 px-3 py-1.5"
+                    className="flex-1 text-sm rounded-md border border-gray-200 dark:border-white/10 dark:bg-white/5 dark:text-white dark:placeholder:text-gray-500 px-3 py-1.5"
                   />
                 </div>
                 <div className="flex items-center gap-2">
@@ -181,9 +181,9 @@ export default function AdminCreditsPage() {
                     )}
                     {submitting ? "Adding…" : `Add ${formatCredits(topupAmount)} credits`}
                   </button>
-                  {error && <span className="text-xs text-rose-600">{error}</span>}
+                  {error && <span className="text-xs text-rose-600 dark:text-rose-400">{error}</span>}
                   {successMsg && (
-                    <span className="text-xs text-emerald-700">{successMsg}</span>
+                    <span className="text-xs text-emerald-700 dark:text-emerald-300">{successMsg}</span>
                   )}
                 </div>
               </form>
@@ -193,7 +193,7 @@ export default function AdminCreditsPage() {
             <Card title="What each action consumes">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="text-left text-xs text-gray-500 border-b">
+                  <tr className="text-left text-xs text-gray-500 dark:text-gray-400 border-b dark:border-white/10">
                     <th className="py-1 pr-2">Action</th>
                     <th className="py-1 pr-2 text-right">Credits</th>
                     <th className="py-1 text-right">Customer cost</th>
@@ -208,7 +208,7 @@ export default function AdminCreditsPage() {
                   <Rate label="Enrichment — per Clay / Apollo lookup (10× provider cost)" fixed={data.rates.enrichment} />
                 </tbody>
               </table>
-              <p className="text-[11px] text-gray-400 mt-2">
+              <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-2">
                 Every action bills at{" "}
                 <span className="font-medium">{data.cost_multiplier}× </span>
                 our underlying vendor cost. Dynamic rows show a range because
@@ -220,11 +220,11 @@ export default function AdminCreditsPage() {
             {/* Transaction history */}
             <Card title="Recent transactions">
               {data.transactions.length === 0 ? (
-                <p className="text-sm text-gray-500 italic">No transactions yet.</p>
+                <p className="text-sm text-gray-500 dark:text-gray-400 italic">No transactions yet.</p>
               ) : (
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="text-left text-xs uppercase tracking-wide text-gray-500 border-b">
+                    <tr className="text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 border-b dark:border-white/10">
                       <th className="py-2 pr-3">When</th>
                       <th className="py-2 pr-3">Kind</th>
                       <th className="py-2 pr-3">Action</th>
@@ -259,37 +259,37 @@ function StatCard({
 }) {
   const tone =
     accent === "ok"
-      ? "border-emerald-200 bg-emerald-50/60"
+      ? "border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/60 dark:bg-emerald-500/10"
       : accent === "warn"
-        ? "border-amber-200 bg-amber-50/60"
+        ? "border-amber-200 dark:border-amber-500/30 bg-amber-50/60 dark:bg-amber-500/10"
         : accent === "danger"
-          ? "border-rose-200 bg-rose-50/60"
-          : "border-gray-200 bg-white"
+          ? "border-rose-200 dark:border-rose-500/30 bg-rose-50/60 dark:bg-rose-500/10"
+          : "border-gray-200 dark:border-white/10 bg-white dark:bg-night-800"
   const iconTone =
     accent === "ok"
-      ? "text-emerald-700"
+      ? "text-emerald-700 dark:text-emerald-300"
       : accent === "warn"
-        ? "text-amber-700"
+        ? "text-amber-700 dark:text-amber-300"
         : accent === "danger"
-          ? "text-rose-700"
-          : "text-gray-500"
+          ? "text-rose-700 dark:text-rose-300"
+          : "text-gray-500 dark:text-gray-400"
   return (
     <div className={`rounded-xl border p-4 ${tone}`}>
-      <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-gray-500">
+      <div className="flex items-center gap-2 text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400">
         <span className={iconTone}>{icon}</span>
         {label}
       </div>
       <p className="text-2xl font-semibold mt-2 tabular-nums">{value}</p>
-      <p className="text-xs text-gray-500 mt-0.5">{sub}</p>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{sub}</p>
     </div>
   )
 }
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="rounded-xl border border-gray-200 bg-white p-5">
-      <h2 className="font-serif text-base font-semibold text-gray-900 mb-3 flex items-center gap-2">
-        <History className="w-4 h-4 text-gray-400" /> {title}
+    <section className="rounded-xl border border-gray-200 dark:border-white/10 bg-white dark:bg-night-800 p-5">
+      <h2 className="font-serif text-base font-semibold text-gray-900 dark:text-white mb-3 flex items-center gap-2">
+        <History className="w-4 h-4 text-gray-400 dark:text-gray-500" /> {title}
       </h2>
       {children}
     </section>
@@ -313,10 +313,10 @@ function Rate({
       ? creditsToDollars(fixed)
       : `${creditsToDollars(lo ?? 0)} – ${creditsToDollars(hi ?? 0)}`
   return (
-    <tr className="border-b last:border-b-0">
+    <tr className="border-b last:border-b-0 dark:border-white/10">
       <td className="py-1 pr-2">{label}</td>
       <td className="py-1 pr-2 text-right font-mono tabular-nums">{credits}</td>
-      <td className="py-1 text-right font-mono text-gray-500">{dollars}</td>
+      <td className="py-1 text-right font-mono text-gray-500 dark:text-gray-400">{dollars}</td>
     </tr>
   )
 }
@@ -326,25 +326,25 @@ function TxRow({ t }: { t: CreditTransaction }) {
   const sign = t.delta >= 0 ? "+" : ""
   const when = new Date(t.created_at).toLocaleString()
   return (
-    <tr className="border-b last:border-b-0 hover:bg-gray-50/40">
-      <td className="py-1.5 pr-3 text-xs text-gray-600 tabular-nums">{when}</td>
+    <tr className="border-b last:border-b-0 dark:border-white/10 hover:bg-gray-50/40 dark:hover:bg-white/5">
+      <td className="py-1.5 pr-3 text-xs text-gray-600 dark:text-[#d9d9d9] tabular-nums">{when}</td>
       <td className="py-1.5 pr-3">
         <span
           className={`text-[10px] uppercase tracking-wide font-semibold px-1.5 py-0.5 rounded-full ${
             t.kind === "topup"
-              ? "bg-emerald-100 text-emerald-700"
+              ? "bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
               : t.kind === "consume"
-                ? "bg-gray-100 text-gray-600"
-                : "bg-amber-100 text-amber-700"
+                ? "bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-[#d9d9d9]"
+                : "bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300"
           }`}
         >
           {t.kind}
         </span>
       </td>
-      <td className="py-1.5 pr-3 text-xs text-gray-700">{t.action ?? "—"}</td>
+      <td className="py-1.5 pr-3 text-xs text-gray-700 dark:text-[#d9d9d9]">{t.action ?? "—"}</td>
       <td
         className={`py-1.5 pr-3 text-right font-mono tabular-nums ${
-          isConsume ? "text-rose-600" : "text-emerald-700"
+          isConsume ? "text-rose-600 dark:text-rose-400" : "text-emerald-700 dark:text-emerald-300"
         }`}
       >
         {sign}{formatCredits(t.delta)}
@@ -352,7 +352,7 @@ function TxRow({ t }: { t: CreditTransaction }) {
       <td className="py-1.5 pr-3 text-right font-mono tabular-nums">
         {formatCredits(t.balance_after)}
       </td>
-      <td className="py-1.5 text-xs text-gray-500 truncate max-w-xs">
+      <td className="py-1.5 text-xs text-gray-500 dark:text-gray-400 truncate max-w-xs">
         {t.notes ?? ""}
       </td>
     </tr>

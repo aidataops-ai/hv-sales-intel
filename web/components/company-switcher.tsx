@@ -44,18 +44,18 @@ export default function CompanySwitcher() {
     <div className="relative" ref={wrapperRef}>
       <button
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50 transition max-w-[180px]"
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gray-300 dark:border-white/10 text-gray-700 dark:text-[#d9d9d9] text-sm font-medium hover:bg-gray-50 dark:hover:bg-white/10 transition max-w-[180px]"
         title="Switch active company"
       >
         <Building2 className="w-4 h-4 shrink-0" />
         <span className="truncate">{label}</span>
-        <ChevronDown className="w-3.5 h-3.5 text-gray-500 shrink-0" />
+        <ChevronDown className="w-3.5 h-3.5 text-gray-500 dark:text-gray-400 shrink-0" />
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-1 w-64 bg-white rounded-lg border border-gray-200 shadow-md z-30 overflow-hidden">
-          <div className="px-3 py-2 border-b border-gray-100">
-            <p className="text-[11px] uppercase tracking-wide text-gray-400">
+        <div className="absolute right-0 mt-1 w-64 bg-white dark:bg-night-800 rounded-lg border border-gray-200 dark:border-white/10 shadow-md z-30 overflow-hidden">
+          <div className="px-3 py-2 border-b border-gray-100 dark:border-white/10">
+            <p className="text-[11px] uppercase tracking-wide text-gray-400 dark:text-gray-500">
               Switch company
             </p>
           </div>
@@ -69,16 +69,16 @@ export default function CompanySwitcher() {
                     if (!isActive) switchCompany(c.id)
                     else setOpen(false)
                   }}
-                  className="w-full flex items-center justify-between gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 text-left"
+                  className="w-full flex items-center justify-between gap-2 px-3 py-2 text-sm text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-50 dark:hover:bg-white/5 text-left"
                 >
                   <span className="flex items-center gap-2 truncate">
-                    <Building2 className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                    <Building2 className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500 shrink-0" />
                     <span className="truncate">{c.name}</span>
-                    <span className="text-[10px] uppercase tracking-wide text-gray-400 shrink-0">
+                    <span className="text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500 shrink-0">
                       {c.role}
                     </span>
                   </span>
-                  {isActive && <Check className="w-3.5 h-3.5 text-teal-600 shrink-0" />}
+                  {isActive && <Check className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400 shrink-0" />}
                 </button>
               )
             })}
@@ -86,7 +86,7 @@ export default function CompanySwitcher() {
           <Link
             href="/signup"
             onClick={() => setOpen(false)}
-            className="flex items-center gap-2 px-3 py-2 text-sm text-teal-700 hover:bg-teal-50 border-t border-gray-100"
+            className="flex items-center gap-2 px-3 py-2 text-sm text-teal-700 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-[#284b63]/40 border-t border-gray-100 dark:border-white/10"
           >
             <Plus className="w-3.5 h-3.5" /> Create a new company
           </Link>

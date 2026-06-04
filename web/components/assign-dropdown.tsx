@@ -32,7 +32,7 @@ export default function AssignDropdown({ practice, onChange }: Props) {
       value={practice.assigned_to ?? ""}
       onChange={(e) => handleChange(e.target.value)}
       disabled={saving}
-      className="text-sm rounded-lg border border-gray-200 bg-white/80 px-3 py-1.5 disabled:opacity-50"
+      className="text-sm rounded-lg border border-gray-200 bg-white/80 dark:bg-white/5 dark:border-white/10 dark:text-white dark:placeholder:text-gray-500 px-3 py-1.5 disabled:opacity-50"
     >
       <option value="">Unassigned</option>
       {users.map((u) => (

@@ -30,25 +30,25 @@ export default function UserMenu() {
     <div className="relative" ref={wrapperRef}>
       <button
         onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-2 text-sm px-2 py-1 rounded-lg hover:bg-gray-100 transition"
+        className="flex items-center gap-2 text-sm px-2 py-1 rounded-lg hover:bg-gray-100 dark:hover:bg-white/10 transition"
       >
         <div className="w-7 h-7 rounded-full bg-teal-600 text-white grid place-items-center text-xs font-semibold">
           {(user.name?.[0] ?? user.email[0]).toUpperCase()}
         </div>
-        <span className="text-gray-700 max-w-[140px] truncate">
+        <span className="text-gray-700 dark:text-[#d9d9d9] max-w-[140px] truncate">
           {user.name ?? user.email}
         </span>
-        <ChevronDown className="w-3.5 h-3.5 text-gray-500" />
+        <ChevronDown className="w-3.5 h-3.5 text-gray-500 dark:text-gray-400" />
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-1 w-56 bg-white rounded-lg border border-gray-200 shadow-md z-30 overflow-hidden">
-          <div className="px-3 py-2 border-b border-gray-100">
-            <p className="text-sm font-medium text-gray-900 truncate">
+        <div className="absolute right-0 mt-1 w-56 bg-white dark:bg-night-800 rounded-lg border border-gray-200 dark:border-white/10 shadow-md z-30 overflow-hidden">
+          <div className="px-3 py-2 border-b border-gray-100 dark:border-white/10">
+            <p className="text-sm font-medium text-gray-900 dark:text-white truncate">
               {user.name ?? user.email}
             </p>
-            <p className="text-xs text-gray-500 truncate">{user.email}</p>
-            <p className="text-[10px] uppercase tracking-wide text-gray-400 mt-0.5">
+            <p className="text-xs text-gray-500 dark:text-gray-400 truncate">{user.email}</p>
+            <p className="text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500 mt-0.5">
               {user.role}
               {user.is_bootstrap_admin ? " · bootstrap" : ""}
             </p>
@@ -58,14 +58,14 @@ export default function UserMenu() {
               <Link
                 href="/admin/icp"
                 onClick={() => setOpen(false)}
-                className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-50 dark:hover:bg-white/5"
               >
                 <Target className="w-4 h-4" /> ICP definition
               </Link>
               <Link
                 href="/admin/users"
                 onClick={() => setOpen(false)}
-                className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-50 dark:hover:bg-white/5"
               >
                 <UserCog className="w-4 h-4" /> Users
               </Link>
@@ -74,7 +74,7 @@ export default function UserMenu() {
                 <Link
                   href="/admin/integrations"
                   onClick={() => setOpen(false)}
-                  className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                  className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-50 dark:hover:bg-white/5"
                 >
                   <Plug className="w-4 h-4" /> Integrations
                 </Link>
@@ -85,14 +85,14 @@ export default function UserMenu() {
                   <Link
                     href="/admin/usage"
                     onClick={() => setOpen(false)}
-                    className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                    className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-50 dark:hover:bg-white/5"
                   >
                     <Activity className="w-4 h-4" /> Usage &amp; cost
                   </Link>
                   <Link
                     href="/admin/credits"
                     onClick={() => setOpen(false)}
-                    className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                    className="flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-50 dark:hover:bg-white/5"
                   >
                     <Coins className="w-4 h-4" /> Credits
                   </Link>
@@ -105,13 +105,13 @@ export default function UserMenu() {
               setOpen(false)
               setPwOpen(true)
             }}
-            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 text-left"
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-50 dark:hover:bg-white/5 text-left"
           >
             <KeyRound className="w-4 h-4" /> Change password
           </button>
           <button
             onClick={signOut}
-            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 text-left border-t border-gray-100"
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-50 dark:hover:bg-white/5 text-left border-t border-gray-100 dark:border-white/10"
           >
             <LogOut className="w-4 h-4" /> Sign out
           </button>

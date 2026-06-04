@@ -169,14 +169,14 @@ export default function ICPDefinitionPage() {
 
   if (!user) {
     return (
-      <div className="min-h-screen grid place-items-center text-gray-500">
+      <div className="min-h-screen grid place-items-center text-gray-500 dark:text-gray-400">
         Sign in to manage your ICP.
       </div>
     )
   }
   if (user.role !== "admin") {
     return (
-      <div className="min-h-screen grid place-items-center text-gray-500">
+      <div className="min-h-screen grid place-items-center text-gray-500 dark:text-gray-400">
         Admin only.
       </div>
     )
@@ -187,20 +187,20 @@ export default function ICPDefinitionPage() {
     : 100
 
   return (
-    <div className="min-h-screen bg-cream py-10 px-6">
+    <div className="min-h-screen bg-cream dark:bg-night py-10 px-6">
       <div className="max-w-3xl mx-auto">
         <Link
           href="/"
-          className="inline-flex items-center gap-1.5 text-sm text-gray-600 hover:text-teal-700 mb-4"
+          className="inline-flex items-center gap-1.5 text-sm text-gray-600 dark:text-[#d9d9d9] hover:text-teal-700 dark:hover:text-teal-400 mb-4"
         >
           <ArrowLeft className="w-3.5 h-3.5" /> Back to map
         </Link>
 
         <header className="mb-6">
-          <h1 className="font-serif text-3xl font-bold text-gray-900">
+          <h1 className="font-serif text-3xl font-bold text-gray-900 dark:text-white">
             Define your ICP
           </h1>
-          <p className="text-sm text-gray-500 mt-1">
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
             Paste your Ideal Customer Profile document below.
             {" "}<span className="font-medium">Apex AI</span> will extract the
             structured criteria the analyzer uses to score every lead — verticals,
@@ -208,7 +208,7 @@ export default function ICPDefinitionPage() {
             service catalog.
           </p>
           {company && (
-            <p className="text-xs text-gray-400 mt-2">
+            <p className="text-xs text-gray-400 dark:text-gray-500 mt-2">
               Editing for company <code>{company.slug}</code>{" "}
               ({company.name}).
             </p>
@@ -221,10 +221,10 @@ export default function ICPDefinitionPage() {
             onChange={(e) => setRawText(e.target.value)}
             rows={12}
             placeholder="Paste the full ICP definition here — narrative is fine, doesn't need to match any specific format."
-            className="w-full text-sm rounded-md border border-gray-200 p-3 font-mono"
+            className="w-full text-sm rounded-md border border-gray-200 dark:border-white/10 dark:bg-white/5 dark:text-white dark:placeholder:text-gray-500 p-3 font-mono"
           />
           <div className="flex items-center justify-between mt-3">
-            <p className="text-xs text-gray-500">
+            <p className="text-xs text-gray-500 dark:text-gray-400">
               {rawText.length.toLocaleString()} characters (cap: 16,000)
             </p>
             <button
@@ -246,7 +246,7 @@ export default function ICPDefinitionPage() {
         </Card>
 
         {error && (
-          <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-lg px-3 py-2 text-sm mt-4">
+          <div className="bg-rose-50 dark:bg-rose-500/20 border border-rose-200 dark:border-rose-500/30 text-rose-700 dark:text-rose-300 rounded-lg px-3 py-2 text-sm mt-4">
             {error}
           </div>
         )}
@@ -263,7 +263,7 @@ export default function ICPDefinitionPage() {
 
             <div className="flex items-center justify-end gap-2 mt-4">
               {saved && (
-                <span className="inline-flex items-center gap-1 text-sm text-emerald-700">
+                <span className="inline-flex items-center gap-1 text-sm text-emerald-700 dark:text-emerald-300">
                   <Check className="w-4 h-4" /> Saved
                 </span>
               )}
@@ -289,7 +289,7 @@ export default function ICPDefinitionPage() {
               </button>
             </div>
 
-            <p className="text-[11px] text-gray-400 mt-2 text-right">
+            <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-2 text-right">
               Saved ICPs drive every <strong>Re-analyze</strong> from this
               point forward. Existing analyses keep their old scores until
               they&apos;re re-analyzed.
@@ -305,8 +305,8 @@ function Card({
   title, children,
 }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="bg-white/80 rounded-2xl shadow-sm border border-gray-200/50 p-5 mt-4">
-      <h2 className="font-serif text-lg font-semibold text-gray-900 mb-3">
+    <section className="bg-white/80 dark:bg-night-800 rounded-2xl shadow-sm border border-gray-200/50 dark:border-white/10 p-5 mt-4">
+      <h2 className="font-serif text-lg font-semibold text-gray-900 dark:text-white mb-3">
         {title}
       </h2>
       {children}
@@ -335,7 +335,7 @@ function EditableICP({
         <input
           value={icp.company_self_description}
           onChange={(e) => set("company_self_description", e.target.value)}
-          className="w-full text-sm rounded-md border border-gray-200 px-2 py-1.5"
+          className="w-full text-sm rounded-md border border-gray-200 dark:border-white/10 dark:bg-white/5 dark:text-white dark:placeholder:text-gray-500 px-2 py-1.5"
         />
       </Field>
 
@@ -343,7 +343,7 @@ function EditableICP({
         <input
           value={icp.brand_voice}
           onChange={(e) => set("brand_voice", e.target.value)}
-          className="w-full text-sm rounded-md border border-gray-200 px-2 py-1.5"
+          className="w-full text-sm rounded-md border border-gray-200 dark:border-white/10 dark:bg-white/5 dark:text-white dark:placeholder:text-gray-500 px-2 py-1.5"
         />
       </Field>
 
@@ -396,7 +396,7 @@ function EditableICP({
             ...icp.geographies,
             outside_us: e.target.value as "exclude" | "allow",
           })}
-          className="text-sm rounded-md border border-gray-200 px-2 py-1.5 bg-white"
+          className="text-sm rounded-md border border-gray-200 dark:border-white/10 px-2 py-1.5 bg-white dark:bg-white/5 dark:text-white"
         >
           <option value="exclude">Exclude</option>
           <option value="allow">Allow</option>
@@ -410,7 +410,7 @@ function EditableICP({
         <div className="space-y-2">
           {DIMENSION_KEYS.map((k) => (
             <div key={k} className="flex items-center gap-3">
-              <span className="text-sm text-gray-700 w-44">{DIMENSION_LABELS[k]}</span>
+              <span className="text-sm text-gray-700 dark:text-[#d9d9d9] w-44">{DIMENSION_LABELS[k]}</span>
               <input
                 type="number"
                 min={0}
@@ -420,7 +420,7 @@ function EditableICP({
                   ...icp.dimension_weights,
                   [k]: Math.max(0, parseInt(e.target.value || "0", 10)),
                 })}
-                className="w-20 text-sm rounded-md border border-gray-200 px-2 py-1 font-mono text-right"
+                className="w-20 text-sm rounded-md border border-gray-200 dark:border-white/10 dark:bg-white/5 dark:text-white px-2 py-1 font-mono text-right"
               />
             </div>
           ))}
@@ -463,7 +463,7 @@ function Field({
 }: { label: string; children: React.ReactNode; warn?: boolean }) {
   return (
     <div>
-      <p className={`text-xs font-medium mb-1 ${warn ? "text-rose-600" : "text-gray-700"}`}>
+      <p className={`text-xs font-medium mb-1 ${warn ? "text-rose-600 dark:text-rose-400" : "text-gray-700 dark:text-[#d9d9d9]"}`}>
         {label}
       </p>
       {children}
@@ -490,8 +490,8 @@ function ChipGroup({
             onClick={() => onToggle(o)}
             className={`${dense ? "text-[11px] px-2 py-0.5" : "text-xs px-2 py-1"} rounded-full border transition ${
               active
-                ? "bg-teal-50 border-teal-500 text-teal-700"
-                : "bg-white border-gray-200 text-gray-600 hover:border-gray-400"
+                ? "bg-teal-50 dark:bg-[#284b63]/40 border-teal-500 text-teal-700 dark:text-teal-400"
+                : "bg-white dark:bg-night-800 border-gray-200 dark:border-white/10 text-gray-600 dark:text-[#d9d9d9] hover:border-gray-400"
             }`}
           >
             {labels?.[o] ?? o}
@@ -526,12 +526,12 @@ function ListField({
         {items.map((item, i) => (
           <span
             key={i}
-            className="inline-flex items-center gap-1 text-xs bg-teal-50 border border-teal-200 text-teal-800 rounded-full pl-2 pr-1 py-0.5"
+            className="inline-flex items-center gap-1 text-xs bg-teal-50 dark:bg-[#284b63]/40 border border-teal-200 dark:border-white/10 text-teal-800 dark:text-teal-400 rounded-full pl-2 pr-1 py-0.5"
           >
             {item}
             <button
               onClick={() => onChange(items.filter((_, idx) => idx !== i))}
-              className="text-teal-700 hover:text-rose-600"
+              className="text-teal-700 dark:text-teal-400 hover:text-rose-600"
             >
               <X className="w-3 h-3" />
             </button>
@@ -549,12 +549,12 @@ function ListField({
             }
           }}
           placeholder={placeholder}
-          className="flex-1 text-sm rounded-md border border-gray-200 px-2 py-1.5"
+          className="flex-1 text-sm rounded-md border border-gray-200 dark:border-white/10 dark:bg-white/5 dark:text-white dark:placeholder:text-gray-500 px-2 py-1.5"
         />
         <button
           onClick={add}
           disabled={!draft.trim()}
-          className="text-sm px-3 py-1.5 rounded-md border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+          className="text-sm px-3 py-1.5 rounded-md border border-gray-300 dark:border-white/10 text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-50 dark:hover:bg-white/10 disabled:opacity-50"
         >
           Add
         </button>

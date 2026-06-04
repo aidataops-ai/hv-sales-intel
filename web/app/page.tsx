@@ -284,19 +284,19 @@ function PageContent() {
       />
 
       <main className="relative w-full h-full pt-14">
-        <div className="absolute top-16 left-4 bottom-4 w-[420px] z-10 glass-panel rounded-2xl flex flex-col overflow-hidden">
-          <div className="px-5 pt-5 pb-3 border-b border-gray-200/50 flex items-start justify-between gap-2">
+        <div className="absolute top-16 left-4 bottom-4 w-[420px] z-10 glass-panel dark:bg-night-800/90 dark:border-white/10 rounded-2xl flex flex-col overflow-hidden">
+          <div className="px-5 pt-5 pb-3 border-b border-gray-200/50 dark:border-white/10 flex items-start justify-between gap-2">
             <div>
-              <h2 className="font-serif text-lg font-semibold text-gray-900">
+              <h2 className="font-serif text-lg font-semibold text-gray-900 dark:text-white">
                 {filters.q || "All practices"}
               </h2>
-              <p className="text-sm text-gray-500 mt-0.5">
+              <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
                 {total} practice{total !== 1 ? "s" : ""}
               </p>
             </div>
             <button
               onClick={refreshFromDb}
-              className="inline-flex items-center gap-1 text-sm text-teal-700 hover:text-teal-800 transition"
+              className="inline-flex items-center gap-1 text-sm text-teal-700 dark:text-teal-400 hover:text-teal-800 transition"
               title="Reset filters and refresh from database"
             >
               <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -344,7 +344,7 @@ function PageContent() {
             className="flex-1 overflow-y-auto sidebar-scroll p-3 space-y-2"
           >
             {practices.length === 0 ? (
-              <p className="text-center text-gray-400 py-10 text-sm">
+              <p className="text-center text-gray-400 dark:text-gray-500 py-10 text-sm">
                 {isLoading ? "Loading…" : "No practices match these filters."}
               </p>
             ) : (
@@ -366,7 +366,7 @@ function PageContent() {
             )}
           </div>
 
-          <div className="border-t border-gray-200/50">
+          <div className="border-t border-gray-200/50 dark:border-white/10">
             <Pagination page={page} totalPages={totalPages} onChange={goToPage} />
           </div>
         </div>

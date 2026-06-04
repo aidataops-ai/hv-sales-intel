@@ -6,6 +6,10 @@
   body {
     @apply bg-cream text-gray-800 font-sans antialiased;
   }
+  .dark body {
+    background-color: #353535;
+    color: #d9d9d9;
+  }
 }
 
 /* Frosted-glass sidebar panel */
@@ -43,6 +47,9 @@
 }
 .sidebar-scroll::-webkit-scrollbar-thumb {
   @apply bg-gray-300 rounded-full;
+}
+.dark .sidebar-scroll::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.18);
 }
 
 /* Brief highlight on the just-analyzed practice card so the user can

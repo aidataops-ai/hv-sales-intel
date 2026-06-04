@@ -262,35 +262,35 @@ export default function BulkScanModal({
 
   return (
     <div className="fixed inset-0 z-40 bg-black/30 backdrop-blur-sm flex items-start justify-center pt-20 px-4 pb-4">
-      <div className="bg-white rounded-2xl shadow-xl w-[680px] max-w-[92vw] max-h-[calc(100vh-6rem)] overflow-hidden flex flex-col">
-        <div className="flex-none flex items-center justify-between px-5 py-3 border-b border-gray-200">
+      <div className="bg-white dark:bg-night-800 rounded-2xl shadow-xl w-[680px] max-w-[92vw] max-h-[calc(100vh-6rem)] overflow-hidden flex flex-col">
+        <div className="flex-none flex items-center justify-between px-5 py-3 border-b border-gray-200 dark:border-white/10">
           <div>
-            <h2 className="font-serif text-lg font-semibold text-gray-900">
+            <h2 className="font-serif text-lg font-semibold text-gray-900 dark:text-white">
               Bulk Scan
             </h2>
-            <p className="text-xs text-gray-500">
+            <p className="text-xs text-gray-500 dark:text-gray-400">
               Pull leads from the underlying directory across many cities at
               once — useful when one search would clip too early.
             </p>
           </div>
           <button
             onClick={handleClose}
-            className="text-gray-400 hover:text-gray-700"
+            className="text-gray-400 dark:text-gray-500 hover:text-gray-700"
             title={running ? "Stop after current query" : "Close"}
           >
             <X className="w-4 h-4" />
           </button>
         </div>
 
-        <div className="flex-none px-5 pt-4 pb-2 border-b border-gray-100">
-          <div className="inline-flex bg-gray-100 rounded-lg p-0.5 text-sm">
+        <div className="flex-none px-5 pt-4 pb-2 border-b border-gray-100 dark:border-white/10">
+          <div className="inline-flex bg-gray-100 dark:bg-white/5 rounded-lg p-0.5 text-sm">
             <button
               disabled={running}
               onClick={() => setMode("sweep")}
               className={`px-3 py-1.5 rounded-md inline-flex items-center gap-1.5 transition ${
                 mode === "sweep"
-                  ? "bg-white shadow-sm text-gray-900"
-                  : "text-gray-600 hover:text-gray-900"
+                  ? "bg-white dark:bg-night-800 shadow-sm text-gray-900 dark:text-white"
+                  : "text-gray-600 dark:text-[#d9d9d9] hover:text-gray-900"
               }`}
             >
               <Search className="w-3.5 h-3.5" /> State sweep
@@ -300,8 +300,8 @@ export default function BulkScanModal({
               onClick={() => setMode("grid")}
               className={`px-3 py-1.5 rounded-md inline-flex items-center gap-1.5 transition ${
                 mode === "grid"
-                  ? "bg-white shadow-sm text-gray-900"
-                  : "text-gray-600 hover:text-gray-900"
+                  ? "bg-white dark:bg-night-800 shadow-sm text-gray-900 dark:text-white"
+                  : "text-gray-600 dark:text-[#d9d9d9] hover:text-gray-900"
               }`}
             >
               <Layers className="w-3.5 h-3.5" /> Specialty grid
@@ -312,14 +312,14 @@ export default function BulkScanModal({
         <div className="flex-1 min-h-0 px-5 py-4 space-y-4 overflow-y-auto">
           {/* Vertical picker — drives the default template and specialty list */}
           <div>
-            <span className="block text-xs font-medium text-gray-700 mb-1">
+            <span className="block text-xs font-medium text-gray-700 dark:text-[#d9d9d9] mb-1">
               Vertical
             </span>
             <select
               disabled={running}
               value={vertical}
               onChange={(e) => handleVerticalChange(e.target.value as Vertical)}
-              className="w-full text-sm rounded-md border border-gray-200 px-2 py-1.5 bg-white"
+              className="w-full text-sm rounded-md border border-gray-200 dark:border-white/10 px-2 py-1.5 bg-white dark:bg-white/5 dark:text-white"
             >
               {(Object.keys(VERTICAL_LABELS) as Vertical[]).map((v) => (
                 <option key={v} value={v}>
@@ -330,9 +330,9 @@ export default function BulkScanModal({
           </div>
 
           {/* US states multi-select */}
-          <div className="rounded-md border border-gray-200 bg-gray-50/40 p-2.5">
+          <div className="rounded-md border border-gray-200 dark:border-white/10 bg-gray-50/40 dark:bg-white/5 p-2.5">
             <div className="flex items-baseline justify-between mb-1.5">
-              <span className="block text-xs font-semibold text-gray-800">
+              <span className="block text-xs font-semibold text-gray-800 dark:text-[#d9d9d9]">
                 <span className="mr-1">🇺🇸</span>
                 United States — {states.length} selected · {totalCities} cities
               </span>
@@ -340,14 +340,14 @@ export default function BulkScanModal({
                 <button
                   disabled={running}
                   onClick={() => setStates(US_STATES)}
-                  className="text-teal-700 hover:underline"
+                  className="text-teal-700 dark:text-teal-400 hover:underline"
                 >
                   Select all
                 </button>
                 <button
                   disabled={running}
                   onClick={() => setStates([])}
-                  className="text-gray-500 hover:underline"
+                  className="text-gray-500 dark:text-gray-400 hover:underline"
                 >
                   Clear
                 </button>
@@ -369,9 +369,9 @@ export default function BulkScanModal({
           </div>
 
           {/* United Kingdom — separate country, city-level picker */}
-          <div className="rounded-md border border-gray-200 bg-gray-50/40 p-2.5">
+          <div className="rounded-md border border-gray-200 dark:border-white/10 bg-gray-50/40 dark:bg-white/5 p-2.5">
             <div className="flex items-baseline justify-between mb-1.5">
-              <span className="block text-xs font-semibold text-gray-800">
+              <span className="block text-xs font-semibold text-gray-800 dark:text-[#d9d9d9]">
                 <span className="mr-1">🇬🇧</span>
                 United Kingdom — {ukCities.length} of {UK_ALL_CITIES.length} cities
               </span>
@@ -379,14 +379,14 @@ export default function BulkScanModal({
                 <button
                   disabled={running}
                   onClick={() => setUkCities([...UK_ALL_CITIES])}
-                  className="text-teal-700 hover:underline"
+                  className="text-teal-700 dark:text-teal-400 hover:underline"
                 >
                   Select all
                 </button>
                 <button
                   disabled={running}
                   onClick={() => setUkCities([])}
-                  className="text-gray-500 hover:underline"
+                  className="text-gray-500 dark:text-gray-400 hover:underline"
                 >
                   Clear
                 </button>
@@ -403,8 +403,8 @@ export default function BulkScanModal({
                       onClick={() => toggleUKCity(city)}
                       className={`text-[11px] px-2 py-0.5 rounded-full border transition ${
                         active
-                          ? "bg-teal-50 border-teal-500 text-teal-700"
-                          : "bg-white border-gray-200 text-gray-600 hover:border-gray-400"
+                          ? "bg-teal-50 dark:bg-[#284b63]/40 border-teal-500 text-teal-700 dark:text-teal-400"
+                          : "bg-white dark:bg-night-800 border-gray-200 dark:border-white/10 text-gray-600 dark:text-[#d9d9d9] hover:border-gray-400"
                       }`}
                     >
                       {city}
@@ -413,7 +413,7 @@ export default function BulkScanModal({
                 })}
               </div>
             </div>
-            <p className="text-[11px] text-gray-500 mt-1.5">
+            <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1.5">
               UK is its own country — queries are built as{" "}
               <code>… in &lt;city&gt;, UK</code>, not as a US state.
             </p>
@@ -422,10 +422,10 @@ export default function BulkScanModal({
           {/* Custom cities supplement */}
           <div>
             <label className="block">
-              <span className="block text-xs font-medium text-gray-700 mb-1">
+              <span className="block text-xs font-medium text-gray-700 dark:text-[#d9d9d9] mb-1">
                 Custom cities (optional)
                 {extraCitiesCount > 0 && (
-                  <span className="ml-1 text-teal-700">
+                  <span className="ml-1 text-teal-700 dark:text-teal-400">
                     · +{extraCitiesCount} added
                   </span>
                 )}
@@ -435,11 +435,11 @@ export default function BulkScanModal({
                 value={customCitiesText}
                 onChange={(e) => setCustomCitiesText(e.target.value)}
                 rows={3}
-                className="w-full text-sm rounded-md border border-gray-200 px-2 py-1.5 font-mono"
+                className="w-full text-sm rounded-md border border-gray-200 dark:border-white/10 px-2 py-1.5 font-mono dark:bg-white/5 dark:text-white dark:placeholder:text-gray-500"
                 placeholder={"Vernon, CA\nMaywood, CA\nCalifornia: Bell, Cudahy, Huntington Park"}
               />
             </label>
-            <p className="text-[11px] text-gray-500 mt-1">
+            <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
               One per line. Formats: <code>City, ST</code> or{" "}
               <code>StateName: city, city, …</code>. Supplements the defaults
               above for any state you selected.
@@ -450,18 +450,18 @@ export default function BulkScanModal({
           {mode === "sweep" ? (
             <div>
               <label className="block">
-                <span className="block text-xs font-medium text-gray-700 mb-1">
+                <span className="block text-xs font-medium text-gray-700 dark:text-[#d9d9d9] mb-1">
                   Query template
                 </span>
                 <input
                   disabled={running}
                   value={template}
                   onChange={(e) => setTemplate(e.target.value)}
-                  className="w-full text-sm rounded-md border border-gray-200 px-2 py-1.5 font-mono"
+                  className="w-full text-sm rounded-md border border-gray-200 dark:border-white/10 px-2 py-1.5 font-mono dark:bg-white/5 dark:text-white dark:placeholder:text-gray-500"
                   placeholder="e.g. dental clinics in {city}, {state}"
                 />
               </label>
-              <p className="text-[11px] text-gray-500 mt-1">
+              <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
                 <code>&#123;city&#125;</code> /{" "}
                 <code>&#123;state&#125;</code> /{" "}
                 <code>&#123;stateLabel&#125;</code> are substituted per city.
@@ -469,7 +469,7 @@ export default function BulkScanModal({
             </div>
           ) : (
             <div>
-              <span className="block text-xs font-medium text-gray-700 mb-1">
+              <span className="block text-xs font-medium text-gray-700 dark:text-[#d9d9d9] mb-1">
                 Specialties ({specialties.length} selected)
               </span>
               <div className="flex flex-wrap gap-1.5">
@@ -482,8 +482,8 @@ export default function BulkScanModal({
                       onClick={() => toggleSpecialty(s)}
                       className={`text-xs px-2 py-1 rounded-full border transition ${
                         active
-                          ? "bg-teal-50 border-teal-500 text-teal-700"
-                          : "bg-white border-gray-200 text-gray-600 hover:border-gray-400"
+                          ? "bg-teal-50 dark:bg-[#284b63]/40 border-teal-500 text-teal-700 dark:text-teal-400"
+                          : "bg-white dark:bg-night-800 border-gray-200 dark:border-white/10 text-gray-600 dark:text-[#d9d9d9] hover:border-gray-400"
                       }`}
                     >
                       {s}
@@ -496,7 +496,7 @@ export default function BulkScanModal({
 
           {/* Cap on unique leads — stops the scan early once reached */}
           <div className="flex items-center gap-3 text-xs">
-            <span className="font-medium text-gray-700 shrink-0">
+            <span className="font-medium text-gray-700 dark:text-[#d9d9d9] shrink-0">
               Stop after
             </span>
             <input
@@ -512,9 +512,9 @@ export default function BulkScanModal({
                 const n = parseInt(v, 10)
                 if (Number.isFinite(n) && n > 0) setMaxLeads(n)
               }}
-              className="w-24 rounded-md border border-gray-200 px-2 py-1 text-sm tabular-nums"
+              className="w-24 rounded-md border border-gray-200 dark:border-white/10 px-2 py-1 text-sm tabular-nums dark:bg-white/5 dark:text-white dark:placeholder:text-gray-500"
             />
-            <span className="text-gray-600">unique leads collected</span>
+            <span className="text-gray-600 dark:text-[#d9d9d9]">unique leads collected</span>
             <div className="flex gap-1.5 ml-auto">
               {[100, 250, 500, 1000].map((n) => (
                 <button
@@ -523,8 +523,8 @@ export default function BulkScanModal({
                   onClick={() => setMaxLeads(n)}
                   className={`text-[11px] px-2 py-0.5 rounded-full border transition ${
                     maxLeads === n
-                      ? "bg-teal-50 border-teal-500 text-teal-700"
-                      : "bg-white border-gray-200 text-gray-600 hover:border-gray-400"
+                      ? "bg-teal-50 dark:bg-[#284b63]/40 border-teal-500 text-teal-700 dark:text-teal-400"
+                      : "bg-white dark:bg-night-800 border-gray-200 dark:border-white/10 text-gray-600 dark:text-[#d9d9d9] hover:border-gray-400"
                   }`}
                 >
                   {n}
@@ -535,8 +535,8 @@ export default function BulkScanModal({
                 onClick={() => setMaxLeads(null)}
                 className={`text-[11px] px-2 py-0.5 rounded-full border transition ${
                   maxLeads === null
-                    ? "bg-teal-50 border-teal-500 text-teal-700"
-                    : "bg-white border-gray-200 text-gray-600 hover:border-gray-400"
+                    ? "bg-teal-50 dark:bg-[#284b63]/40 border-teal-500 text-teal-700 dark:text-teal-400"
+                    : "bg-white dark:bg-night-800 border-gray-200 dark:border-white/10 text-gray-600 dark:text-[#d9d9d9] hover:border-gray-400"
                 }`}
               >
                 ∞
@@ -544,16 +544,16 @@ export default function BulkScanModal({
             </div>
           </div>
 
-          <div className="rounded-lg bg-gray-50 border border-gray-200 px-3 py-2 text-xs text-gray-700">
+          <div className="rounded-lg bg-gray-50 dark:bg-white/5 border border-gray-200 dark:border-white/10 px-3 py-2 text-xs text-gray-700 dark:text-[#d9d9d9]">
             Will run{" "}
-            <span className="font-semibold text-gray-900">{queries.length}</span>{" "}
+            <span className="font-semibold text-gray-900 dark:text-white">{queries.length}</span>{" "}
             quer{queries.length === 1 ? "y" : "ies"} across{" "}
-            <span className="font-semibold text-gray-900">{states.length}</span>{" "}
+            <span className="font-semibold text-gray-900 dark:text-white">{states.length}</span>{" "}
             US state{states.length === 1 ? "" : "s"}
             {ukCities.length > 0 && (
               <>
                 {" "}+{" "}
-                <span className="font-semibold text-gray-900">
+                <span className="font-semibold text-gray-900 dark:text-white">
                   {ukCities.length}
                 </span>{" "}
                 UK cit{ukCities.length === 1 ? "y" : "ies"}
@@ -563,7 +563,7 @@ export default function BulkScanModal({
             {maxLeads != null && (
               <>
                 {" "}and the scan stops once{" "}
-                <span className="font-semibold text-gray-900">{maxLeads}</span>{" "}
+                <span className="font-semibold text-gray-900 dark:text-white">{maxLeads}</span>{" "}
                 unique leads are collected
               </>
             )}
@@ -615,22 +615,22 @@ export default function BulkScanModal({
 
           {(running || stats.done) && (
             <div className="space-y-1.5">
-              <div className="h-2 rounded-full bg-gray-200 overflow-hidden">
+              <div className="h-2 rounded-full bg-gray-200 dark:bg-white/10 overflow-hidden">
                 <div
                   className="h-full bg-teal-600 transition-all"
                   style={{ width: `${progressPct}%` }}
                 />
               </div>
               <div className="flex items-baseline justify-between text-xs">
-                <span className="text-gray-700">
+                <span className="text-gray-700 dark:text-[#d9d9d9]">
                   {stats.ranQueries}/{queries.length} queries
                   {stats.currentQuery && (
-                    <span className="text-gray-400">
+                    <span className="text-gray-400 dark:text-gray-500">
                       {" · "}now: {stats.currentQuery}
                     </span>
                   )}
                 </span>
-                <span className="font-medium text-gray-900">
+                <span className="font-medium text-gray-900 dark:text-white">
                   {stats.totalPractices} practices · {stats.errors.length} errors
                 </span>
               </div>
@@ -662,8 +662,8 @@ export default function BulkScanModal({
               )}
 
               {stats.done && stats.uniquePlaceIds.length > 0 && (
-                <div className="mt-2 rounded-md bg-emerald-50 border border-emerald-200 px-3 py-2 flex items-center justify-between gap-3">
-                  <span className="text-xs text-emerald-900">
+                <div className="mt-2 rounded-md bg-emerald-50 dark:bg-emerald-500/20 border border-emerald-200 dark:border-emerald-500/30 px-3 py-2 flex items-center justify-between gap-3">
+                  <span className="text-xs text-emerald-900 dark:text-emerald-300">
                     Scan complete — {stats.uniquePlaceIds.length.toLocaleString()}{" "}
                     unique leads collected.
                   </span>
@@ -688,10 +688,10 @@ export default function BulkScanModal({
           )}
         </div>
 
-        <div className="flex-none px-5 py-3 border-t border-gray-200 flex items-center justify-end gap-2">
+        <div className="flex-none px-5 py-3 border-t border-gray-200 dark:border-white/10 flex items-center justify-end gap-2">
           <button
             onClick={handleClose}
-            className="text-sm px-3 py-1.5 rounded-md text-gray-700 hover:bg-gray-50"
+            className="text-sm px-3 py-1.5 rounded-md text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-50 dark:hover:bg-white/10"
           >
             {running ? "Stop" : "Close"}
           </button>
@@ -749,8 +749,8 @@ function StateChip({
       onClick={() => onToggle(code)}
       className={`text-[11px] px-2 py-0.5 rounded-full border transition ${
         active
-          ? "bg-teal-50 border-teal-500 text-teal-700"
-          : "bg-white border-gray-200 text-gray-600 hover:border-gray-400"
+          ? "bg-teal-50 dark:bg-[#284b63]/40 border-teal-500 text-teal-700 dark:text-teal-400"
+          : "bg-white dark:bg-night-800 border-gray-200 dark:border-white/10 text-gray-600 dark:text-[#d9d9d9] hover:border-gray-400"
       }`}
       title={`${STATE_LABELS[code]} — ${cityCount} cities`}
     >

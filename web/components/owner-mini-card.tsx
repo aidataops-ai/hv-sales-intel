@@ -18,14 +18,14 @@ export default function OwnerMiniCard({ practice, compact = false }: OwnerMiniCa
   if (!hasAny) return null
 
   return (
-    <div className={compact ? "mt-2" : "mt-3 p-3 rounded-lg bg-white/60 border border-gray-200/60"}>
+    <div className={compact ? "mt-2" : "mt-3 p-3 rounded-lg bg-white/60 dark:bg-night-800 border border-gray-200/60 dark:border-white/10"}>
       <div className="flex items-center gap-1.5 text-xs">
-        <User className="w-3 h-3 text-gray-500 shrink-0" />
-        <span className="font-medium text-gray-800 truncate">
+        <User className="w-3 h-3 text-gray-500 dark:text-gray-400 shrink-0" />
+        <span className="font-medium text-gray-800 dark:text-[#d9d9d9] truncate">
           {practice.owner_name ?? "Unknown"}
         </span>
         {practice.owner_title && (
-          <span className="text-gray-400 truncate">· {practice.owner_title}</span>
+          <span className="text-gray-400 dark:text-gray-500 truncate">· {practice.owner_title}</span>
         )}
       </div>
       <div className="flex items-center gap-2 mt-1.5 flex-wrap">
@@ -33,7 +33,7 @@ export default function OwnerMiniCard({ practice, compact = false }: OwnerMiniCa
           <a
             href={`mailto:${practice.owner_email}`}
             onClick={(e) => e.stopPropagation()}
-            className="inline-flex items-center gap-1 text-[11px] text-gray-600 hover:text-teal-700"
+            className="inline-flex items-center gap-1 text-[11px] text-gray-600 dark:text-[#d9d9d9] hover:text-teal-700 dark:hover:text-teal-400"
             title={practice.owner_email}
           >
             <Mail className="w-3 h-3" />
@@ -44,7 +44,7 @@ export default function OwnerMiniCard({ practice, compact = false }: OwnerMiniCa
           <a
             href={`tel:${practice.owner_phone}`}
             onClick={(e) => e.stopPropagation()}
-            className="inline-flex items-center gap-1 text-[11px] text-gray-600 hover:text-teal-700"
+            className="inline-flex items-center gap-1 text-[11px] text-gray-600 dark:text-[#d9d9d9] hover:text-teal-700 dark:hover:text-teal-400"
           >
             <Phone className="w-3 h-3" />
             {practice.owner_phone}
@@ -56,7 +56,7 @@ export default function OwnerMiniCard({ practice, compact = false }: OwnerMiniCa
             target="_blank"
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
-            className="inline-flex items-center gap-0.5 text-[11px] text-blue-600 hover:text-blue-800"
+            className="inline-flex items-center gap-0.5 text-[11px] text-blue-600 dark:text-blue-300 hover:text-blue-800"
             title="LinkedIn"
           >
             <ExternalLink className="w-3 h-3" />

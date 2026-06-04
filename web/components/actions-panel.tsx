@@ -21,7 +21,7 @@ export default function ActionsPanel({ tabs, renderTab, defaultTab }: ActionsPan
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex border-b border-gray-200/60">
+      <div className="flex border-b border-gray-200/60 dark:border-white/10">
         {tabs.map((tab) => (
           <button
             key={tab.id}
@@ -30,8 +30,8 @@ export default function ActionsPanel({ tabs, renderTab, defaultTab }: ActionsPan
             className={cn(
               "flex-1 text-sm font-medium py-2 border-b-2 transition",
               active === tab.id
-                ? "border-teal-600 text-teal-700"
-                : "border-transparent text-gray-500 hover:text-gray-700",
+                ? "border-teal-600 text-teal-700 dark:text-teal-400"
+                : "border-transparent text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-[#d9d9d9]",
               tab.disabled && "opacity-40 cursor-not-allowed"
             )}
           >

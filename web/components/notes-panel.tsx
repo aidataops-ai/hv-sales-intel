@@ -28,8 +28,8 @@ export default function NotesPanel({ notes: initialNotes, onSave }: NotesPanelPr
   return (
     <div className="space-y-3">
       <div>
-        <h3 className="font-serif font-semibold text-gray-900">Lead Notes</h3>
-        <p className="text-xs text-gray-500 mt-0.5">
+        <h3 className="font-serif font-semibold text-gray-900 dark:text-white">Lead Notes</h3>
+        <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
           Saved to the Salesforce Lead&apos;s <span className="font-semibold">Call_Notes__c</span> field.
         </p>
       </div>
@@ -39,6 +39,7 @@ export default function NotesPanel({ notes: initialNotes, onSave }: NotesPanelPr
         onBlur={handleSave}
         placeholder="Notes about this lead..."
         className="w-full h-48 text-sm p-3 rounded-lg border border-gray-200 bg-white/80
+                   dark:bg-white/5 dark:border-white/10 dark:text-white dark:placeholder:text-gray-500
                    placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-500/40
                    resize-none"
       />
@@ -55,11 +56,11 @@ export default function NotesPanel({ notes: initialNotes, onSave }: NotesPanelPr
         {saved ? "Saved!" : isSaving ? "Saving..." : "Save Notes"}
       </button>
 
-      <div className="flex gap-2 rounded-lg bg-teal-50/60 border border-teal-100 p-3 mt-2">
-        <Sparkles className="w-4 h-4 text-teal-600 shrink-0 mt-0.5" />
+      <div className="flex gap-2 rounded-lg bg-teal-50/60 dark:bg-[#284b63]/40 border border-teal-100 dark:border-white/10 p-3 mt-2">
+        <Sparkles className="w-4 h-4 text-teal-600 dark:text-teal-400 shrink-0 mt-0.5" />
         <div>
-          <p className="text-xs font-semibold text-gray-800">Pro tips</p>
-          <p className="text-xs text-gray-500 mt-0.5 leading-snug">
+          <p className="text-xs font-semibold text-gray-800 dark:text-[#d9d9d9]">Pro tips</p>
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5 leading-snug">
             Add notes, log calls, or draft emails here to keep your outreach
             organized and your team aligned.
           </p>

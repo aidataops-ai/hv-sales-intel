@@ -106,7 +106,7 @@ export default function MapView({
   }
 
   const ctrlCard =
-    "w-[52px] flex flex-col items-center gap-0.5 py-2 rounded-xl bg-white shadow-md border border-gray-200/70 text-gray-600 hover:text-teal-700 hover:bg-gray-50 transition"
+    "w-[52px] flex flex-col items-center gap-0.5 py-2 rounded-xl bg-white dark:bg-night-800 shadow-md border border-gray-200/70 dark:border-white/10 text-gray-600 dark:text-[#d9d9d9] hover:text-teal-700 dark:hover:text-teal-400 hover:bg-gray-50 dark:hover:bg-white/10 transition"
 
   return (
     <div className="relative w-full h-full">
@@ -151,27 +151,27 @@ export default function MapView({
       {onSearchArea && (
         <button
           onClick={onSearchArea}
-          className="absolute top-4 left-[452px] z-[15] inline-flex items-center gap-2 px-4 py-2.5 rounded-full bg-white shadow-md border border-gray-200/70 text-sm font-medium text-gray-700 hover:bg-gray-50 transition"
+          className="absolute top-4 left-[452px] z-[15] inline-flex items-center gap-2 px-4 py-2.5 rounded-full bg-white dark:bg-night-800 shadow-md border border-gray-200/70 dark:border-white/10 text-sm font-medium text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-50 dark:hover:bg-white/10 transition"
         >
-          <Crosshair className="w-4 h-4 text-teal-600" />
+          <Crosshair className="w-4 h-4 text-teal-600 dark:text-teal-400" />
           Search this area
         </button>
       )}
 
       {/* Map controls */}
       <div className="absolute top-4 right-4 z-[15] flex flex-col items-end gap-2">
-        <div className="flex flex-col rounded-xl bg-white shadow-md border border-gray-200/70 overflow-hidden">
+        <div className="flex flex-col rounded-xl bg-white dark:bg-night-800 shadow-md border border-gray-200/70 dark:border-white/10 overflow-hidden">
           <button
             onClick={() => map?.zoomIn()}
-            className="w-[52px] h-11 grid place-items-center text-gray-600 hover:text-teal-700 hover:bg-gray-50 transition"
+            className="w-[52px] h-11 grid place-items-center text-gray-600 dark:text-[#d9d9d9] hover:text-teal-700 dark:hover:text-teal-400 hover:bg-gray-50 dark:hover:bg-white/10 transition"
             title="Zoom in"
           >
             <Plus className="w-4 h-4" />
           </button>
-          <div className="h-px bg-gray-200/70" />
+          <div className="h-px bg-gray-200/70 dark:bg-white/10" />
           <button
             onClick={() => map?.zoomOut()}
-            className="w-[52px] h-11 grid place-items-center text-gray-600 hover:text-teal-700 hover:bg-gray-50 transition"
+            className="w-[52px] h-11 grid place-items-center text-gray-600 dark:text-[#d9d9d9] hover:text-teal-700 dark:hover:text-teal-400 hover:bg-gray-50 dark:hover:bg-white/10 transition"
             title="Zoom out"
           >
             <Minus className="w-4 h-4" />
@@ -199,11 +199,11 @@ export default function MapView({
       </div>
 
       {/* Legend */}
-      <div className="absolute bottom-4 right-4 z-[15] rounded-xl bg-white/95 shadow-md border border-gray-200/70 px-4 py-3 w-44">
-        <p className="text-sm font-semibold text-gray-900 mb-2">Lead score</p>
+      <div className="absolute bottom-4 right-4 z-[15] rounded-xl bg-white/95 dark:bg-night-800 shadow-md border border-gray-200/70 dark:border-white/10 px-4 py-3 w-44">
+        <p className="text-sm font-semibold text-gray-900 dark:text-white mb-2">Lead score</p>
         <ul className="space-y-1.5">
           {LEGEND.map((row) => (
-            <li key={row.label} className="flex items-center gap-2 text-xs text-gray-600">
+            <li key={row.label} className="flex items-center gap-2 text-xs text-gray-600 dark:text-[#d9d9d9]">
               <span
                 className="w-2.5 h-2.5 rounded-full"
                 style={{ backgroundColor: row.color }}
@@ -212,7 +212,7 @@ export default function MapView({
             </li>
           ))}
         </ul>
-        <p className="text-[10px] text-gray-400 mt-2.5 leading-tight">
+        <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-2.5 leading-tight">
           © OpenStreetMap contributors
         </p>
       </div>

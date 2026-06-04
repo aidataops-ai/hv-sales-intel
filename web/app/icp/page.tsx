@@ -14,20 +14,20 @@ import {
  */
 export default function ICPPage() {
   return (
-    <div className="min-h-screen bg-cream py-10 px-6">
+    <div className="min-h-screen bg-cream dark:bg-night py-10 px-6">
       <div className="max-w-3xl mx-auto">
         <Link
           href="/"
-          className="inline-flex items-center gap-1.5 text-sm text-gray-600 hover:text-teal-700 mb-4"
+          className="inline-flex items-center gap-1.5 text-sm text-gray-600 dark:text-[#d9d9d9] hover:text-teal-700 dark:hover:text-teal-400 mb-4"
         >
           <ArrowLeft className="w-3.5 h-3.5" /> Back to map
         </Link>
 
         <header className="mb-8">
-          <h1 className="font-serif text-4xl font-bold text-gray-900">
+          <h1 className="font-serif text-4xl font-bold text-gray-900 dark:text-white">
             ICP scoring rubric
           </h1>
-          <p className="text-sm text-gray-500 mt-2 max-w-2xl">
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-2 max-w-2xl">
             Every lead is scored 0–100 against the universal Ideal Customer
             Profile. The breakdown on each practice card shows exactly which
             dimensions earned which points so an SDR can trust — and challenge — the ranking.
@@ -36,7 +36,7 @@ export default function ICPPage() {
 
         {/* ---------------- 7 dimensions overview ---------------- */}
         <Section icon={<Target className="w-5 h-5" />} title="The seven dimensions">
-          <p className="text-sm text-gray-700 mb-4">
+          <p className="text-sm text-gray-700 dark:text-[#d9d9d9] mb-4">
             The total of 100 points splits across seven dimensions. One is
             deterministic (Vertical fit), the other six are AI-inferred from
             the practice&apos;s website + reviews.
@@ -44,13 +44,13 @@ export default function ICPPage() {
 
           <table className="w-full text-sm border-collapse">
             <thead>
-              <tr className="text-left text-xs uppercase tracking-wide text-gray-500 border-b">
+              <tr className="text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 border-b dark:border-white/10">
                 <th className="py-2 pr-3">Dimension</th>
                 <th className="py-2 pr-3 w-16 text-right">Max</th>
                 <th className="py-2">Source</th>
               </tr>
             </thead>
-            <tbody className="text-gray-700">
+            <tbody className="text-gray-700 dark:text-[#d9d9d9]">
               <Row name="Vertical fit"          max={15} src="Deterministic" />
               <Row name="Operational pain"      max={20} src="AI" />
               <Row name="Decision-maker access" max={15} src="AI" />
@@ -60,7 +60,7 @@ export default function ICPPage() {
               <Row name="Compliance boundary"   max={10} src="AI" />
             </tbody>
             <tfoot>
-              <tr className="text-sm font-semibold border-t">
+              <tr className="text-sm font-semibold border-t dark:border-white/10">
                 <td className="py-2 pr-3">Total</td>
                 <td className="py-2 pr-3 text-right">100</td>
                 <td className="py-2"></td>
@@ -164,16 +164,16 @@ export default function ICPPage() {
 
         {/* ---------------- AI discipline ---------------- */}
         <Section icon={<Sparkles className="w-5 h-5" />} title="How the AI scoring stays stable">
-          <p className="text-sm text-gray-700 mb-3">
+          <p className="text-sm text-gray-700 dark:text-[#d9d9d9] mb-3">
             Re-analyzing the same lead used to produce different scores
             every time because GPT&apos;s output drifts by a few points per
             dimension. Three things keep it pinned now:
           </p>
-          <ol className="text-sm text-gray-700 space-y-2 list-decimal list-inside">
+          <ol className="text-sm text-gray-700 dark:text-[#d9d9d9] space-y-2 list-decimal list-inside">
             <li>
               <span className="font-medium">Categorical buckets.</span>{" "}
               The model is told to pick from{" "}
-              <code className="bg-gray-100 px-1 rounded">
+              <code className="bg-gray-100 dark:bg-white/5 px-1 rounded">
                 &#123;0, 20, 40, 60, 80, 100&#125;
               </code>{" "}
               per dimension — never the continuum in between. Server snaps
@@ -198,31 +198,31 @@ export default function ICPPage() {
         <Section icon={<Award className="w-5 h-5" />} title="Score interpretation">
           <table className="w-full text-sm border-collapse">
             <thead>
-              <tr className="text-left text-xs uppercase tracking-wide text-gray-500 border-b">
+              <tr className="text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 border-b dark:border-white/10">
                 <th className="py-2 pr-3">Total</th>
                 <th className="py-2 pr-3">Classification</th>
                 <th className="py-2">Action</th>
               </tr>
             </thead>
-            <tbody className="text-gray-700">
-              <tr className="border-b">
+            <tbody className="text-gray-700 dark:text-[#d9d9d9]">
+              <tr className="border-b dark:border-white/10">
                 <td className="py-2 pr-3 font-mono">85–100</td>
-                <td className="py-2 pr-3 font-medium text-rose-700">Strong ICP</td>
+                <td className="py-2 pr-3 font-medium text-rose-700 dark:text-rose-400">Strong ICP</td>
                 <td className="py-2">Advance to demo / role definition this week.</td>
               </tr>
-              <tr className="border-b">
+              <tr className="border-b dark:border-white/10">
                 <td className="py-2 pr-3 font-mono">70–84</td>
-                <td className="py-2 pr-3 font-medium text-amber-700">Qualified with conditions</td>
+                <td className="py-2 pr-3 font-medium text-amber-700 dark:text-amber-400">Qualified with conditions</td>
                 <td className="py-2">Advance if a narrow first-role scope is obvious.</td>
               </tr>
-              <tr className="border-b">
+              <tr className="border-b dark:border-white/10">
                 <td className="py-2 pr-3 font-mono">55–69</td>
-                <td className="py-2 pr-3 font-medium text-teal-700">Weak / exploratory</td>
+                <td className="py-2 pr-3 font-medium text-teal-700 dark:text-teal-400">Weak / exploratory</td>
                 <td className="py-2">Nurture or defer — don&apos;t spend a calling slot here.</td>
               </tr>
               <tr>
                 <td className="py-2 pr-3 font-mono">&lt; 55</td>
-                <td className="py-2 pr-3 font-medium text-gray-500">Poor fit</td>
+                <td className="py-2 pr-3 font-medium text-gray-500 dark:text-gray-400">Poor fit</td>
                 <td className="py-2">Disqualify.</td>
               </tr>
             </tbody>
@@ -231,14 +231,14 @@ export default function ICPPage() {
 
         {/* ---------------- Verticals & tiers ---------------- */}
         <Section icon={<Building2 className="w-5 h-5" />} title="Verticals">
-          <p className="text-sm text-gray-700 mb-4">
+          <p className="text-sm text-gray-700 dark:text-[#d9d9d9] mb-4">
             Each lead is classified into exactly one of these five verticals
             by the analyzer at scoring time. The classification drives the
             Vertical fit dimension and tunes the prompt&apos;s vocabulary
             (e.g. &quot;Dentrix&quot; matters for dental, &quot;PointClickCare&quot;
             for nursing homes).
           </p>
-          <ul className="text-sm text-gray-700 space-y-2">
+          <ul className="text-sm text-gray-700 dark:text-[#d9d9d9] space-y-2">
             <li>
               <span className="font-semibold">Medical</span> — primary care,
               internal medicine, family medicine, mental health (psychiatry,
@@ -266,24 +266,24 @@ export default function ICPPage() {
         <Section icon={<Award className="w-5 h-5" />} title="Tiers">
           <table className="w-full text-sm border-collapse">
             <thead>
-              <tr className="text-left text-xs uppercase tracking-wide text-gray-500 border-b">
+              <tr className="text-left text-xs uppercase tracking-wide text-gray-500 dark:text-gray-400 border-b dark:border-white/10">
                 <th className="py-2 pr-3 w-12">Tier</th>
                 <th className="py-2 pr-3">Profile</th>
                 <th className="py-2">Sales motion</th>
               </tr>
             </thead>
-            <tbody className="text-gray-700">
-              <tr className="border-b">
+            <tbody className="text-gray-700 dark:text-[#d9d9d9]">
+              <tr className="border-b dark:border-white/10">
                 <td className="py-2 pr-3 font-mono font-bold">A</td>
                 <td className="py-2 pr-3">Small / single-location / owner-led</td>
                 <td className="py-2">Primary entry motion. Single-seat sell.</td>
               </tr>
-              <tr className="border-b">
+              <tr className="border-b dark:border-white/10">
                 <td className="py-2 pr-3 font-mono font-bold">B</td>
                 <td className="py-2 pr-3">Growth-stage / mid-sized</td>
                 <td className="py-2">Highest fit. Single seat → function expansion.</td>
               </tr>
-              <tr className="border-b">
+              <tr className="border-b dark:border-white/10">
                 <td className="py-2 pr-3 font-mono font-bold">C</td>
                 <td className="py-2 pr-3">Mid-market / specialty / multi-property</td>
                 <td className="py-2">Selective or opportunistic.</td>
@@ -297,7 +297,7 @@ export default function ICPPage() {
           </table>
         </Section>
 
-        <p className="text-[11px] text-gray-400 mt-8 text-center">
+        <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-8 text-center">
           Source: <code>src/icp_scorer.py</code> + <code>src/analyzer.py</code>{" "}
           + the ICP definitions document. Weights and disqualifiers will be
           per-tenant configurable in a future release — the rubric above is
@@ -312,12 +312,12 @@ function Section({
   icon, title, children,
 }: { icon: React.ReactNode; title: string; children: React.ReactNode }) {
   return (
-    <section className="bg-white/80 rounded-2xl shadow-sm border border-gray-200/50 p-6 mb-5">
+    <section className="bg-white/80 dark:bg-night-800 rounded-2xl shadow-sm border border-gray-200/50 dark:border-white/10 p-6 mb-5">
       <div className="flex items-center gap-2 mb-4">
-        <span className="inline-flex w-8 h-8 rounded-md bg-teal-50 text-teal-700 items-center justify-center">
+        <span className="inline-flex w-8 h-8 rounded-md bg-teal-50 dark:bg-[#284b63]/40 text-teal-700 dark:text-teal-400 items-center justify-center">
           {icon}
         </span>
-        <h2 className="font-serif text-xl font-semibold text-gray-900">
+        <h2 className="font-serif text-xl font-semibold text-gray-900 dark:text-white">
           {title}
         </h2>
       </div>
@@ -328,10 +328,10 @@ function Section({
 
 function Row({ name, max, src }: { name: string; max: number; src: string }) {
   return (
-    <tr className="border-b">
+    <tr className="border-b dark:border-white/10">
       <td className="py-2 pr-3">{name}</td>
       <td className="py-2 pr-3 text-right font-mono">{max}</td>
-      <td className="py-2 text-gray-500">{src}</td>
+      <td className="py-2 text-gray-500 dark:text-gray-400">{src}</td>
     </tr>
   )
 }
@@ -346,24 +346,24 @@ function Dimension({
   how: string[]
 }) {
   return (
-    <section className="bg-white/80 rounded-2xl shadow-sm border border-gray-200/50 p-6 mb-5">
+    <section className="bg-white/80 dark:bg-night-800 rounded-2xl shadow-sm border border-gray-200/50 dark:border-white/10 p-6 mb-5">
       <header className="flex items-start justify-between mb-3">
         <div className="flex items-start gap-2">
-          <span className="inline-flex w-8 h-8 rounded-md bg-teal-50 text-teal-700 items-center justify-center">
+          <span className="inline-flex w-8 h-8 rounded-md bg-teal-50 dark:bg-[#284b63]/40 text-teal-700 dark:text-teal-400 items-center justify-center">
             {icon}
           </span>
           <div>
-            <h2 className="font-serif text-xl font-semibold text-gray-900">
+            <h2 className="font-serif text-xl font-semibold text-gray-900 dark:text-white">
               {name}
             </h2>
-            <p className="text-sm text-gray-500 mt-0.5">{summary}</p>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">{summary}</p>
           </div>
         </div>
-        <span className="text-xs font-mono bg-gray-100 text-gray-700 px-2 py-1 rounded">
+        <span className="text-xs font-mono bg-gray-100 dark:bg-white/5 text-gray-700 dark:text-[#d9d9d9] px-2 py-1 rounded">
           max {max}
         </span>
       </header>
-      <ul className="text-sm text-gray-700 space-y-1.5 list-disc list-inside marker:text-gray-400">
+      <ul className="text-sm text-gray-700 dark:text-[#d9d9d9] space-y-1.5 list-disc list-inside marker:text-gray-400 dark:marker:text-gray-500">
         {how.map((line, i) => (
           <li key={i}>{line}</li>
         ))}

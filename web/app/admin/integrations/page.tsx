@@ -43,33 +43,33 @@ export default function IntegrationsPage() {
   if (!SHOW_INTEGRATIONS) notFound()
   if (!user) {
     return (
-      <div className="min-h-screen grid place-items-center text-gray-500">
+      <div className="min-h-screen grid place-items-center text-gray-500 dark:text-gray-400">
         Sign in to manage integrations.
       </div>
     )
   }
   if (user.role !== "admin") {
     return (
-      <div className="min-h-screen grid place-items-center text-gray-500">
+      <div className="min-h-screen grid place-items-center text-gray-500 dark:text-gray-400">
         Admin only.
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-cream py-10 px-6 max-w-3xl mx-auto">
+    <div className="min-h-screen bg-cream dark:bg-night py-10 px-6 max-w-3xl mx-auto">
       <Link
         href="/"
-        className="inline-flex items-center gap-1.5 text-sm text-gray-600 hover:text-teal-700 mb-4"
+        className="inline-flex items-center gap-1.5 text-sm text-gray-600 dark:text-[#d9d9d9] hover:text-teal-700 dark:hover:text-teal-400 mb-4"
       >
         <ArrowLeft className="w-3.5 h-3.5" /> Back to map
       </Link>
 
       <header className="mb-6">
-        <h1 className="font-serif text-3xl font-bold text-gray-900">
+        <h1 className="font-serif text-3xl font-bold text-gray-900 dark:text-white">
           Integrations
         </h1>
-        <p className="text-sm text-gray-500 mt-1">
+        <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
           Connect your CRM, enrichment, dialer, mail, and AI providers.
           Credentials are encrypted at rest and only used by your tenant&apos;s
           backend calls.
@@ -136,7 +136,7 @@ export default function IntegrationsPage() {
 
       </div>
 
-      <p className="text-[11px] text-gray-400 mt-8 text-center">
+      <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-8 text-center">
         Demo build — credentials are not yet routed to the runtime. Phase 9
         of the multi-tenant rollout will persist these into
         <code className="mx-1">companies.integration_secrets</code> and
@@ -162,24 +162,24 @@ function IntegrationCard({
   children: React.ReactNode
 }) {
   return (
-    <section className="bg-white/80 rounded-2xl shadow-sm border border-gray-200/50 p-5">
+    <section className="bg-white/80 dark:bg-night-800 rounded-2xl shadow-sm border border-gray-200/50 dark:border-white/10 p-5">
       <header className="flex items-start justify-between mb-3">
         <div className="flex items-start gap-2">
-          <span className="inline-flex w-7 h-7 rounded-md bg-teal-50 text-teal-700 items-center justify-center">
+          <span className="inline-flex w-7 h-7 rounded-md bg-teal-50 dark:bg-[#284b63]/40 text-teal-700 dark:text-teal-400 items-center justify-center">
             {icon}
           </span>
           <div>
-            <h2 className="font-serif text-lg font-semibold text-gray-900">
+            <h2 className="font-serif text-lg font-semibold text-gray-900 dark:text-white">
               {title}
             </h2>
-            <p className="text-xs text-gray-500">{subtitle}</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400">{subtitle}</p>
           </div>
         </div>
         <button
           onClick={onSave}
           className={`inline-flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md transition ${
             saved
-              ? "bg-emerald-100 text-emerald-700"
+              ? "bg-emerald-100 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300"
               : "bg-teal-600 text-white hover:bg-teal-700"
           }`}
         >
@@ -214,7 +214,7 @@ function Field({
 }) {
   return (
     <div>
-      <label className="block text-[11px] uppercase tracking-wide text-gray-500 mb-1">
+      <label className="block text-[11px] uppercase tracking-wide text-gray-500 dark:text-gray-400 mb-1">
         {label}
       </label>
       <input
@@ -222,9 +222,9 @@ function Field({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full text-sm rounded-md border border-gray-200 px-2 py-1.5 font-mono"
+        className="w-full text-sm rounded-md border border-gray-200 dark:border-white/10 dark:bg-white/5 dark:text-white dark:placeholder:text-gray-500 px-2 py-1.5 font-mono"
       />
-      {hint && <p className="text-[11px] text-gray-400 mt-1">{hint}</p>}
+      {hint && <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">{hint}</p>}
     </div>
   )
 }

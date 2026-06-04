@@ -16,7 +16,7 @@ export default function CallLogTab({ practice, onLogged }: CallLogTabProps) {
   return (
     <div className="space-y-3">
       <div className="flex items-start justify-between gap-2">
-        <div className="text-xs text-gray-500 leading-relaxed">
+        <div className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
           {practice.call_count > 0 ? (
             <>
               {practice.call_count}{" "}
@@ -41,13 +41,13 @@ export default function CallLogTab({ practice, onLogged }: CallLogTabProps) {
       </div>
 
       {entries.length === 0 ? (
-        <p className="text-xs text-gray-400">Nothing here yet.</p>
+        <p className="text-xs text-gray-400 dark:text-gray-500">Nothing here yet.</p>
       ) : (
         <ul className="space-y-1.5">
           {entries.map((entry, i) => (
             <li
               key={i}
-              className="text-xs text-gray-700 p-2 rounded-lg bg-white/60 border border-gray-200/60 whitespace-pre-line"
+              className="text-xs text-gray-700 dark:text-[#d9d9d9] p-2 rounded-lg bg-white/60 dark:bg-night-800 border border-gray-200/60 dark:border-white/10 whitespace-pre-line"
             >
               {entry}
             </li>

@@ -34,7 +34,7 @@ export default function Pagination({ page, totalPages, onChange }: PaginationPro
         disabled={page <= 1}
         className={cn(
           circle,
-          "border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:hover:bg-transparent",
+          "border border-gray-200 text-gray-500 hover:bg-gray-50 dark:border-white/10 dark:text-gray-400 dark:hover:bg-white/10 disabled:opacity-40 disabled:hover:bg-transparent",
         )}
         aria-label="Previous page"
       >
@@ -43,7 +43,7 @@ export default function Pagination({ page, totalPages, onChange }: PaginationPro
 
       {pageList(page, totalPages).map((p, i) =>
         p === "…" ? (
-          <span key={`gap-${i}`} className="w-6 text-center text-gray-400 text-sm">
+          <span key={`gap-${i}`} className="w-6 text-center text-gray-400 dark:text-gray-500 text-sm">
             …
           </span>
         ) : (
@@ -54,7 +54,7 @@ export default function Pagination({ page, totalPages, onChange }: PaginationPro
               circle,
               p === page
                 ? "bg-teal-600 text-white font-semibold"
-                : "text-gray-600 hover:bg-gray-100",
+                : "text-gray-600 hover:bg-gray-100 dark:text-[#d9d9d9] dark:hover:bg-white/10",
             )}
             aria-current={p === page ? "page" : undefined}
           >
@@ -68,7 +68,7 @@ export default function Pagination({ page, totalPages, onChange }: PaginationPro
         disabled={page >= totalPages}
         className={cn(
           circle,
-          "border border-gray-200 text-gray-500 hover:bg-gray-50 disabled:opacity-40 disabled:hover:bg-transparent",
+          "border border-gray-200 text-gray-500 hover:bg-gray-50 dark:border-white/10 dark:text-gray-400 dark:hover:bg-white/10 disabled:opacity-40 disabled:hover:bg-transparent",
         )}
         aria-label="Next page"
       >

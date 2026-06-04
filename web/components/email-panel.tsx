@@ -110,7 +110,7 @@ export default function EmailPanel({ practice, onPracticeUpdate }: EmailPanelPro
           />
         </>
       ) : (
-        <p className="text-xs text-gray-500">Add an email address to compose and send.</p>
+        <p className="text-xs text-gray-500 dark:text-gray-400">Add an email address to compose and send.</p>
       )}
     </div>
   )

@@ -25,16 +25,16 @@ export default function CallLogModal({
       onClick={onClose}
     >
       <div
-        className="w-full max-w-md rounded-xl bg-white shadow-xl p-5 space-y-3"
+        className="w-full max-w-md rounded-xl bg-white dark:bg-night-800 shadow-xl p-5 space-y-3"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between">
-          <h3 className="font-serif text-base font-bold text-gray-900">
+          <h3 className="font-serif text-base font-bold text-gray-900 dark:text-white">
             Lead created — {practice.name}
           </h3>
           <button
             onClick={onClose}
-            className="text-gray-400 hover:text-gray-600"
+            className="text-gray-400 dark:text-gray-500 hover:text-gray-600"
           >
             <X className="w-4 h-4" />
           </button>
@@ -42,17 +42,17 @@ export default function CallLogModal({
 
         {leadUrl ? (
           <>
-            <p className="text-xs text-gray-500">
+            <p className="text-xs text-gray-500 dark:text-gray-400">
               Salesforce Lead ID:&nbsp;
-              <span className="font-mono text-gray-700">{leadId}</span>
+              <span className="font-mono text-gray-700 dark:text-[#d9d9d9]">{leadId}</span>
             </p>
-            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3">
-              <p className="text-xs text-gray-500 mb-1">Lead link</p>
+            <div className="rounded-lg border border-gray-200 dark:border-white/10 bg-gray-50 dark:bg-white/5 p-3">
+              <p className="text-xs text-gray-500 dark:text-gray-400 mb-1">Lead link</p>
               <a
                 href={leadUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-xs text-teal-700 break-all hover:underline"
+                className="text-xs text-teal-700 dark:text-teal-400 break-all hover:underline"
               >
                 {leadUrl}
               </a>
@@ -67,7 +67,7 @@ export default function CallLogModal({
         <div className="flex justify-end gap-2 pt-1">
           <button
             onClick={onClose}
-            className="text-xs px-4 py-2 rounded-lg text-gray-700 hover:bg-gray-100"
+            className="text-xs px-4 py-2 rounded-lg text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-100 dark:hover:bg-white/10"
           >
             Close
           </button>

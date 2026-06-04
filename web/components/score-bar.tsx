@@ -13,14 +13,14 @@ export default function ScoreBar({ label, value, max = 100 }: ScoreBarProps) {
 
   return (
     <div className="flex items-center gap-2">
-      <span className="text-xs text-gray-500 w-14 shrink-0">{label}</span>
-      <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+      <span className="text-xs text-gray-500 dark:text-gray-400 w-14 shrink-0">{label}</span>
+      <div className="flex-1 h-2 bg-gray-200 dark:bg-white/10 rounded-full overflow-hidden">
         <div
           className={cn("h-full rounded-full transition-all", color)}
           style={{ width: `${pct}%` }}
         />
       </div>
-      <span className="text-xs font-medium text-gray-700 w-7 text-right">{value}</span>
+      <span className="text-xs font-medium text-gray-700 dark:text-[#d9d9d9] w-7 text-right">{value}</span>
     </div>
   )
 }

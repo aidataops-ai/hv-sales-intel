@@ -23,7 +23,7 @@ export default function OwnerFilter({ selected, onChange, currentUser }: Props) 
       <select
         value={selected}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full text-sm rounded-lg border border-gray-200 bg-white/80 px-3 py-2 text-gray-700"
+        className="w-full text-sm rounded-lg border border-gray-200 bg-white/80 px-3 py-2 text-gray-700 dark:bg-white/5 dark:border-white/10 dark:text-white dark:placeholder:text-gray-500"
       >
         <option value="">All owners</option>
       </select>
@@ -45,7 +45,7 @@ export default function OwnerFilter({ selected, onChange, currentUser }: Props) 
     <select
       value={selected}
       onChange={(e) => onChange(e.target.value)}
-      className="text-sm rounded-lg border border-gray-200 bg-white/80 px-3 py-1.5"
+      className="text-sm rounded-lg border border-gray-200 bg-white/80 px-3 py-1.5 dark:bg-white/5 dark:border-white/10 dark:text-white dark:placeholder:text-gray-500"
     >
       {options.map((o) => (
         <option key={o.id} value={o.id}>

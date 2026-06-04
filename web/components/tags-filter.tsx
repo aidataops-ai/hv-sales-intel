@@ -45,13 +45,13 @@ export default function TagsFilter({ selected, onChange }: Props) {
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
-        className="w-full text-sm rounded-lg border border-gray-200 bg-white/80 px-3 py-2 inline-flex items-center justify-between gap-1.5 text-gray-700"
+        className="w-full text-sm rounded-lg border border-gray-200 bg-white/80 px-3 py-2 inline-flex items-center justify-between gap-1.5 text-gray-700 dark:bg-white/5 dark:border-white/10 dark:text-white dark:placeholder:text-gray-500"
       >
         <span className="truncate">{label}</span>
-        <ChevronDown className="w-3.5 h-3.5 shrink-0 text-gray-400" />
+        <ChevronDown className="w-3.5 h-3.5 shrink-0 text-gray-400 dark:text-gray-500" />
       </button>
       {open && (
-        <div className="absolute z-30 mt-1 w-full min-w-[11rem] bg-white rounded-lg border border-gray-200 shadow-md">
+        <div className="absolute z-30 mt-1 w-full min-w-[11rem] bg-white rounded-lg border border-gray-200 shadow-md dark:bg-night-800 dark:border-white/10">
           {ALL_TAGS.map((tag) => {
             const isSelected = selected.includes(tag)
             return (
@@ -60,8 +60,8 @@ export default function TagsFilter({ selected, onChange }: Props) {
                 type="button"
                 onClick={() => toggle(tag)}
                 className={cn(
-                  "w-full text-left text-sm px-3 py-1.5 flex items-center justify-between hover:bg-gray-50",
-                  isSelected && "bg-teal-50 text-teal-700",
+                  "w-full text-left text-sm px-3 py-1.5 flex items-center justify-between hover:bg-gray-50 dark:hover:bg-white/10",
+                  isSelected && "bg-teal-50 text-teal-700 dark:bg-[#284b63]/40 dark:text-teal-400",
                 )}
               >
                 {TAG_LABELS[tag]}

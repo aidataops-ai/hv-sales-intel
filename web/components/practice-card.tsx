@@ -30,11 +30,11 @@ function StarRating({ rating }: { rating: number | null }) {
           key={i}
           className={cn(
             "w-3.5 h-3.5",
-            i < full ? "fill-amber-400 text-amber-400" : "text-gray-300"
+            i < full ? "fill-amber-400 text-amber-400" : "text-gray-300 dark:text-gray-500"
           )}
         />
       ))}
-      <span className="ml-1 text-sm font-medium text-gray-700">{rating}</span>
+      <span className="ml-1 text-sm font-medium text-gray-700 dark:text-[#d9d9d9]">{rating}</span>
     </span>
   )
 }
@@ -42,10 +42,10 @@ function StarRating({ rating }: { rating: number | null }) {
 function ScoreBadge({ score }: { score: number }) {
   const color =
     score >= 75
-      ? "bg-rose-100 text-rose-700"
+      ? "bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-300"
       : score >= 50
-        ? "bg-amber-100 text-amber-700"
-        : "bg-teal-100 text-teal-700"
+        ? "bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300"
+        : "bg-teal-100 text-teal-700 dark:bg-teal-500/20 dark:text-teal-300"
   return (
     <span className={cn("text-xs font-bold px-1.5 py-0.5 rounded-full", color)} title="ICP score (0-100)">
       ICP {score}
@@ -123,30 +123,30 @@ export default function PracticeCard({
       className={cn(
         "w-full text-left p-4 rounded-xl transition-all border-l-[3px]",
         isIrrelevant
-          ? "border-transparent bg-gray-100/40 opacity-60 cursor-default"
+          ? "border-transparent bg-gray-100/40 dark:bg-white/5 opacity-60 cursor-default"
           : "border-teal-500 cursor-pointer hover:bg-ivory-200/60",
         !isIrrelevant &&
-          (isSelected ? "bg-teal-50 ring-1 ring-teal-600/30" : "bg-white/60")
+          (isSelected ? "bg-teal-50 dark:bg-[#284b63]/40 ring-1 ring-teal-600/30" : "bg-white/60 dark:bg-night-800")
       )}
     >
       {/* Header row */}
       <div className="flex items-start justify-between gap-2">
         {isIrrelevant ? (
-          <span className="font-serif font-semibold text-gray-500 text-base leading-tight">
+          <span className="font-serif font-semibold text-gray-500 dark:text-gray-400 text-base leading-tight">
             {practice.name}
           </span>
         ) : (
           <Link
             href={`/practice/${practice.place_id}`}
             onClick={(e) => e.stopPropagation()}
-            className="font-serif font-semibold text-gray-900 text-base leading-tight hover:text-teal-700 transition"
+            className="font-serif font-semibold text-gray-900 dark:text-white text-base leading-tight hover:text-teal-700 dark:hover:text-teal-400 transition"
           >
             {practice.name}
           </Link>
         )}
         <div className="flex items-center gap-1.5 shrink-0">
           {isIrrelevant ? (
-            <span className="text-[10px] font-semibold uppercase tracking-wide bg-gray-200 text-gray-600 rounded-full px-2 py-0.5">
+            <span className="text-[10px] font-semibold uppercase tracking-wide bg-gray-200 dark:bg-white/10 text-gray-600 dark:text-[#d9d9d9] rounded-full px-2 py-0.5">
               Irrelevant
             </span>
           ) : (
@@ -158,12 +158,12 @@ export default function PracticeCard({
         </div>
       </div>
       {practice.last_touched_by_name && practice.last_touched_at && (
-        <p className="text-[11px] text-gray-400 mt-1">
+        <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-1">
           Last touched by {practice.last_touched_by_name} · {timeAgo(practice.last_touched_at)}
         </p>
       )}
       {practice.call_count > 0 && (
-        <p className="text-[11px] text-gray-500 mt-0.5">
+        <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
           📞 {practice.call_count} {practice.call_count === 1 ? "call" : "calls"}
           {practice.salesforce_synced_at && (
             <> · last synced {timeAgo(practice.salesforce_synced_at)}</>
@@ -180,34 +180,34 @@ export default function PracticeCard({
         </p>
       )}
       {practice.website_doctor_name && (
-        <div className="flex items-center gap-1.5 text-xs text-gray-600 mt-1">
-          <User className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+        <div className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-[#d9d9d9] mt-1">
+          <User className="w-3.5 h-3.5 text-gray-400 dark:text-gray-500 shrink-0" />
           <span className="font-medium">{practice.website_doctor_name}</span>
           {practice.website_doctor_phone && (
             <a
               href={`tel:${practice.website_doctor_phone.replace(/\D/g, "")}`}
               onClick={(e) => e.stopPropagation()}
-              className="text-teal-700 hover:underline"
+              className="text-teal-700 dark:text-teal-400 hover:underline"
             >
               {practice.website_doctor_phone}
             </a>
           )}
-          <span className="ml-1 text-[10px] uppercase tracking-wide bg-purple-100 text-purple-700 rounded px-1.5 py-0.5">
+          <span className="ml-1 text-[10px] uppercase tracking-wide bg-purple-100 text-purple-700 dark:bg-purple-500/20 dark:text-purple-300 rounded px-1.5 py-0.5">
             direct
           </span>
         </div>
       )}
-      <p className="text-xs text-gray-500 mt-0.5">{practice.address}</p>
+      <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">{practice.address}</p>
 
       <div className="flex items-center gap-3 mt-2">
         <StarRating rating={practice.rating} />
         {practice.review_count > 0 && (
-          <span className="text-xs text-gray-400">({practice.review_count})</span>
+          <span className="text-xs text-gray-400 dark:text-gray-500">({practice.review_count})</span>
         )}
       </div>
 
       {practice.category && (
-        <span className="inline-block mt-2 text-xs px-2 py-0.5 rounded-full bg-teal-50 text-teal-700 font-medium capitalize">
+        <span className="inline-block mt-2 text-xs px-2 py-0.5 rounded-full bg-teal-50 dark:bg-[#284b63]/40 text-teal-700 dark:text-teal-400 font-medium capitalize">
           {practice.category.replace("_", " ")}
         </span>
       )}
@@ -229,7 +229,7 @@ export default function PracticeCard({
             target="_blank"
             rel="noopener noreferrer"
             onClick={(e) => e.stopPropagation()}
-            className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-gray-100 text-gray-700 hover:bg-gray-200 transition"
+            className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-gray-100 dark:bg-white/5 text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-200 dark:hover:bg-white/10 transition"
           >
             <Globe className="w-3 h-3" /> Website
           </a>
@@ -248,7 +248,7 @@ export default function PracticeCard({
                 ? "Re-run ICP analysis on this lead"
                 : "Run ICP analysis on this lead"
           }
-          className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg border border-teal-600 text-teal-700 hover:bg-teal-50 disabled:opacity-50 transition"
+          className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg border border-teal-600 text-teal-700 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-[#284b63]/40 disabled:opacity-50 transition"
         >
           {isAnalyzing ? (
             <Loader2 className="w-3 h-3 animate-spin" />
@@ -268,7 +268,7 @@ export default function PracticeCard({
           <Link
             href="/admin/icp"
             onClick={(e) => e.stopPropagation()}
-            className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg border border-amber-500 text-amber-700 hover:bg-amber-50 transition"
+            className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg border border-amber-500 text-amber-700 dark:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-500/10 transition"
             title="Define your ICP before analyzing leads"
           >
             <Brain className="w-3 h-3" /> Define ICP
@@ -293,7 +293,7 @@ export default function PracticeCard({
               e.stopPropagation()
               toggleExpand()
             }}
-            className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg border border-gray-300 text-gray-600 hover:bg-gray-50 transition ml-auto"
+            className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg border border-gray-300 dark:border-white/10 text-gray-600 dark:text-[#d9d9d9] hover:bg-gray-50 dark:hover:bg-white/10 transition ml-auto"
             title={isExpanded ? "Hide analysis" : "Show analysis"}
           >
             {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
@@ -309,11 +309,11 @@ export default function PracticeCard({
         const hasSummary =
           !!practice.summary || painPoints.length > 0 || salesAngles.length > 0
         return (
-          <div className="mt-3 pt-3 border-t border-gray-200/50">
+          <div className="mt-3 pt-3 border-t border-gray-200/50 dark:border-white/10">
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-1.5">
-                <Lightbulb className="w-4 h-4 text-teal-600" />
-                <span className="text-sm font-semibold text-gray-900">
+                <Lightbulb className="w-4 h-4 text-teal-600 dark:text-teal-400" />
+                <span className="text-sm font-semibold text-gray-900 dark:text-white">
                   Why it stands out
                 </span>
               </div>
@@ -323,7 +323,7 @@ export default function PracticeCard({
                     e.stopPropagation()
                     setShowSummary((v) => !v)
                   }}
-                  className="inline-flex items-center gap-0.5 text-xs font-medium text-teal-700 hover:text-teal-800"
+                  className="inline-flex items-center gap-0.5 text-xs font-medium text-teal-700 dark:text-teal-400 hover:text-teal-800"
                 >
                   {showSummary ? "Hide summary" : "View summary"}
                   <ChevronRight
@@ -343,13 +343,13 @@ export default function PracticeCard({
                   return (
                     <div
                       key={i}
-                      className="rounded-lg border border-gray-200/70 bg-gray-50/60 p-3"
+                      className="rounded-lg border border-gray-200/70 dark:border-white/10 bg-gray-50/60 dark:bg-white/5 p-3"
                     >
-                      <Icon className="w-5 h-5 text-teal-600" />
-                      <p className="text-[13px] font-semibold text-teal-800 mt-2 leading-tight">
+                      <Icon className="w-5 h-5 text-teal-600 dark:text-teal-400" />
+                      <p className="text-[13px] font-semibold text-teal-800 dark:text-teal-400 mt-2 leading-tight">
                         {h.label}
                       </p>
-                      <p className="text-[11px] text-gray-500 mt-1 leading-snug line-clamp-3">
+                      <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 leading-snug line-clamp-3">
                         {h.reason}
                       </p>
                     </div>
@@ -363,18 +363,18 @@ export default function PracticeCard({
             {hasSummary && (showSummary || topHighlights.length === 0) && (
               <div className="space-y-3 mt-3">
                 {practice.summary && (
-                  <p className="text-xs text-gray-600 leading-relaxed">
+                  <p className="text-xs text-gray-600 dark:text-[#d9d9d9] leading-relaxed">
                     {practice.summary}
                   </p>
                 )}
                 {painPoints.length > 0 && (
                   <div>
-                    <h4 className="text-xs font-semibold text-gray-700 mb-1">
+                    <h4 className="text-xs font-semibold text-gray-700 dark:text-[#d9d9d9] mb-1">
                       Pain Points
                     </h4>
                     <ul className="space-y-0.5">
                       {painPoints.map((p, i) => (
-                        <li key={i} className="text-xs text-gray-500 flex gap-1.5">
+                        <li key={i} className="text-xs text-gray-500 dark:text-gray-400 flex gap-1.5">
                           <span className="text-rose-400 shrink-0">&bull;</span>
                           {p}
                         </li>
@@ -384,12 +384,12 @@ export default function PracticeCard({
                 )}
                 {salesAngles.length > 0 && (
                   <div>
-                    <h4 className="text-xs font-semibold text-gray-700 mb-1">
+                    <h4 className="text-xs font-semibold text-gray-700 dark:text-[#d9d9d9] mb-1">
                       Sales Angles
                     </h4>
                     <ul className="space-y-0.5">
                       {salesAngles.map((a, i) => (
-                        <li key={i} className="text-xs text-gray-500 flex gap-1.5">
+                        <li key={i} className="text-xs text-gray-500 dark:text-gray-400 flex gap-1.5">
                           <span className="text-teal-500 shrink-0">&rarr;</span>
                           {a}
                         </li>
@@ -401,7 +401,7 @@ export default function PracticeCard({
             )}
 
             {topHighlights.length === 0 && !hasSummary && (
-              <p className="text-[11px] text-gray-400 italic mt-3">
+              <p className="text-[11px] text-gray-400 dark:text-gray-500 italic mt-3">
                 Re-analyze to populate insights.
               </p>
             )}

@@ -64,23 +64,23 @@ export default function EmailComposer({
         onChange={(e) => setSubject(e.target.value)}
         onBlur={handleSave}
         placeholder="Subject"
-        className="w-full text-sm font-medium rounded-lg border border-gray-200 bg-white/80 px-3 py-2"
+        className="w-full text-sm font-medium rounded-lg border border-gray-200 bg-white/80 dark:bg-white/5 dark:border-white/10 dark:text-white dark:placeholder:text-gray-500 px-3 py-2"
       />
       <textarea
         value={body}
         onChange={(e) => setBody(e.target.value)}
         onBlur={handleSave}
         placeholder="Email body..."
-        className="w-full h-64 text-sm p-3 rounded-lg border border-gray-200 bg-white/80 resize-none"
+        className="w-full h-64 text-sm p-3 rounded-lg border border-gray-200 bg-white/80 dark:bg-white/5 dark:border-white/10 dark:text-white dark:placeholder:text-gray-500 resize-none"
       />
       {confirm ? (
-        <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200">
-          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-          <span className="text-xs text-amber-900 flex-1">Send to {recipient}?</span>
+        <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-50 dark:bg-amber-500/20 border border-amber-200 dark:border-amber-500/30">
+          <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-300 shrink-0" />
+          <span className="text-xs text-amber-900 dark:text-amber-200 flex-1">Send to {recipient}?</span>
           <button
             onClick={() => setConfirm(false)}
             disabled={sending}
-            className="text-xs px-3 py-1 rounded-lg text-gray-700 hover:bg-gray-100"
+            className="text-xs px-3 py-1 rounded-lg text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-100 dark:hover:bg-white/10"
           >
             Cancel
           </button>
@@ -98,7 +98,7 @@ export default function EmailComposer({
           <button
             onClick={onRegenerate}
             disabled={isRegenerating}
-            className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg border border-gray-300 dark:border-white/10 text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-50 dark:hover:bg-white/10 disabled:opacity-50"
           >
             {isRegenerating ? (
               <Loader2 className="w-3 h-3 animate-spin" />
@@ -110,7 +110,7 @@ export default function EmailComposer({
           <button
             onClick={handleSave}
             disabled={saving}
-            className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+            className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg border border-gray-300 dark:border-white/10 text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-50 dark:hover:bg-white/10 disabled:opacity-50"
           >
             {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
             Save draft

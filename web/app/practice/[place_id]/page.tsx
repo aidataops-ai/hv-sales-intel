@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react"
 import { useParams, useRouter } from "next/navigation"
 import { ArrowLeft, MoreVertical } from "lucide-react"
+import ThemeToggle from "@/components/theme-toggle"
 import type { Practice, ScriptSection } from "@/lib/types"
 import { getScript, regenerateScript, updatePractice } from "@/lib/api"
 import { mockPractices } from "@/lib/mock-data"
@@ -91,34 +92,34 @@ export default function CallPrepPage() {
 
   if (!practice) {
     return (
-      <div className="min-h-screen bg-cream flex items-center justify-center">
-        <p className="text-gray-400">Loading...</p>
+      <div className="min-h-screen bg-cream dark:bg-night flex items-center justify-center">
+        <p className="text-gray-400 dark:text-gray-500">Loading...</p>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-cream">
+    <div className="min-h-screen bg-cream dark:bg-night">
       {/* Header */}
-      <header className="sticky top-0 z-20 h-14 flex items-center justify-between px-6 bg-white/70 backdrop-blur-md border-b border-gray-200/50">
+      <header className="sticky top-0 z-20 h-14 flex items-center justify-between px-6 bg-white/70 dark:bg-night-800 backdrop-blur-md border-b border-gray-200/50 dark:border-white/10">
         <div className="flex items-center gap-4">
           <button
             onClick={() => router.push("/")}
-            className="inline-flex items-center gap-1 text-sm text-gray-600 hover:text-gray-900 transition"
+            className="inline-flex items-center gap-1 text-sm text-gray-600 dark:text-[#d9d9d9] hover:text-gray-900 dark:hover:text-white transition"
           >
             <ArrowLeft className="w-4 h-4" />
             Back to Map
           </button>
-          <span className="font-serif text-lg font-bold text-teal-700 tracking-tight">
+          <span className="font-serif text-lg font-bold text-teal-700 dark:text-teal-400 tracking-tight">
             Apex&amp;Virtuals
           </span>
         </div>
         <div className="flex items-center gap-3">
-          <span className="text-sm text-gray-500">Status:</span>
+          <span className="text-sm text-gray-500 dark:text-gray-400">Status:</span>
           <select
             value={practice.status}
             onChange={(e) => handleStatusChange(e.target.value)}
-            className="text-sm rounded-lg border border-gray-200 bg-white/80 px-3 py-1.5
+            className="text-sm rounded-lg border border-gray-200 bg-white/80 dark:bg-white/5 dark:border-white/10 dark:text-white dark:placeholder:text-gray-500 px-3 py-1.5
                        focus:outline-none focus:ring-2 focus:ring-teal-500/40"
           >
             {ALL_STATUSES.map((s) => (
@@ -128,7 +129,7 @@ export default function CallPrepPage() {
           <StatusBadge status={practice.status} />
           {currentUser?.role === "admin" && (
             <>
-              <span className="text-sm text-gray-500 ml-2">Owner:</span>
+              <span className="text-sm text-gray-500 dark:text-gray-400 ml-2">Owner:</span>
               <AssignDropdown
                 practice={practice}
                 onChange={(next) =>
@@ -143,17 +144,18 @@ export default function CallPrepPage() {
                 {practice.last_touched_by_name[0]?.toUpperCase()}
               </div>
               <div className="leading-tight">
-                <p className="text-xs font-medium text-gray-700">
+                <p className="text-xs font-medium text-gray-700 dark:text-[#d9d9d9]">
                   by {practice.last_touched_by_name}
                 </p>
                 {practice.last_touched_at && (
-                  <p className="text-[11px] text-gray-400">
+                  <p className="text-[11px] text-gray-400 dark:text-gray-500">
                     {timeAgo(practice.last_touched_at)}
                   </p>
                 )}
               </div>
             </div>
           )}
+          <ThemeToggle />
           <button
             onClick={() =>
               window.open(
@@ -165,7 +167,7 @@ export default function CallPrepPage() {
               )
             }
             title="Open in Google Maps"
-            className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 transition"
+            className="p-1.5 rounded-lg text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-white/10 transition"
           >
             <MoreVertical className="w-4 h-4" />
           </button>
@@ -175,7 +177,7 @@ export default function CallPrepPage() {
       {/* Three-column layout */}
       <div className="flex h-[calc(100vh-3.5rem)]">
         {/* Left: Practice Info */}
-        <aside className="w-[280px] shrink-0 overflow-y-auto p-5 border-r border-gray-200/50">
+        <aside className="w-[280px] shrink-0 overflow-y-auto p-5 border-r border-gray-200/50 dark:border-white/10">
           <PracticeInfo practice={practice} />
         </aside>
 
@@ -189,7 +191,7 @@ export default function CallPrepPage() {
         </main>
 
         {/* Right: Tabbed actions panel */}
-        <aside className="w-[340px] shrink-0 overflow-y-auto p-5 border-l border-gray-200/50">
+        <aside className="w-[340px] shrink-0 overflow-y-auto p-5 border-l border-gray-200/50 dark:border-white/10">
           <ActionsPanel
             defaultTab="notes"
             tabs={[

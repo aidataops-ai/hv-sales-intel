@@ -1,6 +1,7 @@
 import type { Config } from "tailwindcss"
 
 const config: Config = {
+  darkMode: "class",
   content: [
     "./app/**/*.{ts,tsx}",
     "./components/**/*.{ts,tsx}",
@@ -16,14 +17,24 @@ const config: Config = {
           200: "#f5f0e8",
           300: "#ebe4d6",
         },
+        // Brand primary — palette #3c6e71; darkest shade is the palette navy.
         teal: {
-          DEFAULT: "#0d9488",
-          50: "#f0fdfa",
-          100: "#ccfbf1",
-          500: "#14b8a6",
-          600: "#0d9488",
-          700: "#0f766e",
-          800: "#115e59",
+          DEFAULT: "#3c6e71",
+          50: "#eef4f4",
+          100: "#d6e6e6",
+          400: "#6aa0a3",
+          500: "#4f8a8d",
+          600: "#3c6e71",
+          700: "#335d60",
+          800: "#284b63",
+        },
+        navy: "#284b63",
+        mist: "#d9d9d9",
+        // Dark-mode surfaces (palette #353535).
+        night: {
+          DEFAULT: "#353535",
+          800: "#3d3d3d",
+          900: "#2c2c2c",
         },
         rose: {
           DEFAULT: "#e11d48",

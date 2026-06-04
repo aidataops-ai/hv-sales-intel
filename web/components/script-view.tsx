@@ -43,7 +43,7 @@ function SectionBody({ section }: { section: ScriptSection }) {
     return (
       <ol className="space-y-2.5">
         {lines.map((l, i) => (
-          <li key={i} className="flex gap-3 text-sm text-gray-600 leading-relaxed">
+          <li key={i} className="flex gap-3 text-sm text-gray-600 dark:text-[#d9d9d9] leading-relaxed">
             <span className="text-teal-600 font-semibold tabular-nums shrink-0">
               {i + 1}.
             </span>
@@ -63,20 +63,20 @@ function SectionBody({ section }: { section: ScriptSection }) {
           {pairs.map((p, i) => (
             <div
               key={i}
-              className="rounded-lg border border-gray-200/70 bg-gray-50/40 p-3 space-y-1.5"
+              className="rounded-lg border border-gray-200/70 dark:border-white/10 bg-gray-50/40 dark:bg-white/5 p-3 space-y-1.5"
             >
               <p className="text-sm leading-relaxed flex gap-1.5">
                 <MessageSquare className="w-3.5 h-3.5 text-rose-500 shrink-0 mt-0.5" />
                 <span>
-                  <span className="font-semibold text-gray-800">Objection:</span>{" "}
-                  <span className="text-gray-600">{p.objection}</span>
+                  <span className="font-semibold text-gray-800 dark:text-[#d9d9d9]">Objection:</span>{" "}
+                  <span className="text-gray-600 dark:text-[#d9d9d9]">{p.objection}</span>
                 </span>
               </p>
               <p className="text-sm leading-relaxed flex gap-1.5">
                 <ArrowRight className="w-3.5 h-3.5 text-teal-600 shrink-0 mt-0.5" />
                 <span>
-                  <span className="font-semibold text-gray-800">Response:</span>{" "}
-                  <span className="text-gray-600">{p.response}</span>
+                  <span className="font-semibold text-gray-800 dark:text-[#d9d9d9]">Response:</span>{" "}
+                  <span className="text-gray-600 dark:text-[#d9d9d9]">{p.response}</span>
                 </span>
               </p>
             </div>
@@ -88,7 +88,7 @@ function SectionBody({ section }: { section: ScriptSection }) {
 
   // Default → paragraph.
   return (
-    <div className="text-sm text-gray-600 leading-relaxed whitespace-pre-line">
+    <div className="text-sm text-gray-600 dark:text-[#d9d9d9] leading-relaxed whitespace-pre-line">
       {content}
     </div>
   )
@@ -103,7 +103,7 @@ interface ScriptViewProps {
 export default function ScriptView({ sections, isLoading, onRegenerate }: ScriptViewProps) {
   if (isLoading && sections.length === 0) {
     return (
-      <div className="flex items-center justify-center py-20 text-gray-400">
+      <div className="flex items-center justify-center py-20 text-gray-400 dark:text-gray-500">
         <Loader2 className="w-6 h-6 animate-spin mr-2" />
         Generating playbook...
       </div>
@@ -118,7 +118,7 @@ export default function ScriptView({ sections, isLoading, onRegenerate }: Script
           <div key={i} className="space-y-3">
             <div className="flex items-center gap-2">
               <Icon className="w-4 h-4 text-teal-600" />
-              <h3 className="font-semibold text-gray-900">{section.title}</h3>
+              <h3 className="font-semibold text-gray-900 dark:text-white">{section.title}</h3>
             </div>
             <div className="pl-6">
               <SectionBody section={section} />
@@ -130,7 +130,7 @@ export default function ScriptView({ sections, isLoading, onRegenerate }: Script
       <button
         onClick={onRegenerate}
         disabled={isLoading}
-        className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg border border-teal-600 text-teal-700 hover:bg-teal-50 disabled:opacity-50 transition"
+        className="inline-flex items-center gap-1.5 text-sm px-4 py-2 rounded-lg border border-teal-600 text-teal-700 dark:text-teal-400 hover:bg-teal-50 dark:hover:bg-[#284b63]/40 disabled:opacity-50 transition"
       >
         {isLoading ? (
           <Loader2 className="w-4 h-4 animate-spin" />

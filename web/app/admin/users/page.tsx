@@ -163,45 +163,45 @@ export default function AdminUsersPage() {
     }
   }
 
-  if (authLoading) return <div className="p-10 text-gray-500">Loading...</div>
+  if (authLoading) return <div className="p-10 text-gray-500 dark:text-gray-400">Loading...</div>
 
   if (user?.role !== "admin") {
     return (
-      <div className="min-h-screen bg-cream p-10">
+      <div className="min-h-screen bg-cream dark:bg-night p-10">
         <p className="text-rose-600 font-medium">Admin only</p>
-        <Link href="/" className="text-sm text-teal-700 underline">Back to map</Link>
+        <Link href="/" className="text-sm text-teal-700 dark:text-teal-400 underline">Back to map</Link>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-cream">
-      <header className="sticky top-0 z-20 h-14 flex items-center justify-between px-6 bg-white/70 backdrop-blur-md border-b border-gray-200/50">
-        <Link href="/" className="inline-flex items-center gap-1 text-sm text-gray-600 hover:text-gray-900">
+    <div className="min-h-screen bg-cream dark:bg-night">
+      <header className="sticky top-0 z-20 h-14 flex items-center justify-between px-6 bg-white/70 dark:bg-night-800 backdrop-blur-md border-b border-gray-200/50 dark:border-white/10">
+        <Link href="/" className="inline-flex items-center gap-1 text-sm text-gray-600 dark:text-[#d9d9d9] hover:text-gray-900 dark:hover:text-white">
           <ArrowLeft className="w-4 h-4" /> Back to Map
         </Link>
-        <span className="font-serif text-lg font-bold text-teal-700">Users</span>
+        <span className="font-serif text-lg font-bold text-teal-700 dark:text-teal-400">Users</span>
         <span />
       </header>
 
       <main className="max-w-4xl mx-auto p-8 space-y-8">
         <section>
-          <h2 className="font-serif text-xl font-bold mb-4">Create user</h2>
-          <form onSubmit={handleCreate} className="grid grid-cols-2 gap-3 bg-white/80 p-4 rounded-xl">
+          <h2 className="font-serif text-xl font-bold mb-4 dark:text-white">Create user</h2>
+          <form onSubmit={handleCreate} className="grid grid-cols-2 gap-3 bg-white/80 dark:bg-night-800 p-4 rounded-xl">
             <input
               placeholder="Email"
               type="email"
               value={form.email}
               onChange={(e) => setForm({ ...form, email: e.target.value })}
               required
-              className="text-sm rounded-lg border border-gray-200 px-3 py-2"
+              className="text-sm rounded-lg border border-gray-200 dark:border-white/10 dark:bg-white/5 dark:text-white dark:placeholder:text-gray-500 px-3 py-2"
             />
             <input
               placeholder="Name"
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
               required
-              className="text-sm rounded-lg border border-gray-200 px-3 py-2"
+              className="text-sm rounded-lg border border-gray-200 dark:border-white/10 dark:bg-white/5 dark:text-white dark:placeholder:text-gray-500 px-3 py-2"
             />
             <input
               placeholder="Initial password (8+ chars, mixed case, number, special)"
@@ -210,12 +210,12 @@ export default function AdminUsersPage() {
               onChange={(e) => setForm({ ...form, password: e.target.value })}
               required
               minLength={8}
-              className="text-sm rounded-lg border border-gray-200 px-3 py-2"
+              className="text-sm rounded-lg border border-gray-200 dark:border-white/10 dark:bg-white/5 dark:text-white dark:placeholder:text-gray-500 px-3 py-2"
             />
             <select
               value={form.role}
               onChange={(e) => setForm({ ...form, role: e.target.value })}
-              className="text-sm rounded-lg border border-gray-200 px-3 py-2"
+              className="text-sm rounded-lg border border-gray-200 dark:border-white/10 dark:bg-white/5 dark:text-white px-3 py-2"
             >
               <option value="sdr">SDR</option>
               <option value="admin">Admin</option>
@@ -233,13 +233,13 @@ export default function AdminUsersPage() {
         </section>
 
         <section>
-          <h2 className="font-serif text-xl font-bold mb-4">All users</h2>
+          <h2 className="font-serif text-xl font-bold mb-4 dark:text-white">All users</h2>
           {loading ? (
-            <p className="text-gray-500">Loading...</p>
+            <p className="text-gray-500 dark:text-gray-400">Loading...</p>
           ) : (
-            <table className="w-full bg-white/80 rounded-xl text-sm">
+            <table className="w-full bg-white/80 dark:bg-night-800 rounded-xl text-sm">
               <thead>
-                <tr className="text-left text-gray-500 text-xs uppercase tracking-wide">
+                <tr className="text-left text-gray-500 dark:text-gray-400 text-xs uppercase tracking-wide">
                   <th className="p-3">Email</th>
                   <th className="p-3">Name</th>
                   <th className="p-3">Role</th>
@@ -255,12 +255,12 @@ export default function AdminUsersPage() {
                   return (
                     <tr
                       key={u.id}
-                      className={`border-t border-gray-200/50 ${disabled ? "opacity-50" : ""}`}
+                      className={`border-t border-gray-200/50 dark:border-white/10 dark:text-[#d9d9d9] ${disabled ? "opacity-50" : ""}`}
                     >
                       <td className="p-3">
                         {u.email}
                         {disabled && (
-                          <span className="ml-2 text-[10px] uppercase tracking-wide bg-gray-200 text-gray-700 px-1.5 py-0.5 rounded">
+                          <span className="ml-2 text-[10px] uppercase tracking-wide bg-gray-200 dark:bg-white/10 text-gray-700 dark:text-[#d9d9d9] px-1.5 py-0.5 rounded">
                             Disabled
                           </span>
                         )}
@@ -268,7 +268,7 @@ export default function AdminUsersPage() {
                       <td className="p-3">{u.name ?? "—"}</td>
                       <td className="p-3 uppercase">{u.role}</td>
                       <td className="p-3">{u.practices_touched}</td>
-                      <td className="p-3 text-gray-500">{u.created_at.slice(0, 10)}</td>
+                      <td className="p-3 text-gray-500 dark:text-gray-400">{u.created_at.slice(0, 10)}</td>
                       <td className="p-3 text-right space-x-3">
                         {u.id !== user.id && (
                           <>
@@ -279,8 +279,8 @@ export default function AdminUsersPage() {
                                 ? "Only the bootstrap admin can edit another admin."
                                 : "Edit user"}
                               className={`text-xs underline ${blocked
-                                ? "text-gray-300 cursor-not-allowed"
-                                : "text-teal-700 hover:text-teal-900"}`}
+                                ? "text-gray-300 dark:text-gray-600 cursor-not-allowed"
+                                : "text-teal-700 dark:text-teal-400 hover:text-teal-900"}`}
                             >
                               Edit
                             </button>
@@ -291,8 +291,8 @@ export default function AdminUsersPage() {
                                 ? "Only the bootstrap admin can reset another admin's password."
                                 : "Reset password"}
                               className={`text-xs underline ${blocked
-                                ? "text-gray-300 cursor-not-allowed"
-                                : "text-teal-700 hover:text-teal-900"}`}
+                                ? "text-gray-300 dark:text-gray-600 cursor-not-allowed"
+                                : "text-teal-700 dark:text-teal-400 hover:text-teal-900"}`}
                             >
                               Reset password
                             </button>
@@ -303,10 +303,10 @@ export default function AdminUsersPage() {
                                 ? "Only the bootstrap admin can disable another admin."
                                 : disabled ? "Enable user" : "Disable user"}
                               className={`text-xs underline ${blocked
-                                ? "text-gray-300 cursor-not-allowed"
+                                ? "text-gray-300 dark:text-gray-600 cursor-not-allowed"
                                 : disabled
-                                  ? "text-teal-700 hover:text-teal-900"
-                                  : "text-amber-700 hover:text-amber-900"}`}
+                                  ? "text-teal-700 dark:text-teal-400 hover:text-teal-900"
+                                  : "text-amber-700 dark:text-amber-400 hover:text-amber-900"}`}
                             >
                               {disabled ? "Enable" : "Disable"}
                             </button>
@@ -317,8 +317,8 @@ export default function AdminUsersPage() {
                                 ? "Only the bootstrap admin can delete another admin"
                                 : "Delete user"}
                               className={`align-middle ${blocked
-                                ? "text-gray-300 cursor-not-allowed"
-                                : "text-rose-600 hover:text-rose-800"}`}
+                                ? "text-gray-300 dark:text-gray-600 cursor-not-allowed"
+                                : "text-rose-600 dark:text-rose-400 hover:text-rose-800"}`}
                             >
                               <Trash2 className="w-4 h-4 inline" />
                             </button>
@@ -339,34 +339,34 @@ export default function AdminUsersPage() {
             onClick={() => !editing && setEditTarget(null)}
           >
             <div
-              className="w-full max-w-sm rounded-xl bg-white shadow-xl p-5 space-y-3"
+              className="w-full max-w-sm rounded-xl bg-white dark:bg-night-800 shadow-xl p-5 space-y-3"
               onClick={(e) => e.stopPropagation()}
             >
-              <h3 className="font-serif text-base font-bold">
+              <h3 className="font-serif text-base font-bold dark:text-white">
                 Edit {editTarget.email}
               </h3>
               <label className="block">
-                <span className="text-xs text-gray-500">Name</span>
+                <span className="text-xs text-gray-500 dark:text-gray-400">Name</span>
                 <input
                   type="text"
                   value={editName}
                   onChange={(e) => setEditName(e.target.value)}
-                  className="w-full text-sm mt-1 rounded-lg border border-gray-200 px-3 py-2"
+                  className="w-full text-sm mt-1 rounded-lg border border-gray-200 dark:border-white/10 dark:bg-white/5 dark:text-white dark:placeholder:text-gray-500 px-3 py-2"
                 />
               </label>
               <label className="block">
-                <span className="text-xs text-gray-500">Role</span>
+                <span className="text-xs text-gray-500 dark:text-gray-400">Role</span>
                 <select
                   value={editRole}
                   onChange={(e) => setEditRole(e.target.value as "admin" | "sdr")}
                   disabled={!user.is_bootstrap_admin && (editTarget.role === "admin" || editRole === "admin")}
-                  className="w-full text-sm mt-1 rounded-lg border border-gray-200 px-3 py-2"
+                  className="w-full text-sm mt-1 rounded-lg border border-gray-200 dark:border-white/10 dark:bg-white/5 dark:text-white px-3 py-2"
                 >
                   <option value="sdr">SDR</option>
                   <option value="admin">Admin</option>
                 </select>
                 {!user.is_bootstrap_admin && (
-                  <span className="text-[11px] text-gray-400">
+                  <span className="text-[11px] text-gray-400 dark:text-gray-500">
                     Only the bootstrap admin can change admin roles.
                   </span>
                 )}
@@ -375,7 +375,7 @@ export default function AdminUsersPage() {
                 <button
                   onClick={() => setEditTarget(null)}
                   disabled={editing}
-                  className="text-xs px-3 py-1.5 rounded-lg text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                  className="text-xs px-3 py-1.5 rounded-lg text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-100 dark:hover:bg-white/10 disabled:opacity-50"
                 >
                   Cancel
                 </button>
@@ -398,10 +398,10 @@ export default function AdminUsersPage() {
             onClick={() => !resetting && setResetTarget(null)}
           >
             <div
-              className="w-full max-w-sm rounded-xl bg-white shadow-xl p-5 space-y-3"
+              className="w-full max-w-sm rounded-xl bg-white dark:bg-night-800 shadow-xl p-5 space-y-3"
               onClick={(e) => e.stopPropagation()}
             >
-              <h3 className="font-serif text-base font-bold">
+              <h3 className="font-serif text-base font-bold dark:text-white">
                 Reset password for {resetTarget.email}
               </h3>
               <input
@@ -409,16 +409,16 @@ export default function AdminUsersPage() {
                 value={resetPassword}
                 onChange={(e) => setResetPassword(e.target.value)}
                 placeholder="New password"
-                className="w-full text-sm rounded-lg border border-gray-200 px-3 py-2"
+                className="w-full text-sm rounded-lg border border-gray-200 dark:border-white/10 dark:bg-white/5 dark:text-white dark:placeholder:text-gray-500 px-3 py-2"
               />
-              <p className="text-[11px] text-gray-500">
+              <p className="text-[11px] text-gray-500 dark:text-gray-400">
                 Min 8 chars · 1 upper · 1 lower · 1 number · 1 special.
               </p>
               <div className="flex justify-end gap-2 pt-1">
                 <button
                   onClick={() => setResetTarget(null)}
                   disabled={resetting}
-                  className="text-xs px-3 py-1.5 rounded-lg text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                  className="text-xs px-3 py-1.5 rounded-lg text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-100 dark:hover:bg-white/10 disabled:opacity-50"
                 >
                   Cancel
                 </button>

@@ -26,7 +26,7 @@ export default function CreditBalance() {
 
   if (loading && !data) {
     return (
-      <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-gray-100 text-gray-500 text-xs animate-pulse">
+      <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-gray-100 dark:bg-white/5 text-gray-500 dark:text-gray-400 text-xs animate-pulse">
         <Coins className="w-3.5 h-3.5" />
         …
       </div>
@@ -38,10 +38,10 @@ export default function CreditBalance() {
   const balance = data.balance
   const tone =
     balance < 10
-      ? "bg-rose-50 text-rose-700 border-rose-200"
+      ? "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-500/20 dark:text-rose-300 dark:border-rose-500/30"
       : balance < 50
-        ? "bg-amber-50 text-amber-700 border-amber-200"
-        : "bg-emerald-50 text-emerald-800 border-emerald-200"
+        ? "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-500/20 dark:text-amber-300 dark:border-amber-500/30"
+        : "bg-emerald-50 text-emerald-800 border-emerald-200 dark:bg-emerald-500/20 dark:text-emerald-300 dark:border-emerald-500/30"
 
   const inner = (
     <span

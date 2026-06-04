@@ -8,6 +8,7 @@ import ExportButton from "./export-button"
 import BulkScanModal from "./bulk-scan-modal"
 import CompanySwitcher from "./company-switcher"
 import CreditBalance from "./credit-balance"
+import ThemeToggle from "./theme-toggle"
 
 interface TopBarProps {
   onSearch: (query: string) => void
@@ -36,26 +37,26 @@ export default function TopBar({
   const [bulkOpen, setBulkOpen] = useState(false)
 
   return (
-    <header className="fixed top-0 left-0 right-0 z-20 h-14 flex items-center justify-between px-6 bg-white/70 backdrop-blur-md border-b border-gray-200/50">
+    <header className="fixed top-0 left-0 right-0 z-20 h-14 flex items-center justify-between px-6 bg-white/70 dark:bg-night-800 backdrop-blur-md border-b border-gray-200/50 dark:border-white/10">
       <div className="flex items-center gap-2">
-        <span className="font-serif text-lg font-bold text-teal-700 tracking-tight">
+        <span className="font-serif text-lg font-bold text-teal-700 dark:text-teal-400 tracking-tight">
           Apex&amp;Virtuals
         </span>
-        <span className="text-xs text-gray-400 font-medium">Sales Intel</span>
+        <span className="text-xs text-gray-400 dark:text-gray-500 font-medium">Sales Intel</span>
       </div>
       <div className="flex items-center gap-3">
         <SearchBar onSearch={onSearch} isLoading={isLoading} currentQuery={currentQuery} />
         <button
           onClick={onRescan}
           disabled={!canRescan || isRescanning}
-          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50 disabled:opacity-50 transition"
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-gray-300 dark:border-white/10 text-gray-700 dark:text-[#d9d9d9] text-sm font-medium hover:bg-gray-50 dark:hover:bg-white/10 disabled:opacity-50 transition"
         >
           <RefreshCw className={`w-4 h-4 ${isRescanning ? "animate-spin" : ""}`} />
           {isRescanning ? "Rescanning..." : "Rescan"}
         </button>
         <button
           onClick={() => setBulkOpen(true)}
-          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50 transition"
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-gray-300 dark:border-white/10 text-gray-700 dark:text-[#d9d9d9] text-sm font-medium hover:bg-gray-50 dark:hover:bg-white/10 transition"
           title="Run a batch of targeted lead searches across many cities in sequence"
         >
           <Layers className="w-4 h-4" />
@@ -64,13 +65,14 @@ export default function TopBar({
         <button
           onClick={onScoreAll}
           disabled={!!scoreProgress}
-          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-teal-600 text-teal-700 text-sm font-medium hover:bg-teal-50 disabled:opacity-50 transition"
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-teal-600 text-teal-700 dark:text-teal-400 text-sm font-medium hover:bg-teal-50 dark:hover:bg-[#284b63]/40 disabled:opacity-50 transition"
         >
           <Brain className="w-4 h-4" />
           {scoreProgress ?? "Score loaded"}
         </button>
         <ExportButton />
         <CreditBalance />
+        <ThemeToggle />
         <CompanySwitcher />
         <UserMenu />
       </div>

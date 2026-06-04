@@ -52,18 +52,18 @@ export default function ExportButton() {
     <div className="relative" ref={wrapperRef}>
       <button
         onClick={() => setOpen((v) => !v)}
-        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-sm font-medium hover:bg-gray-50 transition"
+        className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-gray-300 dark:border-white/10 text-gray-700 dark:text-[#d9d9d9] text-sm font-medium hover:bg-gray-50 dark:hover:bg-white/10 transition"
         title="Bulk export leads to CSV"
       >
         <Download className="w-4 h-4" />
         Export CSV
-        <ChevronDown className="w-3.5 h-3.5 text-gray-500" />
+        <ChevronDown className="w-3.5 h-3.5 text-gray-500 dark:text-gray-400" />
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-1 w-72 bg-white rounded-lg border border-gray-200 shadow-md z-30 overflow-hidden p-4 space-y-3">
+        <div className="absolute right-0 mt-1 w-72 bg-white dark:bg-night-800 rounded-lg border border-gray-200 dark:border-white/10 shadow-md z-30 overflow-hidden p-4 space-y-3">
           <div>
-            <label className="block text-xs font-medium text-gray-700 mb-1">
+            <label className="block text-xs font-medium text-gray-700 dark:text-[#d9d9d9] mb-1">
               Max prior exports
             </label>
             <input
@@ -73,13 +73,13 @@ export default function ExportButton() {
               placeholder="empty = all, 0 = new only"
               value={maxExports}
               onChange={(e) => setMaxExports(e.target.value)}
-              className="w-full text-sm rounded-md border border-gray-200 px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-teal-500/40"
+              className="w-full text-sm rounded-md border border-gray-200 dark:bg-white/5 dark:border-white/10 dark:text-white dark:placeholder:text-gray-500 px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-teal-500/40"
               onKeyDown={(e) => {
                 if (e.key === "Enter") triggerDownload()
               }}
               autoFocus
             />
-            <p className="text-[11px] text-gray-500 mt-1.5 leading-snug">
+            <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1.5 leading-snug">
               Filters by <code>export_count</code>. Leave empty to grab every lead.
               Set <code>0</code> next time to skip ones you&apos;ve already downloaded.
             </p>
