@@ -3,7 +3,6 @@
 import { Suspense, useState, useCallback, useEffect, useRef } from "react"
 import dynamic from "next/dynamic"
 import type { Practice } from "@/lib/types"
-import { mockPractices } from "@/lib/mock-data"
 import TopBar from "@/components/top-bar"
 import PracticeCard from "@/components/practice-card"
 import FilterBar from "@/components/filter-bar"
@@ -37,15 +36,13 @@ function PageContent() {
   const [filters, setFilters] = useUrlState()
   const sidebarRef = useRef<HTMLDivElement>(null)
 
-  // Visible page of rows for the sidebar.
-  const [practices, setPractices] = useState<Practice[]>(
-    mockPractices.slice(0, PAGE_SIZE),
-  )
+  // Visible page of rows for the sidebar. Starts empty — real data only.
+  const [practices, setPractices] = useState<Practice[]>([])
   // All Google-Places results when in "places" mode (paginated client-side).
   const [allResults, setAllResults] = useState<Practice[]>([])
   // Every matching lead's point, for the clustered map.
-  const [mapPoints, setMapPoints] = useState<Practice[]>(mockPractices)
-  const [total, setTotal] = useState<number>(mockPractices.length)
+  const [mapPoints, setMapPoints] = useState<Practice[]>([])
+  const [total, setTotal] = useState<number>(0)
   const [page, setPage] = useState(1)
   // "db" = server-paginated list; "places" = Google Places scan results.
   const [mode, setMode] = useState<"db" | "places">("db")

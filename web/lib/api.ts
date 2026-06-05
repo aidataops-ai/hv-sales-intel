@@ -33,13 +33,8 @@ export async function searchPractices(
     })
     return data.practices
   } catch {
-    const q = query.toLowerCase()
-    const tokens = q.split(/\s+/)
-    const matches = mockPractices.filter((p) => {
-      const hay = `${p.name} ${p.category} ${p.city}`.toLowerCase()
-      return tokens.some((t) => hay.includes(t))
-    })
-    return matches.length > 0 ? matches : mockPractices
+    // No mock fallback — surface a real (empty) result instead of fake leads.
+    return []
   }
 }
 
@@ -99,16 +94,8 @@ export async function listPractices(params: ListParams = {}): Promise<ListResult
       hasMore: !!data.has_more,
     }
   } catch {
-    // Backend unreachable → mock fallback. Only the first page returns rows so
-    // infinite scroll terminates cleanly.
-    if ((params.offset ?? 0) > 0) {
-      return { practices: [], total: mockPractices.length, hasMore: false }
-    }
-    return {
-      practices: mockPractices,
-      total: mockPractices.length,
-      hasMore: false,
-    }
+    // No mock fallback — an empty list is honest; real data is server-backed.
+    return { practices: [], total: 0, hasMore: false }
   }
 }
 

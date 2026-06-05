@@ -604,12 +604,9 @@ def query_practices_page(
     start = max(0, offset)
     end = start + max(1, limit) - 1  # .range() is inclusive
 
-    def _build(include_icp: bool):
-        """Build the query. ``include_icp`` lets us retry without the icp_*
-        filter/sort on deployments that haven't run the ICP migration."""
-        q = client.table("practices").select(PROFILE_JOIN_SELECT, count="exact")
-
-        # Filters: each .or_ is its own OR-group; multiple groups AND-combine.
+    def _filtered(q, include_icp: bool):
+        """Apply every filter to a query builder. ``include_icp`` lets us retry
+        without the icp_* columns on deployments missing that migration."""
         if search and search.strip():
             safe = _escape_or_value(search)
             if safe:
@@ -650,37 +647,47 @@ def query_practices_page(
             q = q.or_(f"assigned_to.eq.{owner},last_touched_by.eq.{owner}")
         if tags:
             q = q.overlaps("tags", tags)
+        return q
 
-        # Single combined ORDER string — passed as the column with desc=False so
-        # postgrest-py emits it verbatim. This sidesteps two version pitfalls:
-        #  - the nullsfirst kwarg only ever emits ".nullsfirst" (never
-        #    ".nullslast"), and Postgres defaults DESC -> NULLS FIRST, which
-        #    would float unscored (NULL) leads to the TOP. We spell ".nullslast"
-        #    so unscored leads always sort last, in any direction.
-        #  - chaining two .order() calls only comma-combines on postgrest
-        #    >=0.16.11; older versions send two params and silently drop the
-        #    tiebreak, which would duplicate/skip rows across pages.
+    def _fetch(include_icp: bool):
         sort_col = col if (include_icp or col != "icp_vertical") else "lead_score"
-        order_str = f"{sort_col}.{'desc' if desc else 'asc'}.nullslast"
+        # Data page: plain select + simple chained .order() calls — NO count on
+        # this query. (count="exact" on an embedded-join select, and a combined
+        # order string, are exactly what was silently failing before and
+        # blanking the list.)
+        dq = _filtered(
+            client.table("practices").select(PROFILE_JOIN_SELECT), include_icp
+        )
+        dq = dq.order(sort_col, desc=desc, nullsfirst=False)
         if sort_col != "place_id":
-            order_str += ",place_id.asc"
-        return q.order(order_str, desc=False, nullsfirst=False)
+            dq = dq.order("place_id", desc=False, nullsfirst=False)
+        rows = dq.range(start, end).execute().data or []
+
+        # Total via a separate, embed-free count query — resilient: if counting
+        # fails we still return the page (just with an estimated total).
+        total = start + len(rows)
+        try:
+            cres = (
+                _filtered(
+                    client.table("practices").select("place_id", count="exact"),
+                    include_icp,
+                )
+                .limit(1)
+                .execute()
+            )
+            if cres.count is not None:
+                total = cres.count
+        except Exception:
+            pass
+        return rows, total
 
     try:
-        result = _build(include_icp=True).range(start, end).execute()
+        rows, total = _fetch(include_icp=True)
     except Exception as exc:
-        # Degrade gracefully if this deployment lacks the icp_* columns:
-        # retry once without the icp filter/sort. Other errors keep the old
-        # fail-soft ([], 0) so a transient hiccup never blanks the UI hard.
         if any(c in str(exc) for c in _OPTIONAL_COLUMNS):
-            try:
-                result = _build(include_icp=False).range(start, end).execute()
-            except Exception:
-                return [], 0
+            rows, total = _fetch(include_icp=False)
         else:
-            return [], 0
-    rows = result.data or []
-    total = result.count if result.count is not None else len(rows)
+            raise
     return [_flatten_attribution(r) for r in rows], total
 
 

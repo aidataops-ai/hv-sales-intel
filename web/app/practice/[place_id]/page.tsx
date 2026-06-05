@@ -6,7 +6,6 @@ import { ArrowLeft, MoreVertical } from "lucide-react"
 import ThemeToggle from "@/components/theme-toggle"
 import type { Practice, ScriptSection } from "@/lib/types"
 import { getScript, regenerateScript, updatePractice } from "@/lib/api"
-import { mockPractices } from "@/lib/mock-data"
 import { timeAgo } from "@/lib/utils"
 import PracticeInfo from "@/components/practice-info"
 import ScriptView from "@/components/script-view"
@@ -27,6 +26,7 @@ export default function CallPrepPage() {
   const [practice, setPractice] = useState<Practice | null>(null)
   const [sections, setSections] = useState<ScriptSection[]>([])
   const [isLoadingScript, setIsLoadingScript] = useState(true)
+  const [loadError, setLoadError] = useState(false)
 
   // Load practice data
   useEffect(() => {
@@ -49,8 +49,7 @@ export default function CallPrepPage() {
       }
 
       if (!loaded) {
-        const mock = mockPractices.find((p) => p.place_id === placeId) ?? mockPractices[0]
-        setPractice(mock)
+        setLoadError(true)
       }
     }
     load()
@@ -93,7 +92,9 @@ export default function CallPrepPage() {
   if (!practice) {
     return (
       <div className="min-h-screen bg-cream dark:bg-night flex items-center justify-center">
-        <p className="text-gray-400 dark:text-gray-500">Loading...</p>
+        <p className="text-gray-400 dark:text-gray-500">
+          {loadError ? "Couldn't load this lead." : "Loading..."}
+        </p>
       </div>
     )
   }
