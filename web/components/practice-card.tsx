@@ -98,11 +98,10 @@ export default function PracticeCard({
   const painPoints = parseJsonArray(practice.pain_points ?? null)
   const salesAngles = parseJsonArray(practice.sales_angles ?? null)
   const icpBreakdown = parseIcpBreakdown(practice.icp_breakdown ?? null)
-  // The three strongest ICP dimensions = "why it stands out".
-  const topHighlights = [...icpBreakdown]
+  // Every ICP scoring dimension, strongest first.
+  const icpMetrics = [...icpBreakdown]
     .filter((r) => r.max > 0)
     .sort((a, b) => b.score / b.max - a.score / a.max)
-    .slice(0, 3)
 
   // Collapsing the card also hides the deeper "View summary" disclosure.
   const toggleExpand = () =>
@@ -314,10 +313,10 @@ export default function PracticeCard({
               <div className="flex items-center gap-1.5">
                 <Lightbulb className="w-4 h-4 text-teal-600 dark:text-teal-400" />
                 <span className="text-sm font-semibold text-gray-900 dark:text-white">
-                  Why it stands out
+                  ICP scoring
                 </span>
               </div>
-              {hasSummary && topHighlights.length > 0 && (
+              {hasSummary && icpMetrics.length > 0 && (
                 <button
                   onClick={(e) => {
                     e.stopPropagation()
@@ -336,21 +335,22 @@ export default function PracticeCard({
               )}
             </div>
 
-            {topHighlights.length > 0 && (
+            {icpMetrics.length > 0 && (
               <div className="grid grid-cols-3 gap-2 mt-3">
-                {topHighlights.map((h, i) => {
+                {icpMetrics.map((h, i) => {
                   const Icon = highlightIcon(h.label)
                   return (
                     <div
                       key={i}
+                      title={h.reason}
                       className="rounded-lg border border-gray-200/70 dark:border-white/10 bg-gray-50/60 dark:bg-white/5 p-3"
                     >
                       <Icon className="w-5 h-5 text-teal-600 dark:text-teal-400" />
                       <p className="text-[13px] font-semibold text-teal-800 dark:text-teal-400 mt-2 leading-tight">
                         {h.label}
                       </p>
-                      <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1 leading-snug line-clamp-3">
-                        {h.reason}
+                      <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-1">
+                        AI assessment: {h.score}/{h.max}
                       </p>
                     </div>
                   )
@@ -360,7 +360,7 @@ export default function PracticeCard({
 
             {/* Full analysis: shown via "View summary", or inline when there
                 are no highlight tiles (legacy scores without a breakdown). */}
-            {hasSummary && (showSummary || topHighlights.length === 0) && (
+            {hasSummary && (showSummary || icpMetrics.length === 0) && (
               <div className="space-y-3 mt-3">
                 {practice.summary && (
                   <p className="text-xs text-gray-600 dark:text-[#d9d9d9] leading-relaxed">
@@ -400,7 +400,7 @@ export default function PracticeCard({
               </div>
             )}
 
-            {topHighlights.length === 0 && !hasSummary && (
+            {icpMetrics.length === 0 && !hasSummary && (
               <p className="text-[11px] text-gray-400 dark:text-gray-500 italic mt-3">
                 Re-analyze to populate insights.
               </p>
