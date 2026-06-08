@@ -373,6 +373,8 @@ function PageContent() {
           selectedId={filters.sel || null}
           onSelect={(id) => setFilters({ sel: id ?? "" })}
           onSearchArea={handleSearchArea}
+          onAnalyze={handleAnalyze}
+          analyzingIds={analyzingIds}
         />
       </main>
     </div>

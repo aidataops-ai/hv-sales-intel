@@ -23,6 +23,16 @@
   height: 100%;
 }
 
+/* Dark-mode Leaflet popup. */
+.dark .leaflet-popup-content-wrapper,
+.dark .leaflet-popup-tip {
+  background: #3d3d3d;
+  color: #d9d9d9;
+}
+.dark .leaflet-popup-close-button {
+  color: #d9d9d9;
+}
+
 /* Tint the basemap toward the palette. Applied to the tile pane only, so
    markers / clusters / controls keep their own colours. Light: desaturate +
    faint cool wash; Dark: push the Carto-dark tiles toward palette navy/teal. */

@@ -1,12 +1,96 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
+import Link from "next/link"
 import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet"
 import MarkerClusterGroup from "react-leaflet-cluster"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
-import { Plus, Minus, Maximize2, PenLine, Layers, Crosshair } from "lucide-react"
+import { Plus, Minus, Maximize2, PenLine, Layers, Crosshair, Brain, Loader2 } from "lucide-react"
 import type { Practice } from "@/lib/types"
+import { parseIcpBreakdown } from "@/lib/types"
+
+// Marker popup: name + address, then either the ICP scores (if analyzed) or an
+// Analyze button.
+function PopupBody({
+  practice,
+  onAnalyze,
+  analyzing,
+}: {
+  practice: Practice
+  onAnalyze?: (placeId: string) => void
+  analyzing: boolean
+}) {
+  const scored = practice.lead_score != null
+  const breakdown = parseIcpBreakdown(practice.icp_breakdown ?? null)
+    .filter((r) => r.max > 0)
+    .sort((a, b) => b.score / b.max - a.score / a.max)
+  return (
+    <div className="min-w-[210px] space-y-2">
+      <div>
+        <Link
+          href={`/practice/${practice.place_id}`}
+          className="font-serif font-semibold !text-teal-700 dark:!text-teal-400 hover:underline block leading-tight !mb-0"
+        >
+          {practice.name}
+        </Link>
+        <p className="!my-0.5 text-xs !text-gray-500 dark:!text-gray-400">
+          {practice.address}
+        </p>
+      </div>
+      {scored ? (
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-1.5">
+            <span className="px-1.5 py-0.5 rounded-full bg-teal-600 text-white text-[11px] font-bold">
+              ICP {practice.lead_score}
+            </span>
+            {practice.rating != null && (
+              <span className="px-1.5 py-0.5 rounded-full bg-gray-200 dark:bg-white/10 !text-gray-700 dark:!text-[#d9d9d9] text-[11px] font-semibold">
+                ★ {practice.rating}
+              </span>
+            )}
+          </div>
+          {breakdown.length > 0 && (
+            <ul className="!m-0 !p-0 !list-none space-y-0.5">
+              {breakdown.map((r, i) => (
+                <li
+                  key={i}
+                  className="flex justify-between gap-3 text-[11px] !m-0"
+                >
+                  <span className="!text-gray-600 dark:!text-[#d9d9d9] truncate">
+                    {r.label}
+                  </span>
+                  <span className="!text-gray-500 dark:!text-gray-400 tabular-nums shrink-0">
+                    {r.score}/{r.max}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <Link
+            href={`/practice/${practice.place_id}`}
+            className="inline-block text-xs font-medium !text-teal-700 dark:!text-teal-400 hover:underline"
+          >
+            Open Call Prep →
+          </Link>
+        </div>
+      ) : (
+        <button
+          onClick={() => onAnalyze?.(practice.place_id)}
+          disabled={analyzing}
+          className="inline-flex items-center gap-1 text-xs px-3 py-1.5 rounded-lg bg-teal-600 !text-white hover:bg-teal-700 disabled:opacity-50 transition"
+        >
+          {analyzing ? (
+            <Loader2 className="w-3 h-3 animate-spin" />
+          ) : (
+            <Brain className="w-3 h-3" />
+          )}
+          {analyzing ? "Analyzing…" : "Analyze"}
+        </button>
+      )}
+    </div>
+  )
+}
 
 // Lead-score → marker colour. Mirrors the legend buckets exactly.
 function scoreColor(score: number | null): string {
@@ -72,6 +156,10 @@ interface MapViewProps {
   onSelect: (placeId: string) => void
   /** Re-run the current query for what's on screen (the "Search this area" pill). */
   onSearchArea?: () => void
+  /** Analyze a lead from its map popup. */
+  onAnalyze?: (placeId: string) => void
+  /** Place ids currently being analyzed (drives the popup spinner). */
+  analyzingIds?: Set<string>
 }
 
 const LEGEND = [
@@ -86,6 +174,8 @@ export default function MapView({
   selectedId,
   onSelect,
   onSearchArea,
+  onAnalyze,
+  analyzingIds,
 }: MapViewProps) {
   const [map, setMap] = useState<L.Map | null>(null)
   const [layer, setLayer] = useState<"street" | "light">("street")
@@ -154,10 +244,12 @@ export default function MapView({
               }}
               eventHandlers={{ click: () => onSelect(p.place_id) }}
             >
-              <Popup>
-                <strong className="font-serif">{p.name}</strong>
-                <br />
-                {p.address}
+              <Popup minWidth={220}>
+                <PopupBody
+                  practice={p}
+                  onAnalyze={onAnalyze}
+                  analyzing={analyzingIds?.has(p.place_id) ?? false}
+                />
               </Popup>
             </Marker>
           ))}
