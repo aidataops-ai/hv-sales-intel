@@ -1,6 +1,7 @@
 "use client"
 
-import { Search, ArrowUp, ArrowDown } from "lucide-react"
+import { useState } from "react"
+import { Search, ArrowUp, ArrowDown, SlidersHorizontal } from "lucide-react"
 import TagsFilter from "./tags-filter"
 import OwnerFilter from "./owner-filter"
 import { ALL_STATUSES } from "./status-badge"
@@ -91,6 +92,19 @@ const selectClass =
   "w-full text-sm rounded-lg border border-gray-200 bg-white/80 px-3 py-2 text-gray-700 dark:bg-white/5 dark:border-white/10 dark:text-white dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-teal-500/30"
 
 export default function FilterBar(p: FilterBarProps) {
+  const [open, setOpen] = useState(false)
+  // How many filters are actually narrowing the list (drives the badge).
+  const activeCount =
+    (p.category ? 1 : 0) +
+    (p.vertical ? 1 : 0) +
+    (p.geo ? 1 : 0) +
+    (p.tier ? 1 : 0) +
+    (p.status ? 1 : 0) +
+    (p.tags.length > 0 ? 1 : 0) +
+    (p.enriched ? 1 : 0) +
+    (p.owner ? 1 : 0) +
+    (p.minRating > 0 ? 1 : 0) +
+    (p.minIcp > 0 || p.maxIcp < 100 ? 1 : 0)
   return (
     <div className="flex flex-col gap-3 px-5 py-3 border-b border-gray-200/50 dark:border-white/10">
       <div className="relative">
@@ -130,8 +144,29 @@ export default function FilterBar(p: FilterBarProps) {
             <ArrowDown className="w-4 h-4" />
           )}
         </button>
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          title={open ? "Hide filters" : "Show filters"}
+          className={`shrink-0 inline-flex items-center gap-1.5 h-9 px-3 rounded-lg border text-sm transition ${
+            open || activeCount > 0
+              ? "border-teal-600 text-teal-700 bg-teal-50 dark:bg-[#284b63]/40 dark:text-teal-400 dark:border-teal-400/40"
+              : "border-gray-200 bg-white/80 text-gray-600 hover:bg-gray-50 dark:bg-white/5 dark:border-white/10 dark:text-[#d9d9d9] dark:hover:bg-white/10"
+          }`}
+        >
+          <SlidersHorizontal className="w-4 h-4" />
+          Filters
+          {activeCount > 0 && (
+            <span className="inline-flex items-center justify-center min-w-[16px] h-4 px-1 text-[10px] font-bold text-white bg-teal-600 rounded-full">
+              {activeCount}
+            </span>
+          )}
+        </button>
       </div>
 
+      {open && (
+        <>
       {/* Filter grid */}
       <div className="grid grid-cols-2 gap-2">
         <select
@@ -254,6 +289,8 @@ export default function FilterBar(p: FilterBarProps) {
           </span>
         </div>
       </div>
+        </>
+      )}
     </div>
   )
 }
