@@ -2,7 +2,6 @@
 
 import { useState } from "react"
 import Link from "next/link"
-import { notFound } from "next/navigation"
 import {
   ArrowLeft, Coins, Loader2, Plus, History, TrendingUp, TrendingDown,
 } from "lucide-react"
@@ -11,7 +10,6 @@ import {
   CREDIT_VALUE_CENTS, creditsToDollars, formatCredits,
   topupCredits, useCredits, type CreditTransaction,
 } from "@/lib/credits"
-import { SHOW_BILLING } from "@/lib/flags"
 
 const PRESETS = [50, 100, 500, 1000, 5000]
 
@@ -24,8 +22,8 @@ export default function AdminCreditsPage() {
   const [error, setError] = useState<string | null>(null)
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
 
-  // Cost/credit surfaces are hidden for demo — see SHOW_BILLING in lib/flags.ts.
-  if (!SHOW_BILLING) notFound()
+  // Reachable by direct URL for admins only — intentionally NOT linked in the
+  // UI; the customer-facing billing surfaces stay hidden via SHOW_BILLING.
   if (user?.role !== "admin") {
     return (
       <div className="min-h-screen flex items-center justify-center text-gray-600 dark:text-[#d9d9d9]">
