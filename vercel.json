@@ -5,9 +5,5 @@
   "outputDirectory": "web/.next",
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/index.py" }
-  ],
-  "crons": [
-    { "path": "/api/cron/leads/collect", "schedule": "0 * * * *" },
-    { "path": "/api/cron/leads/qualify", "schedule": "20 * * * *" }
   ]
 }
