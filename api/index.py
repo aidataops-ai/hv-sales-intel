@@ -2221,6 +2221,66 @@ def seed_lead_targets(admin: dict = Depends(require_admin)):
     return {"config": config_summary, "seeded": seeded}
 
 
+@app.post("/api/admin/leads/retrigger")
+async def retrigger_lead_pipeline(admin: dict = Depends(require_admin)):
+    """Kick off the full collect + qualify sweep on demand.
+
+    Dispatches the GitHub Actions workflow rather than running the sweep in this
+    process: a full sweep can outlast a serverless invocation, which is why the
+    scheduled run already lives on a GitHub runner (`.github/workflows/leads.yml`).
+    This fires that same workflow, so a manual run and the hourly cron take the
+    identical path. It always runs the whole sweep (`stage=both`); the workflow's
+    own defaults set the batch size.
+    """
+    token = app_settings.github_token
+    if not token:
+        raise HTTPException(
+            503,
+            "Manual retrigger is not configured — set GITHUB_TOKEN to a token "
+            "with actions:write on the repo.",
+        )
+
+    url = (
+        f"https://api.github.com/repos/{app_settings.github_repo}"
+        f"/actions/workflows/{app_settings.github_leads_workflow}/dispatches"
+    )
+    payload = {
+        "ref": app_settings.github_workflow_ref,
+        "inputs": {"stage": "both"},
+    }
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+    except Exception as e:
+        log.warning("[leads.retrigger.error] %s: %s", type(e).__name__, str(e)[:200])
+        raise HTTPException(502, "Could not reach GitHub to dispatch the workflow")
+
+    # A successful dispatch is 204 No Content; anything else is a rejection
+    # (bad ref, workflow not found on that ref, token missing the scope).
+    if resp.status_code != 204:
+        detail = (resp.text or "").strip()[:200]
+        log.warning("[leads.retrigger.rejected] status=%s body=%s",
+                    resp.status_code, detail)
+        raise HTTPException(
+            502, f"GitHub rejected the dispatch ({resp.status_code}): {detail}"
+        )
+
+    log.info("[leads.retrigger] stage=both ref=%s by=%s",
+             app_settings.github_workflow_ref, admin.get("id"))
+    return {
+        "ok": True,
+        "ref": app_settings.github_workflow_ref,
+        "workflow": app_settings.github_leads_workflow,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Job-posting leads — operator routes.
 #

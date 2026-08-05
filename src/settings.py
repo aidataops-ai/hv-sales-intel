@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     # so a fresh deploy works without it, and a second tenant fails loudly
     # instead of silently collecting for whichever row sorted first.
     lead_company_id: str = ""
+    # Manual "retrigger" of the sweep dispatches the GitHub Actions workflow
+    # (.github/workflows/leads.yml) rather than running collect/qualify in the
+    # API process — a full sweep can outlast a serverless invocation, which is
+    # why the scheduled run already lives on a GitHub runner. Needs a token with
+    # `actions: write` on the repo. Empty disables the retrigger endpoint (503).
+    github_token: str = ""
+    github_repo: str = "aidataops-ai/hv-sales-intel"
+    github_leads_workflow: str = "leads.yml"
+    github_workflow_ref: str = "main"
 
     # Bootstrap admin (seeded on startup if profiles has zero admins)
     bootstrap_admin_email: str = ""

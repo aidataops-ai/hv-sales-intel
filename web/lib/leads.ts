@@ -187,6 +187,31 @@ export async function updateLead(
   })
 }
 
+export type RetriggerResult =
+  | { ok: true; ref: string; workflow: string }
+  | { ok: false; error: string }
+
+/** Dispatch the GitHub Actions lead pipeline on demand (admin only). Always
+ *  runs the full collect + qualify sweep.
+ *
+ *  Returns a discriminated result rather than throwing so the button can show
+ *  the server's message — e.g. the 503 when GITHUB_TOKEN isn't configured. */
+export async function retriggerLeads(): Promise<RetriggerResult> {
+  try {
+    const res = await fetch(`${API_URL}/api/admin/leads/retrigger`, {
+      method: "POST",
+      credentials: "include",
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      return { ok: false, error: body.detail || `Failed (${res.status})` }
+    }
+    return await res.json()
+  } catch {
+    return { ok: false, error: "Could not reach the server." }
+  }
+}
+
 export interface FilterOptions {
   cities: string[]
   tracks: string[]

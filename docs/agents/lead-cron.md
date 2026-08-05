@@ -43,6 +43,26 @@ curl -X POST -H "X-Cron-Secret: $LEAD_CRON_SECRET" \
 Both take `company_id` to scope to one tenant and `limit` to shrink the batch —
 useful for a smoke test that doesn't burn a full sweep's worth of credits.
 
+## Retriggering from the app
+
+The **Run pipeline** button on `/signals` (admin only) does not call these HTTP
+routes. It hits `POST /api/admin/leads/retrigger`, which **dispatches the GitHub
+Actions workflow** (`.github/workflows/leads.yml`) via the GitHub REST API — so a
+manual run takes the same runner, and the same code path, as the hourly cron.
+Running the sweep inside the API process instead would hit the serverless
+wall-clock ceiling, which is the reason the schedule lives on a GitHub runner.
+
+This path uses a **GitHub token**, not `LEAD_CRON_SECRET`. Set `GITHUB_TOKEN` to
+a token (fine-grained PAT or GitHub App) with **`actions: write`** on the repo;
+`GITHUB_REPO`, `GITHUB_LEADS_WORKFLOW` and `GITHUB_WORKFLOW_REF` default to this
+repo's `main`. With `GITHUB_TOKEN` unset the endpoint returns 503 and the button
+reports that it isn't configured.
+
+The button always runs the whole sweep (`stage=both`); the workflow's own
+`targets` default sets the batch size. If you need a single stage or a custom
+batch, dispatch `leads.yml` directly from the Actions tab, which still exposes
+both inputs.
+
 ## Before the first run
 
 A tenant only appears to the cron once it has search targets. Seed them:
