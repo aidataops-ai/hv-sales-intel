@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     # pattern. Empty disables the cron routes outright rather than leaving
     # them open.
     lead_cron_secret: str = ""
+    # The tenant collection runs for. v1 is single-tenant: set this to the
+    # company that already owns the practices so places and signals sit
+    # together. Left empty, the resolver falls back to the sole company and
+    # only errors if there is genuinely more than one to choose between —
+    # so a fresh deploy works without it, and a second tenant fails loudly
+    # instead of silently collecting for whichever row sorted first.
+    lead_company_id: str = ""
 
     # Bootstrap admin (seeded on startup if profiles has zero admins)
     bootstrap_admin_email: str = ""

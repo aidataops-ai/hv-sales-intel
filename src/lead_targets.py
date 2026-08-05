@@ -189,34 +189,77 @@ def record_target_result(target_id: int, row_count: int) -> None:
         pass
 
 
-def companies_with_targets() -> list[str]:
-    """Tenants that have at least one enabled target.
+class NoLeadCompany(RuntimeError):
+    """No tenant could be resolved for a background stage to collect for."""
 
-    The cron stages have no logged-in user to resolve a company from, so they
-    sweep every tenant that has opted in by seeding targets. A tenant that has
-    never called seed-targets simply does not appear.
+
+def resolve_company_id() -> str:
+    """The single tenant collection runs for.
+
+    v1 is deliberately single-tenant at run time even though the schema is not:
+    `company_id` stays on every row so multi-tenancy is a pin to remove later
+    rather than a migration to write, but the stages resolve exactly one
+    company. That also sidesteps the duplicated board traffic a per-tenant loop
+    would cause — postings are shared across tenants (ADR-04), so two tenants
+    on the same config would run identical searches to produce one row.
+
+    `LEAD_COMPANY_ID` wins. Unset, the sole company is used — which is the
+    common case and saves a fresh deploy from needing the variable at all.
+    More than one company and no pin is an error, not a guess: picking
+    whichever row sorted first would quietly bill the wrong tenant.
+    """
+    from src.settings import settings
+    from src.storage import _get_client
+
+    if settings.lead_company_id:
+        return settings.lead_company_id
+
+    client = _get_client()
+    if not client:
+        raise NoLeadCompany("Supabase is not configured")
+    try:
+        rows = (client.table("companies").select("id").limit(2).execute()).data or []
+    except Exception as e:
+        raise NoLeadCompany(f"could not read companies: {type(e).__name__}") from e
+
+    if not rows:
+        raise NoLeadCompany("no companies exist")
+    if len(rows) > 1:
+        raise NoLeadCompany(
+            "more than one company exists — set LEAD_COMPANY_ID to the tenant "
+            "that owns the practices"
+        )
+    return rows[0]["id"]
+
+
+def ensure_targets(company_id: str) -> dict[str, int]:
+    """Seed this tenant's targets if it has none. Cheap no-op once seeded.
+
+    Called at the top of a collect run so the very first one works without a
+    separate admin step. It only fires on an empty target set — a tenant that
+    has disabled cities must not have them silently restored on every run.
     """
     from src.storage import _get_client
 
     client = _get_client()
-    if not client:
-        return []
+    if not client or not company_id:
+        return {"config": 0, "existing": 0, "inserted": 0}
     try:
-        rows = (
+        existing = (
             client.table("company_search_targets")
-            .select("company_id")
-            .eq("enabled", True)
-            .limit(20_000)
+            .select("id", count="exact")
+            .eq("company_id", company_id)
+            .limit(1)
             .execute()
-        ).data or []
+        )
+        if (existing.count or 0) > 0:
+            return {"config": 0, "existing": int(existing.count or 0), "inserted": 0}
     except Exception as e:
-        log.warning("[leads.companies.error] %s: %s", type(e).__name__, str(e)[:200])
-        return []
-    seen: list[str] = []
-    for row in rows:
-        if row["company_id"] not in seen:
-            seen.append(row["company_id"])
-    return seen
+        log.warning("[leads.ensure.error] %s: %s", type(e).__name__, str(e)[:200])
+        return {"config": 0, "existing": 0, "inserted": 0}
+
+    log.info("[leads.ensure] company=%s has no targets — seeding from config", company_id)
+    return seed_search_targets(company_id)
 
 
 def sweep_size(company_id: str) -> int:

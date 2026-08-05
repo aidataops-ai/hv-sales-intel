@@ -1,5 +1,7 @@
 """Tests for the search-target matrix and its rotation."""
 
+import pytest
+
 from src import lead_config, lead_targets
 
 
@@ -46,3 +48,63 @@ def test_sources_for_run_only_returns_enabled_boards():
     enabled = set(lead_config.enabled_sources())
     for i in range(12):
         assert set(lead_targets.sources_for_run(i)) <= enabled
+
+
+# --------------------------------------------------------------------------
+# Single-tenant resolution (v1 pins one company at run time; the schema stays
+# multi-tenant so this is a pin to remove, not a migration to write).
+# --------------------------------------------------------------------------
+
+
+def test_the_configured_company_wins(monkeypatch):
+    from src.settings import settings
+    monkeypatch.setattr(settings, "lead_company_id", "pinned-company")
+    assert lead_targets.resolve_company_id() == "pinned-company"
+
+
+def test_a_lone_company_needs_no_configuration(monkeypatch):
+    """A fresh deploy shouldn't need the env var to work at all."""
+    from src.settings import settings
+    monkeypatch.setattr(settings, "lead_company_id", "")
+    monkeypatch.setattr(
+        "src.storage._get_client",
+        lambda: _FakeCompanies([{"id": "only-company"}]),
+    )
+    assert lead_targets.resolve_company_id() == "only-company"
+
+
+def test_two_companies_without_a_pin_is_an_error_not_a_guess(monkeypatch):
+    """Picking whichever row sorted first would quietly bill the wrong tenant."""
+    from src.settings import settings
+    monkeypatch.setattr(settings, "lead_company_id", "")
+    monkeypatch.setattr(
+        "src.storage._get_client",
+        lambda: _FakeCompanies([{"id": "a"}, {"id": "b"}]),
+    )
+    with pytest.raises(lead_targets.NoLeadCompany, match="LEAD_COMPANY_ID"):
+        lead_targets.resolve_company_id()
+
+
+def test_no_companies_at_all_is_an_error(monkeypatch):
+    from src.settings import settings
+    monkeypatch.setattr(settings, "lead_company_id", "")
+    monkeypatch.setattr("src.storage._get_client", lambda: _FakeCompanies([]))
+    with pytest.raises(lead_targets.NoLeadCompany):
+        lead_targets.resolve_company_id()
+
+
+class _FakeCompanies:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def table(self, name):
+        return self
+
+    def select(self, *a, **k):
+        return self
+
+    def limit(self, *a, **k):
+        return self
+
+    def execute(self):
+        return type("R", (), {"data": self.rows})()

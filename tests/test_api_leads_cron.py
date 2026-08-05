@@ -7,9 +7,13 @@ ones where they should refuse to run at all.
 from fastapi.testclient import TestClient
 
 from api.index import app
+from src import lead_targets
 from src.settings import settings
 
 client = TestClient(app)
+
+# ensure_targets is a no-op in these tests — seeding is covered separately.
+_NO_SEED = {"config": 0, "existing": 1, "inserted": 0}
 
 
 def test_collect_is_disabled_when_no_secret_is_configured(monkeypatch):
@@ -45,16 +49,17 @@ def test_qualify_rejects_a_wrong_secret(monkeypatch):
 
 
 def test_collect_with_a_valid_secret_runs_and_reports(monkeypatch):
-    """No tenants have targets in this environment, so the sweep is a no-op —
-    which is the point: a stage that finds nothing to do must return a clean
-    summary, not raise."""
+    """Nothing is claimable here, so the sweep is a no-op — which is the point:
+    a stage that finds nothing to do must return a clean summary, not raise."""
     monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
-    monkeypatch.setattr("src.lead_targets.companies_with_targets", lambda: [])
+    monkeypatch.setattr("src.lead_targets.resolve_company_id", lambda: "c1")
+    monkeypatch.setattr("src.lead_targets.ensure_targets", lambda c: _NO_SEED)
+    monkeypatch.setattr("src.lead_targets.claim_targets", lambda c, n: [])
     resp = client.post("/api/cron/leads/collect",
                        headers={"X-Cron-Secret": "s3cret"})
     assert resp.status_code == 200
     body = resp.json()
-    assert body["companies"] == 0
+    assert body["company_id"] == "c1"
     assert body["targets"] == 0
     assert body["sources"]
 
@@ -62,7 +67,8 @@ def test_collect_with_a_valid_secret_runs_and_reports(monkeypatch):
 def test_collect_flags_a_sweep_where_every_target_returned_nothing(monkeypatch):
     """The Indeed key-rotation tripwire: zero rows everywhere, no exception."""
     monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
-    monkeypatch.setattr("src.lead_targets.companies_with_targets", lambda: ["c1"])
+    monkeypatch.setattr("src.lead_targets.resolve_company_id", lambda: "c1")
+    monkeypatch.setattr("src.lead_targets.ensure_targets", lambda c: _NO_SEED)
     monkeypatch.setattr(
         "src.lead_targets.claim_targets",
         lambda company_id, limit: [
@@ -82,7 +88,8 @@ def test_collect_flags_a_sweep_where_every_target_returned_nothing(monkeypatch):
 
 def test_a_productive_sweep_raises_no_alert(monkeypatch):
     monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
-    monkeypatch.setattr("src.lead_targets.companies_with_targets", lambda: ["c1"])
+    monkeypatch.setattr("src.lead_targets.resolve_company_id", lambda: "c1")
+    monkeypatch.setattr("src.lead_targets.ensure_targets", lambda c: _NO_SEED)
     monkeypatch.setattr(
         "src.lead_targets.claim_targets",
         lambda company_id, limit: [
@@ -104,30 +111,59 @@ def test_a_productive_sweep_raises_no_alert(monkeypatch):
     assert "alert" not in body
 
 
-def test_running_out_of_credits_stops_one_tenant_not_the_sweep(monkeypatch):
-    """A tenant that can't pay must not take the other tenants' runs down."""
+def test_running_out_of_credits_stops_the_run_cleanly(monkeypatch):
+    """Stop rather than keep calling the model against a balance that can't
+    pay. The postings stay unqualified and are re-claimed after a top-up."""
     from src.credits import InsufficientCreditsError
 
+    calls = []
+
     monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
-    monkeypatch.setattr("src.lead_targets.companies_with_targets", lambda: ["broke", "paid"])
+    monkeypatch.setattr("src.lead_targets.resolve_company_id", lambda: "c1")
     monkeypatch.setattr(
         "src.lead_store.claim_unqualified",
-        lambda company_id, limit: [{"id": 1, "title": "Dental Receptionist"}],
+        lambda company_id, limit: [{"id": i, "title": "Dental Receptionist"}
+                                   for i in range(40)],
     )
 
     def fake_qualify(chunk, company_id=None, user_id=None):
-        if company_id == "broke":
-            raise InsufficientCreditsError("INSUFFICIENT_CREDITS")
-        return ([{"posting_id": 1, "decision": "keep"}], {"keeps": 1, "missing": 0})
+        calls.append(len(chunk))
+        raise InsufficientCreditsError("INSUFFICIENT_CREDITS")
 
     monkeypatch.setattr("src.lead_qualifier.qualify_batch", fake_qualify)
-    monkeypatch.setattr("src.lead_store.write_verdicts",
-                        lambda company_id, verdicts: len(verdicts))
 
     body = client.post("/api/cron/leads/qualify",
                        headers={"X-Cron-Secret": "s3cret"}).json()
-    assert body["verdicts"] == 1, "the solvent tenant still got qualified"
+    assert body["verdicts"] == 0
     assert any("insufficient credits" in e for e in body["errors"])
+    assert len(calls) == 1, "should stop after the first failure, not retry every batch"
+
+
+def test_a_missing_tenant_is_a_503_not_a_silent_no_op(monkeypatch):
+    """A run that quietly does nothing looks identical to a board outage."""
+    monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
+
+    def boom():
+        raise lead_targets.NoLeadCompany("no companies exist")
+
+    monkeypatch.setattr("src.lead_targets.resolve_company_id", boom)
+    resp = client.post("/api/cron/leads/collect", headers={"X-Cron-Secret": "s3cret"})
+    assert resp.status_code == 503
+    assert "no companies exist" in resp.json()["detail"]
+
+
+def test_collect_seeds_targets_on_a_cold_start(monkeypatch):
+    """The first run must work without a separate admin seed step."""
+    monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
+    monkeypatch.setattr("src.lead_targets.resolve_company_id", lambda: "c1")
+    monkeypatch.setattr("src.lead_targets.ensure_targets",
+                        lambda c: {"config": 434, "existing": 0, "inserted": 434})
+    monkeypatch.setattr("src.lead_targets.claim_targets", lambda c, n: [])
+
+    body = client.post("/api/cron/leads/collect",
+                       headers={"X-Cron-Secret": "s3cret"}).json()
+    assert body["seeded"] == 434
+    assert body["company_id"] == "c1"
 
 
 def test_seed_targets_requires_an_admin():
@@ -138,7 +174,10 @@ def test_vercel_cron_bearer_header_is_accepted(monkeypatch):
     """Vercel's scheduler sends `Authorization: Bearer $CRON_SECRET` and cannot
     be configured to send anything else."""
     monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
-    monkeypatch.setattr("src.lead_targets.companies_with_targets", lambda: [])
+    monkeypatch.setattr("src.lead_targets.resolve_company_id", lambda: "c1")
+    monkeypatch.setattr("src.lead_targets.ensure_targets", lambda c: _NO_SEED)
+    monkeypatch.setattr("src.lead_targets.claim_targets", lambda c, n: [])
+    monkeypatch.setattr("src.lead_store.claim_unqualified", lambda c, n: [])
     resp = client.post("/api/cron/leads/collect",
                        headers={"Authorization": "Bearer s3cret"})
     assert resp.status_code == 200
@@ -154,7 +193,10 @@ def test_a_wrong_bearer_token_is_still_rejected(monkeypatch):
 def test_both_stages_answer_a_get(monkeypatch):
     """Vercel cron issues a GET, not a POST."""
     monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
-    monkeypatch.setattr("src.lead_targets.companies_with_targets", lambda: [])
+    monkeypatch.setattr("src.lead_targets.resolve_company_id", lambda: "c1")
+    monkeypatch.setattr("src.lead_targets.ensure_targets", lambda c: _NO_SEED)
+    monkeypatch.setattr("src.lead_targets.claim_targets", lambda c, n: [])
+    monkeypatch.setattr("src.lead_store.claim_unqualified", lambda c, n: [])
     headers = {"X-Cron-Secret": "s3cret"}
     assert client.get("/api/cron/leads/collect", headers=headers).status_code == 200
     assert client.get("/api/cron/leads/qualify", headers=headers).status_code == 200

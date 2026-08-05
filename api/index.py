@@ -2099,33 +2099,40 @@ def cron_collect_leads(
     run_index = int(_time.time() // 1800)
     sources = lead_targets.sources_for_run(run_index)
 
-    companies = [company_id] if company_id else lead_targets.companies_with_targets()
+    try:
+        tenant = company_id or lead_targets.resolve_company_id()
+    except lead_targets.NoLeadCompany as e:
+        raise HTTPException(503, f"No lead tenant resolved: {e}")
+
+    # Seeds on the very first run so collection works without a separate admin
+    # step. A no-op once the tenant has targets.
+    seeded = lead_targets.ensure_targets(tenant)
+
     summary = {
         "run_index": run_index, "sources": sources,
-        "companies": len(companies), "targets": 0,
+        "company_id": tenant, "seeded": seeded["inserted"], "targets": 0,
         "rows": 0, "written": 0, "zero_row_targets": 0, "errors": [],
     }
 
-    for tenant in companies:
-        for target in lead_targets.claim_targets(tenant, batch):
-            summary["targets"] += 1
-            try:
-                rows, stats = search_jobs(
-                    target["term"], target["location"],
-                    sources=sources, target=target,
-                )
-            except Exception as e:
-                summary["errors"].append(f"{target['term']}@{target['location']}: {e}")
-                continue
-            for source, stat in stats.items():
-                if stat.get("error"):
-                    summary["errors"].append(f"{source}: {stat['error']}")
-            summary["rows"] += len(rows)
-            if rows:
-                summary["written"] += lead_store.upsert_postings(rows)
-            else:
-                summary["zero_row_targets"] += 1
-            lead_targets.record_target_result(target["id"], len(rows))
+    for target in lead_targets.claim_targets(tenant, batch):
+        summary["targets"] += 1
+        try:
+            rows, stats = search_jobs(
+                target["term"], target["location"],
+                sources=sources, target=target,
+            )
+        except Exception as e:
+            summary["errors"].append(f"{target['term']}@{target['location']}: {e}")
+            continue
+        for source, stat in stats.items():
+            if stat.get("error"):
+                summary["errors"].append(f"{source}: {stat['error']}")
+        summary["rows"] += len(rows)
+        if rows:
+            summary["written"] += lead_store.upsert_postings(rows)
+        else:
+            summary["zero_row_targets"] += 1
+        lead_targets.record_target_result(target["id"], len(rows))
 
     # The Indeed failure mode is silence, not an error (ADR-02): the library
     # reaches an undocumented mobile API whose key can rotate upstream, after
@@ -2164,31 +2171,33 @@ def cron_qualify_leads(
     from src import lead_qualifier
 
     batch = limit or app_settings.lead_qualify_batch
-    companies = [company_id] if company_id else lead_targets.companies_with_targets()
+    try:
+        tenant = company_id or lead_targets.resolve_company_id()
+    except lead_targets.NoLeadCompany as e:
+        raise HTTPException(503, f"No lead tenant resolved: {e}")
+
     summary = {
-        "companies": len(companies), "claimed": 0, "verdicts": 0,
+        "company_id": tenant, "claimed": 0, "verdicts": 0,
         "keeps": 0, "missing": 0, "errors": [],
     }
 
-    for tenant in companies:
-        postings = lead_store.claim_unqualified(tenant, batch)
-        summary["claimed"] += len(postings)
-        for chunk in lead_qualifier.batched(postings):
-            try:
-                verdicts, stats = lead_qualifier.qualify_batch(
-                    chunk, company_id=tenant,
-                )
-            except _InsufficientCredits:
-                # Out of credits stops THIS tenant, not the whole sweep. The
-                # postings stay unqualified and are re-claimed after a top-up.
-                summary["errors"].append(f"{tenant}: insufficient credits")
-                break
-            except Exception as e:
-                summary["errors"].append(f"{tenant}: {type(e).__name__}: {str(e)[:160]}")
-                continue
-            summary["verdicts"] += lead_store.write_verdicts(tenant, verdicts)
-            summary["keeps"] += stats.get("keeps", 0)
-            summary["missing"] += stats.get("missing", 0)
+    postings = lead_store.claim_unqualified(tenant, batch)
+    summary["claimed"] = len(postings)
+    for chunk in lead_qualifier.batched(postings):
+        try:
+            verdicts, stats = lead_qualifier.qualify_batch(chunk, company_id=tenant)
+        except _InsufficientCredits:
+            # Stop the run rather than burn the remaining batches against a
+            # balance that can't pay. The postings stay unqualified and are
+            # re-claimed after a top-up.
+            summary["errors"].append("insufficient credits")
+            break
+        except Exception as e:
+            summary["errors"].append(f"{type(e).__name__}: {str(e)[:160]}")
+            continue
+        summary["verdicts"] += lead_store.write_verdicts(tenant, verdicts)
+        summary["keeps"] += stats.get("keeps", 0)
+        summary["missing"] += stats.get("missing", 0)
 
     log.info("[leads.qualify] claimed=%d verdicts=%d keeps=%d missing=%d",
              summary["claimed"], summary["verdicts"], summary["keeps"],
@@ -2238,8 +2247,14 @@ def _lead_filters(
     """Build the filter dict once, so the feed and the export cannot drift.
 
     Exporting the whole table while the operator is looking at "Miami + Tampa,
-    Dental track" is the obvious trap here; sharing this is what prevents it.
+    Dental track" is the obvious trap here; sharing this is what prevents it —
+    including the keeps-only default, which would otherwise put every discard
+    in a CSV the operator never saw on screen.
     """
+    if decision and decision not in lead_store.DECISION_FILTERS:
+        raise HTTPException(
+            400, f"decision must be one of: {', '.join(lead_store.DECISION_FILTERS)}"
+        )
     return {
         "cities": [c for c in (cities.split(",") if cities else []) if c],
         "tracks": [t for t in (tracks.split(",") if tracks else []) if t],
@@ -2364,7 +2379,9 @@ def list_leads_endpoint(
     tracks: str | None = Query(None, description="comma-separated"),
     status: str | None = Query(None),
     band: str | None = Query(None),          # ready | check | decide
-    decision: str | None = Query(None),      # keep | discard
+    decision: str | None = Query(
+        None, description="keep (default) | discard | all",
+    ),
     work_mode: str | None = Query(None),     # onsite | remote | hybrid
     source: str | None = Query(None),        # indeed | linkedin
     state: str | None = Query(None),
