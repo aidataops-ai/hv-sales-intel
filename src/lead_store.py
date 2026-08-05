@@ -218,15 +218,20 @@ def write_verdicts(company_id: str, verdicts: list[dict]) -> int:
     if not client or not company_id or not verdicts:
         return 0
 
+    # Every row carries the full verdict column set, explicit nulls included.
+    # PostgREST rejects a bulk upsert whose rows have differing keys, so one
+    # verdict that happened to omit `draft` would 400 the whole batch — and
+    # the batch is 20 postings the tenant has already been billed for.
+    stamped = _now()
     payload = []
     for verdict in verdicts:
-        row = {k: v for k, v in verdict.items() if k in VERDICT_COLUMNS}
         posting_id = verdict.get("posting_id")
         if not posting_id:
             continue
+        row = {column: verdict.get(column) for column in VERDICT_COLUMNS}
+        row["qualified_at"] = verdict.get("qualified_at") or stamped
         row["company_id"] = company_id
         row["posting_id"] = posting_id
-        row.setdefault("qualified_at", _now())
         payload.append(row)
 
     if not payload:

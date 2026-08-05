@@ -293,3 +293,17 @@ def test_an_unswept_target_set_is_not_an_alert(monkeypatch):
     ])
     monkeypatch.setattr(lead_store, "_client", lambda: client)
     assert lead_store.collector_health("company-1")["alert"] is None
+
+
+def test_a_bulk_verdict_write_has_uniform_keys(fake):
+    """PostgREST rejects a bulk upsert whose rows carry different keys. One
+    verdict that omitted `draft` would 400 the whole batch — 20 postings the
+    tenant has already been billed for."""
+    lead_store.write_verdicts("company-1", [
+        {"posting_id": 1, "decision": "keep", "draft": "hello", "confidence": 0.9},
+        {"posting_id": 2, "decision": "discard"},
+    ])
+    rows = _written(fake, "upsert")[0]
+    assert len(rows) == 2
+    assert set(rows[0]) == set(rows[1])
+    assert rows[1]["draft"] is None
