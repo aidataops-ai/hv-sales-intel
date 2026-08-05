@@ -1,0 +1,45 @@
+{
+  "_comment": "Deterministic drops applied BEFORE any model call. Every row killed here is saved spend. Patterns are matched case-insensitively against '<title> <employer_name>'.",
+
+  "_evidence": "The 2026-08-04 PoC confirmed the vet noise is real for 'dental receptionist' and 'medical assistant': Alliance Animal Health, American Veterinary Group, Animal Hospital of Dunedin, Ethos Veterinary Health. Extend this list as ambiguous terms surface new industries (ADR known issue 1).",
+
+  "negative_patterns": [
+    "veterinar",
+    "animal (hospital|clinic|care|health)",
+    "\\bvet\\b",
+    "budtender",
+    "cannabis",
+    "dispensary",
+    "\\bcinema\\b",
+    "floor staff",
+    "warehouse",
+    "restaurant",
+    "retail (associate|sales)",
+    "security guard",
+    "call center",
+    "sales representative",
+    "insurance agent",
+    "property manag",
+    "automotive",
+    "hotel front desk",
+    "construction",
+    "air conditioning",
+    "staffing agency",
+    "recruit"
+  ],
+
+  "sources": {
+    "_comment": "Indeed is ~15x faster than LinkedIn and carries structured salary on ~44% of rows; LinkedIn overlaps by only ~5% at the employer level, so it roughly doubles reachable supply. They rotate separately — see design doc §6. Disabling one degrades the pipeline rather than halting it (ADR-02).",
+    "indeed":   { "enabled": true,  "weight": 3 },
+    "linkedin": { "enabled": true,  "weight": 1 }
+  },
+
+  "options": {
+    "_comment": "include_confidential resolves design doc §11.3. ~12% of Indeed postings carry no employer name. They can still be qualified on role and location, and the posting URL is workable, so v1 SURFACES them — flagged in the UI rather than suppressed. Flip to false to suppress at collection time.",
+    "include_confidential": true,
+
+    "_description_note": "The prototype truncated descriptions to 600 chars, which discarded EHR/PMS mentions (only 1% of postings named a system — almost certainly a truncation artifact). Raised to 2000 here for storage; the qualifier still sees a short excerpt.",
+    "description_max_chars": 2000,
+    "qualifier_excerpt_chars": 280
+  }
+}

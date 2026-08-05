@@ -1,0 +1,53 @@
+name: Lead Pipeline
+
+# Runs the collect -> qualify sweep that used to live in Vercel Cron. A GitHub
+# runner has no serverless wall-clock ceiling, so the full sweep runs in one
+# shot via scripts/run_leads.py instead of two bounded hourly HTTP stages.
+on:
+  schedule:
+    - cron: '0 * * * *'   # hourly, on the hour (UTC)
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: 'Pipeline stage to run'
+        type: choice
+        default: both
+        options: [both, collect, qualify]
+      targets:
+        description: 'Search targets to claim (collect)'
+        default: '40'
+
+concurrency:
+  group: leads-pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run lead pipeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LEAD_COMPANY_ID: ${{ secrets.LEAD_COMPANY_ID }}
+        run: |
+          python scripts/run_leads.py \
+            --stage "${{ github.event.inputs.stage || 'both' }}" \
+            --targets "${{ github.event.inputs.targets || '40' }}" \
+            --verbose

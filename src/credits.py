@@ -72,6 +72,10 @@ CALL_SCRIPT_RANGE_CREDITS: tuple[float, float] = (0.1, 0.4)
 EMAIL_DRAFT_RANGE_CREDITS: tuple[float, float] = (0.05, 0.20)
 BULK_SCAN_RANGE_CREDITS: tuple[float, float] = (0.97, 2.91)   # 1-3 pages
 PLACES_DETAILS_CREDITS: float = 0.52                          # 1 call
+# Lead qualification, per BATCH of 20 postings (~172 in / ~175 out tokens each).
+# The stage is cron-driven, so this range is for the admin usage page rather
+# than an upfront prompt — nobody clicks a button to trigger it.
+QUALIFY_RANGE_CREDITS: tuple[float, float] = (0.2, 0.9)
 
 CreditAction = Literal[
     "analyze",
@@ -79,6 +83,7 @@ CreditAction = Literal[
     "email_draft",
     "bulk_scan_query",
     "enrichment",
+    "qualify",
     "topup",
     "adjustment",
     "refund",
@@ -140,6 +145,9 @@ def quote(action: CreditAction, **kwargs) -> CreditQuote:
     if action == "bulk_scan_query":
         low, high = BULK_SCAN_RANGE_CREDITS
         return CreditQuote(action, low, high, False)
+    if action == "qualify":
+        low, high = QUALIFY_RANGE_CREDITS
+        return CreditQuote(action, low, high, False)
     if action == "enrichment":
         n = cost_cents_to_credits(ENRICHMENT_COST_CENTS)
         return CreditQuote(action, n, n, True)
@@ -192,6 +200,12 @@ def _kind_to_credits(
         return ("call_script", credits_for_openai_response(model, in_tok, out_tok, cached_tok))
     if kind == "openai_email":
         return ("email_draft", credits_for_openai_response(model, in_tok, out_tok, cached_tok))
+    if kind == "openai_qualify":
+        # Qualification is the only per-lead cost in v1 (design doc §9). It is
+        # billed like every other model call so the admin usage page and the
+        # credit ceiling cover it unchanged — an unmetered background stage
+        # would put real spend outside the pricing model entirely (ADR-10).
+        return ("qualify", credits_for_openai_response(model, in_tok, out_tok, cached_tok))
     if kind == "places_search":
         return ("bulk_scan_query", cost_cents_to_credits(
             estimate_places_cost("places_search", max(1, calls))

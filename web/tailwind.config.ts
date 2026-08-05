@@ -58,8 +58,9 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // Light background = palette white.
-        cream: "#ffffff",
+        // Light background = a soft warm off-white so white panels/cards
+        // read as raised surfaces against it instead of blending in.
+        cream: "#f4f2ec",
         ivory: { 50: "#ffffff", 100: "#fafafa", 200: "#f0f0f0", 300: "#e4e4e4" },
         // Neutrals.
         gray: neutral,

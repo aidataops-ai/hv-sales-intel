@@ -1,0 +1,34 @@
+{
+  "_comment": "Search terms for the job-posting lead collector. These are what practices ACTUALLY POST, not what we sell — searching a service name ('Virtual Dental Assistant') returns near-zero results, or competitor VA agencies. See ADR-03.",
+
+  "_tracks_note": "Only three service lines are in scope for v1. The other H&V lines are parked in `_parked_terms` rather than deleted, so re-enabling a track is a copy-paste rather than a rebuild.",
+
+  "terms": [
+    { "term": "medical assistant",                  "service_line": "Virtual Medical Assistant" },
+    { "term": "medical office assistant",           "service_line": "Virtual Medical Assistant" },
+    { "term": "medical receptionist",               "service_line": "Virtual Medical Assistant" },
+    { "term": "front office assistant",             "service_line": "Virtual Medical Assistant" },
+    { "term": "prior authorization specialist",     "service_line": "Virtual Medical Assistant" },
+    { "term": "insurance verification specialist",  "service_line": "Virtual Medical Assistant" },
+    { "term": "medical billing specialist",         "service_line": "Virtual Medical Assistant" },
+
+    { "term": "dental receptionist",                "service_line": "Virtual Dental Assistant" },
+    { "term": "dental front office",                "service_line": "Virtual Dental Assistant" },
+    { "term": "dental office coordinator",          "service_line": "Virtual Dental Assistant" },
+    { "term": "treatment coordinator",              "service_line": "Virtual Dental Assistant" },
+
+    { "term": "home health coordinator",            "service_line": "Virtual Home Health Operations Coordinator" },
+    { "term": "home health scheduler",              "service_line": "Virtual Home Health Operations Coordinator" },
+    { "term": "home health staffing coordinator",   "service_line": "Virtual Home Health Operations Coordinator" }
+  ],
+
+  "_term_note": "Narrow ambiguous terms rather than deleting them. 'staffing coordinator' returns recruiting agencies — an explicit DISCARD category and pure token waste; 'home health staffing coordinator' does not.",
+
+  "_parked_terms": [
+    { "term": "medical scheduler",       "service_line": "Virtual Medical Scheduler" },
+    { "term": "patient scheduler",       "service_line": "Virtual Medical Scheduler" },
+    { "term": "scheduling coordinator",  "service_line": "Virtual Medical Scheduler" },
+    { "term": "patient intake",          "service_line": "Virtual Intake Specialist" },
+    { "term": "referral coordinator",    "service_line": "Virtual Intake Specialist" }
+  ]
+}

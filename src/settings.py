@@ -11,6 +11,39 @@ class Settings(BaseSettings):
     # more accurate than gpt-4o on multi-criteria classification.
     openai_model: str = "gpt-4.1"
 
+    # ----- Job-posting leads (docs/specs/2026-08-05-hiring-signal-collector-*) --
+    # Benchmarked against higher reasoning effort on identical inputs: both
+    # scored identically on every accuracy test, while high effort cost ~57%
+    # more output tokens and ~81% more wall clock (ADR-06).
+    qualifier_model: str = "gpt-5.6-terra"
+    qualifier_reasoning_effort: str = "medium"
+    qualifier_batch_size: int = 20
+    # Stage batch sizes. Both stages run as serverless invocations behind
+    # /api/index.py, so a full sweep can't fit one call — each drains a
+    # bounded slice and is safe to re-run (ADR-09).
+    lead_collect_batch: int = 40
+    lead_qualify_batch: int = 60
+    # Shared secret for the cron stages, matching the existing webhook
+    # pattern. Empty disables the cron routes outright rather than leaving
+    # them open.
+    lead_cron_secret: str = ""
+    # The tenant collection runs for. v1 is single-tenant: set this to the
+    # company that already owns the practices so places and signals sit
+    # together. Left empty, the resolver falls back to the sole company and
+    # only errors if there is genuinely more than one to choose between —
+    # so a fresh deploy works without it, and a second tenant fails loudly
+    # instead of silently collecting for whichever row sorted first.
+    lead_company_id: str = ""
+    # Manual "retrigger" of the sweep dispatches the GitHub Actions workflow
+    # (.github/workflows/leads.yml) rather than running collect/qualify in the
+    # API process — a full sweep can outlast a serverless invocation, which is
+    # why the scheduled run already lives on a GitHub runner. Needs a token with
+    # `actions: write` on the repo. Empty disables the retrigger endpoint (503).
+    github_token: str = ""
+    github_repo: str = "aidataops-ai/hv-sales-intel"
+    github_leads_workflow: str = "leads.yml"
+    github_workflow_ref: str = "main"
+
     # Bootstrap admin (seeded on startup if profiles has zero admins)
     bootstrap_admin_email: str = ""
     bootstrap_admin_password: str = ""

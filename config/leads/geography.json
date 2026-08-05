@@ -1,0 +1,53 @@
+{
+  "_comment": "Florida only for v1. Both granularities are searched deliberately: a statewide query does NOT saturate, because statewide relevance ranking favours large employers with many postings. Measured 2026-08-04: a Tampa-level query surfaced 10 employers absent from the statewide results, Miami surfaced 6. Statewide catches breadth, cities catch the single-location independents.",
+
+  "_cities_note": "Top 30 Florida cities by population. Population rank is not the same as independent-practice density — Naples, Sarasota, Ocala and Pensacola fall outside the top 30 but are high-density independent-specialty markets, while Deltona, Palm Coast and Miami Gardens are largely residential. Revisit once yield-per-city data exists (design doc §11.4).",
+
+  "states": [
+    {
+      "code": "FL",
+      "name": "Florida",
+      "enabled": true,
+      "statewide_query": "Florida, USA",
+      "cities": [
+        "Jacksonville, FL",
+        "Miami, FL",
+        "Tampa, FL",
+        "Orlando, FL",
+        "St. Petersburg, FL",
+        "Port St. Lucie, FL",
+        "Cape Coral, FL",
+        "Hialeah, FL",
+        "Tallahassee, FL",
+        "Fort Lauderdale, FL",
+        "Pembroke Pines, FL",
+        "Gainesville, FL",
+        "Miramar, FL",
+        "Coral Springs, FL",
+        "Palm Bay, FL",
+        "West Palm Beach, FL",
+        "Lakeland, FL",
+        "Clearwater, FL",
+        "Pompano Beach, FL",
+        "Miami Gardens, FL",
+        "Davie, FL",
+        "Boca Raton, FL",
+        "Sunrise, FL",
+        "Deltona, FL",
+        "Plantation, FL",
+        "Palm Coast, FL",
+        "Fort Myers, FL",
+        "Largo, FL",
+        "Melbourne, FL",
+        "Boynton Beach, FL"
+      ]
+    }
+  ],
+
+  "search": {
+    "_comment": "hours_old 168 = 7 days. This is the RECENCY WINDOW OF THE SEARCH, not a lead lifetime — v1 keeps leads indefinitely and shows the posting date so an operator can judge staleness (design doc §11.1).",
+    "hours_old": 168,
+    "results_wanted": 40,
+    "distance_miles": 50
+  }
+}

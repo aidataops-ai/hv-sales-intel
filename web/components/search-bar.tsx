@@ -30,14 +30,14 @@ export default function SearchBar({ onSearch, isLoading, currentQuery = "" }: Se
           value={value}
           onChange={(e) => setValue(e.target.value)}
           placeholder="dental clinics in Houston..."
-          className="pl-9 pr-4 py-2 w-72 rounded-lg bg-white/80 border border-gray-200 dark:bg-white/5 dark:border-white/10 dark:text-white dark:placeholder:text-gray-500 text-sm
+          className="pl-9 pr-4 py-2 w-56 rounded-lg bg-white/80 border border-gray-200 dark:bg-white/5 dark:border-white/10 dark:text-white dark:placeholder:text-gray-500 text-sm
                      placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-teal-500/40"
         />
       </div>
       <button
         type="submit"
         disabled={isLoading || !value.trim()}
-        className="px-4 py-2 rounded-lg bg-teal-600 text-white text-sm font-medium
+        className="px-3 py-2 rounded-lg bg-teal-600 text-white text-sm font-medium whitespace-nowrap
                    hover:bg-teal-700 disabled:opacity-50 transition"
       >
         {isLoading ? "Scanning..." : "Scan City"}

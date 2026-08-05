@@ -2028,3 +2028,475 @@ def clay_webhook(
     if has_any_contact:
         add_tags(body.place_id, ["ENRICHED"])
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Job-posting leads — background stages.
+#
+# Two idempotent, bounded, cron-triggered stages: collect -> qualify (ADR-09).
+# The API deploys as serverless functions behind
+# `rewrites: /api/(.*) -> /api/index.py`, and a full sweep is minutes of wall
+# clock, so neither stage tries to finish the job. Each drains a bounded slice
+# and may not assume the previous one completed — which also makes retries free.
+#
+# See docs/specs/2026-08-05-hiring-signal-collector-{adr,design}.md.
+# ---------------------------------------------------------------------------
+
+import time as _time
+
+from src import lead_config, lead_store, lead_targets
+from src.credits import InsufficientCreditsError as _InsufficientCredits
+
+
+def _require_cron_secret(
+    secret: str | None,
+    authorization: str | None = None,
+) -> None:
+    """Authenticate a cron stage against the shared secret.
+
+    Two headers are accepted for one reason: `X-Cron-Secret` matches the
+    existing Clay webhook pattern and is what a manual `curl` or an external
+    scheduler would send, while Vercel's own cron sends
+    `Authorization: Bearer $CRON_SECRET` and cannot be configured to send
+    anything else.
+
+    An unset secret disables the routes rather than leaving them open — a
+    background stage that spends model credits is not something to leave
+    unauthenticated by omission.
+    """
+    expected = app_settings.lead_cron_secret
+    if not expected:
+        raise HTTPException(503, "Lead cron is not configured")
+    bearer = None
+    if authorization and authorization.lower().startswith("bearer "):
+        bearer = authorization[len("bearer "):].strip()
+    if secret != expected and bearer != expected:
+        raise HTTPException(401, "Invalid secret")
+
+
+# GET is registered alongside POST on both stages because Vercel's scheduler
+# only ever issues a GET. The stages are idempotent and claim a bounded slice,
+# so neither is a meaningful mutation of anything a GET shouldn't touch.
+@app.post("/api/cron/leads/collect")
+@app.get("/api/cron/leads/collect")
+def cron_collect_leads(
+    company_id: str | None = Query(None, description="Scope to one tenant"),
+    limit: int | None = Query(None, ge=1, le=200),
+    x_cron_secret: str | None = Header(default=None, alias="X-Cron-Secret"),
+    authorization: str | None = Header(default=None),
+):
+    """Claim the least-recently-run targets, search the boards, upsert postings.
+
+    Boards rotate on wall clock rather than a stored cursor: consecutive
+    firings advance without any state to lose, and a crashed run costs at most
+    one slice of freshness.
+    """
+    _require_cron_secret(x_cron_secret, authorization)
+    from src.job_boards import search_jobs
+
+    batch = limit or app_settings.lead_collect_batch
+    # 30-minute buckets, so the LinkedIn cycle advances at a human-legible rate.
+    run_index = int(_time.time() // 1800)
+    sources = lead_targets.sources_for_run(run_index)
+
+    try:
+        tenant = company_id or lead_targets.resolve_company_id()
+    except lead_targets.NoLeadCompany as e:
+        raise HTTPException(503, f"No lead tenant resolved: {e}")
+
+    # Seeds on the very first run so collection works without a separate admin
+    # step. A no-op once the tenant has targets.
+    seeded = lead_targets.ensure_targets(tenant)
+
+    summary = {
+        "run_index": run_index, "sources": sources,
+        "company_id": tenant, "seeded": seeded["inserted"], "targets": 0,
+        "rows": 0, "written": 0, "zero_row_targets": 0, "errors": [],
+    }
+
+    for target in lead_targets.claim_targets(tenant, batch):
+        summary["targets"] += 1
+        try:
+            rows, stats = search_jobs(
+                target["term"], target["location"],
+                sources=sources, target=target,
+            )
+        except Exception as e:
+            summary["errors"].append(f"{target['term']}@{target['location']}: {e}")
+            continue
+        for source, stat in stats.items():
+            if stat.get("error"):
+                summary["errors"].append(f"{source}: {stat['error']}")
+        summary["rows"] += len(rows)
+        if rows:
+            summary["written"] += lead_store.upsert_postings(rows)
+        else:
+            summary["zero_row_targets"] += 1
+        lead_targets.record_target_result(target["id"], len(rows))
+
+    # The Indeed failure mode is silence, not an error (ADR-02): the library
+    # reaches an undocumented mobile API whose key can rotate upstream, after
+    # which every query returns zero rows and nothing raises. Log it loudly —
+    # this line is what an alert should watch.
+    if summary["targets"] and summary["zero_row_targets"] == summary["targets"]:
+        summary["alert"] = (
+            "Every target returned zero rows. Check the python-jobspy pin — "
+            "this is the Indeed API-key rotation failure mode."
+        )
+        log.error("[leads.collect.zero_rows] targets=%d sources=%s",
+                  summary["targets"], sources)
+    else:
+        log.info("[leads.collect] targets=%d rows=%d written=%d zero=%d",
+                 summary["targets"], summary["rows"], summary["written"],
+                 summary["zero_row_targets"])
+    return summary
+
+
+@app.post("/api/cron/leads/qualify")
+@app.get("/api/cron/leads/qualify")
+def cron_qualify_leads(
+    company_id: str | None = Query(None, description="Scope to one tenant"),
+    limit: int | None = Query(None, ge=1, le=500),
+    x_cron_secret: str | None = Header(default=None, alias="X-Cron-Secret"),
+    authorization: str | None = Header(default=None),
+):
+    """Claim unqualified postings per tenant, batch them to the model, write
+    the verdict half of each lead row.
+
+    `unique (company_id, posting_id)` enforces at the database that a posting
+    is never re-qualified — and so never re-billed — for the same tenant, so
+    re-running this stage after a partial failure is free.
+    """
+    _require_cron_secret(x_cron_secret, authorization)
+    from src import lead_qualifier
+
+    batch = limit or app_settings.lead_qualify_batch
+    try:
+        tenant = company_id or lead_targets.resolve_company_id()
+    except lead_targets.NoLeadCompany as e:
+        raise HTTPException(503, f"No lead tenant resolved: {e}")
+
+    summary = {
+        "company_id": tenant, "claimed": 0, "verdicts": 0,
+        "keeps": 0, "missing": 0, "errors": [],
+    }
+
+    postings = lead_store.claim_unqualified(tenant, batch)
+    summary["claimed"] = len(postings)
+    for chunk in lead_qualifier.batched(postings):
+        try:
+            verdicts, stats = lead_qualifier.qualify_batch(chunk, company_id=tenant)
+        except _InsufficientCredits:
+            # Stop the run rather than burn the remaining batches against a
+            # balance that can't pay. The postings stay unqualified and are
+            # re-claimed after a top-up.
+            summary["errors"].append("insufficient credits")
+            break
+        except Exception as e:
+            summary["errors"].append(f"{type(e).__name__}: {str(e)[:160]}")
+            continue
+        summary["verdicts"] += lead_store.write_verdicts(tenant, verdicts)
+        summary["keeps"] += stats.get("keeps", 0)
+        summary["missing"] += stats.get("missing", 0)
+
+    log.info("[leads.qualify] claimed=%d verdicts=%d keeps=%d missing=%d",
+             summary["claimed"], summary["verdicts"], summary["keeps"],
+             summary["missing"])
+    return summary
+
+
+@app.post("/api/admin/leads/seed-targets")
+def seed_lead_targets(admin: dict = Depends(require_admin)):
+    """Re-seed this tenant's search targets after a config change.
+
+    Existing rows are left alone: `enabled` and `last_run_at` belong to the
+    tenant, so adding a term must not reset the rotation or re-enable a city
+    an operator switched off.
+    """
+    try:
+        config_summary = lead_config.validate()
+    except lead_config.LeadConfigError as e:
+        raise HTTPException(400, f"Lead config is invalid: {e}")
+    seeded = lead_targets.seed_search_targets(admin["company_id"])
+    return {"config": config_summary, "seeded": seeded}
+
+
+@app.post("/api/admin/leads/retrigger")
+async def retrigger_lead_pipeline(admin: dict = Depends(require_admin)):
+    """Kick off the full collect + qualify sweep on demand.
+
+    Dispatches the GitHub Actions workflow rather than running the sweep in this
+    process: a full sweep can outlast a serverless invocation, which is why the
+    scheduled run already lives on a GitHub runner (`.github/workflows/leads.yml`).
+    This fires that same workflow, so a manual run and the hourly cron take the
+    identical path. It always runs the whole sweep (`stage=both`); the workflow's
+    own defaults set the batch size.
+    """
+    token = app_settings.github_token
+    if not token:
+        raise HTTPException(
+            503,
+            "Manual retrigger is not configured — set GITHUB_TOKEN to a token "
+            "with actions:write on the repo.",
+        )
+
+    url = (
+        f"https://api.github.com/repos/{app_settings.github_repo}"
+        f"/actions/workflows/{app_settings.github_leads_workflow}/dispatches"
+    )
+    payload = {
+        "ref": app_settings.github_workflow_ref,
+        "inputs": {"stage": "both"},
+    }
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+    except Exception as e:
+        log.warning("[leads.retrigger.error] %s: %s", type(e).__name__, str(e)[:200])
+        raise HTTPException(502, "Could not reach GitHub to dispatch the workflow")
+
+    # A successful dispatch is 204 No Content; anything else is a rejection
+    # (bad ref, workflow not found on that ref, token missing the scope).
+    if resp.status_code != 204:
+        detail = (resp.text or "").strip()[:200]
+        log.warning("[leads.retrigger.rejected] status=%s body=%s",
+                    resp.status_code, detail)
+        raise HTTPException(
+            502, f"GitHub rejected the dispatch ({resp.status_code}): {detail}"
+        )
+
+    log.info("[leads.retrigger] stage=both ref=%s by=%s",
+             app_settings.github_workflow_ref, admin.get("id"))
+    return {
+        "ok": True,
+        "ref": app_settings.github_workflow_ref,
+        "workflow": app_settings.github_leads_workflow,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Job-posting leads — operator routes.
+#
+# Route order matters: `/api/leads/export.csv` and the other literal paths must
+# be declared BEFORE `/api/leads/{lead_id}`, or FastAPI matches the parameter
+# route first and rejects "export.csv" as a non-integer id.
+# ---------------------------------------------------------------------------
+
+# CSV column order — kept in sync with the export endpoint below.
+_LEAD_EXPORT_COLUMNS = [
+    "employer_name", "title", "city", "state", "source", "url", "posted_at",
+    "salary_min", "salary_max", "salary_interval", "work_mode", "service_line",
+    "employer_type", "provider_count", "confidence", "confidence_band",
+    "reason", "draft", "disposition", "created_at",
+]
+
+
+def _lead_filters(
+    cities: str | None, tracks: str | None, disposition: str | None,
+    band: str | None, decision: str | None, work_mode: str | None,
+    source: str | None, state: str | None, salary: str | None,
+    search: str | None,
+) -> dict:
+    """Build the filter dict once, so the feed and the export cannot drift.
+
+    Exporting the whole table while the operator is looking at "Miami + Tampa,
+    Dental track" is the obvious trap here; sharing this is what prevents it —
+    including the keeps-only default, which would otherwise put every discard
+    in a CSV the operator never saw on screen.
+    """
+    if decision and decision not in lead_store.DECISION_FILTERS:
+        raise HTTPException(
+            400, f"decision must be one of: {', '.join(lead_store.DECISION_FILTERS)}"
+        )
+    return {
+        "cities": [c for c in (cities.split(",") if cities else []) if c],
+        "tracks": [t for t in (tracks.split(",") if tracks else []) if t],
+        "disposition": disposition, "band": band, "decision": decision,
+        "work_mode": work_mode, "source": source, "state": state,
+        "salary": salary, "search": search,
+    }
+
+
+@app.get("/api/leads/filters")
+def lead_filter_options(user: dict = Depends(get_current_user)):
+    """Distinct cities and tracks present in this tenant's leads.
+
+    Derived from the data rather than a fixed list — a tenant whose targets
+    cover three cities should not scroll past thirty empty ones.
+    """
+    return lead_store.filter_options(user["company_id"])
+
+
+@app.get("/api/leads/analytics")
+def lead_analytics(
+    days: int = Query(30, ge=1, le=365),
+    user: dict = Depends(get_current_user),
+):
+    return lead_store.lead_analytics(user["company_id"], days=days)
+
+
+@app.get("/api/leads/export.csv")
+def export_leads_csv(
+    max_exports: str | None = Query(
+        None,
+        description=(
+            "Filter on existing export_count. Missing/empty exports every row. "
+            "0 = only never-exported rows. N = export_count <= N."
+        ),
+    ),
+    cities: str | None = Query(None),
+    tracks: str | None = Query(None),
+    disposition: str | None = Query(None),
+    band: str | None = Query(None),
+    decision: str | None = Query(None),
+    work_mode: str | None = Query(None),
+    source: str | None = Query(None),
+    state: str | None = Query(None),
+    salary: str | None = Query(None),
+    search: str | None = Query(None),
+    user: dict = Depends(get_current_user),
+):
+    """Stream a filtered CSV and stamp export_count on every row included.
+
+    Takes the same filter params as `GET /api/leads` so a filtered view
+    exports exactly what it is showing. `max_exports` has the same semantics
+    as the practices export: leave it empty to take everything, pass `0` next
+    time to skip rows already downloaded.
+    """
+    import csv
+    import io
+
+    cap: int | None = None
+    if max_exports is not None and max_exports != "":
+        try:
+            cap = max(0, int(max_exports))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="max_exports must be an integer")
+
+    rows = lead_store.leads_for_export(
+        user["company_id"],
+        filters=_lead_filters(cities, tracks, disposition, band, decision,
+                              work_mode, source, state, salary, search),
+        max_exports=cap,
+    )
+
+    def _serialize(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, list):
+            return ", ".join(str(v) for v in value)
+        if isinstance(value, dict):
+            return json.dumps(value)
+        return str(value)
+
+    def iter_csv():
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(_LEAD_EXPORT_COLUMNS)
+        yield buf.getvalue()
+        buf.seek(0); buf.truncate(0)
+        for row in rows:
+            writer.writerow([_serialize(row.get(col)) for col in _LEAD_EXPORT_COLUMNS])
+            yield buf.getvalue()
+            buf.seek(0); buf.truncate(0)
+
+    lead_store.increment_export_counts(
+        [r["id"] for r in rows if r.get("id")], user_id=user.get("id"),
+    )
+
+    cap_label = "all" if cap is None else f"max{cap}"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+    filename = f"instant-signals-{cap_label}-{stamp}.csv"
+    return StreamingResponse(
+        iter_csv(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/leads")
+def list_leads_endpoint(
+    cities: str | None = Query(None, description="comma-separated"),
+    tracks: str | None = Query(None, description="comma-separated"),
+    disposition: str | None = Query(
+        None, description="undecided | approved | rejected",
+    ),
+    band: str | None = Query(None),          # ready | check | decide
+    decision: str | None = Query(
+        None, description="keep (default) | discard | all",
+    ),
+    work_mode: str | None = Query(None),     # onsite | remote | hybrid
+    source: str | None = Query(None),        # indeed | linkedin
+    state: str | None = Query(None),
+    salary: str | None = Query(None),        # "yes" | "no"
+    search: str | None = Query(None),        # employer + title
+    sort: str = Query("band"),
+    dir: str = Query("asc"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    user: dict = Depends(get_current_user),
+):
+    rows, total = lead_store.list_leads(
+        user["company_id"],
+        filters=_lead_filters(cities, tracks, disposition, band, decision,
+                              work_mode, source, state, salary, search),
+        sort=sort, direction=dir, offset=offset, limit=limit,
+    )
+    return {
+        "leads": rows,
+        "count": len(rows),
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": offset + len(rows) < total,
+    }
+
+
+@app.get("/api/leads/{lead_id}")
+def get_lead_endpoint(lead_id: int, user: dict = Depends(get_current_user)):
+    lead = lead_store.get_lead(user["company_id"], lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    return lead
+
+
+class PatchLeadRequest(BaseModel):
+    disposition: str | None = None
+    reject_reason: str | None = None
+    notes: str | None = None
+
+
+@app.patch("/api/leads/{lead_id}")
+def patch_lead_endpoint(
+    lead_id: int,
+    body: PatchLeadRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Update the workflow half of a lead.
+
+    Only the three fields above are accepted, and `lead_store` strips anything
+    outside `WORKFLOW_COLUMNS` again before writing — an operator action must
+    never rewrite the reason the lead was surfaced.
+    """
+    if body.disposition and body.disposition not in lead_store.LEAD_DISPOSITIONS:
+        raise HTTPException(
+            400,
+            f"disposition must be one of: {', '.join(lead_store.LEAD_DISPOSITIONS)}",
+        )
+    if not lead_store.get_lead(user["company_id"], lead_id):
+        raise HTTPException(404, "Lead not found")
+
+    fields = body.model_dump(exclude_unset=True)
+    updated = lead_store.update_lead_workflow(
+        user["company_id"], lead_id, fields, user_id=user.get("id"),
+    )
+    if not updated:
+        raise HTTPException(500, "Lead update failed")
+    return updated

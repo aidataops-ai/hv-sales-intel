@@ -1,7 +1,8 @@
 "use client"
 
 import { useState } from "react"
-import { Brain, RefreshCw, Layers } from "lucide-react"
+import Link from "next/link"
+import { Brain, RefreshCw, Layers, Zap } from "lucide-react"
 import SearchBar from "./search-bar"
 import UserMenu from "./user-menu"
 import ExportButton from "./export-button"
@@ -37,39 +38,50 @@ export default function TopBar({
   const [bulkOpen, setBulkOpen] = useState(false)
 
   return (
-    <header className="fixed top-0 left-0 right-0 z-20 h-14 flex items-center justify-between px-6 bg-white/70 dark:bg-night-800 backdrop-blur-md border-b border-gray-200/50 dark:border-white/10">
+    <header className="fixed top-0 left-0 right-0 z-20 h-14 flex items-center justify-between px-4 bg-white/70 dark:bg-night-800 backdrop-blur-md border-b border-gray-200/50 dark:border-white/10">
       <div className="flex items-center gap-2">
         <span className="font-serif text-lg font-bold text-teal-700 dark:text-teal-400 tracking-tight">
           Apex&amp;Virtuals
         </span>
         <span className="text-xs text-gray-400 dark:text-gray-500 font-medium">Sales Intel</span>
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2">
         <SearchBar onSearch={onSearch} isLoading={isLoading} currentQuery={currentQuery} />
         <button
           onClick={onRescan}
           disabled={!canRescan || isRescanning}
-          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-gray-300 dark:border-white/10 text-gray-700 dark:text-[#d9d9d9] text-sm font-medium hover:bg-gray-50 dark:hover:bg-white/10 disabled:opacity-50 transition"
+          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 dark:border-white/10 text-gray-700 dark:text-[#d9d9d9] text-sm font-medium whitespace-nowrap hover:bg-gray-50 dark:hover:bg-white/10 disabled:opacity-50 transition"
         >
-          <RefreshCw className={`w-4 h-4 ${isRescanning ? "animate-spin" : ""}`} />
+          <RefreshCw className={`w-4 h-4 shrink-0 ${isRescanning ? "animate-spin" : ""}`} />
           {isRescanning ? "Rescanning..." : "Rescan"}
         </button>
         <button
           onClick={() => setBulkOpen(true)}
-          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-gray-300 dark:border-white/10 text-gray-700 dark:text-[#d9d9d9] text-sm font-medium hover:bg-gray-50 dark:hover:bg-white/10 transition"
+          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-gray-300 dark:border-white/10 text-gray-700 dark:text-[#d9d9d9] text-sm font-medium whitespace-nowrap hover:bg-gray-50 dark:hover:bg-white/10 transition"
           title="Run a batch of targeted lead searches across many cities in sequence"
         >
-          <Layers className="w-4 h-4" />
+          <Layers className="w-4 h-4 shrink-0" />
           Bulk Scan
         </button>
         <button
           onClick={onScoreAll}
           disabled={!!scoreProgress}
-          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-teal-600 text-teal-700 dark:text-teal-400 text-sm font-medium hover:bg-teal-50 dark:hover:bg-[#284b63]/40 disabled:opacity-50 transition"
+          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-teal-600 text-teal-700 dark:text-teal-400 text-sm font-medium whitespace-nowrap hover:bg-teal-50 dark:hover:bg-[#284b63]/40 disabled:opacity-50 transition"
         >
-          <Brain className="w-4 h-4" />
+          <Brain className="w-4 h-4 shrink-0" />
           {scoreProgress ?? "Score loaded"}
         </button>
+        {/* The two lead queues ship side by side rather than merged — which
+            one an operator reaches for is a question to answer from behaviour,
+            not up front. */}
+        <Link
+          href="/signals"
+          className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border border-teal-600 text-teal-700 dark:text-teal-400 text-sm font-medium whitespace-nowrap hover:bg-teal-50 dark:hover:bg-[#284b63]/40 transition"
+          title="Practices actively hiring for the roles we place"
+        >
+          <Zap className="w-4 h-4 shrink-0" />
+          Instant Signals
+        </Link>
         <ExportButton />
         <CreditBalance />
         <ThemeToggle />
