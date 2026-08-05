@@ -36,6 +36,14 @@ from src.settings import settings  # noqa: E402
 
 
 def _setup_logging(verbose: bool) -> None:
+    # Python block-buffers stdout when it isn't a terminal, so a run piped to a
+    # file or a log collector shows nothing until it exits — which for a
+    # 20-minute sweep is indistinguishable from a hang.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except AttributeError:
+        pass
+
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(logging.Formatter("  %(name)s %(message)s"))
     logger = logging.getLogger("hvsi")

@@ -307,3 +307,42 @@ def test_a_bulk_verdict_write_has_uniform_keys(fake):
     assert len(rows) == 2
     assert set(rows[0]) == set(rows[1])
     assert rows[1]["draft"] is None
+
+
+def test_a_claimed_but_unfinished_target_is_not_a_zero_row_target(monkeypatch):
+    """`last_run_at` is stamped at CLAIM time so a crashed run doesn't replay
+    its slice — which means an interrupted run leaves targets stamped but
+    never searched. Counting those as zero-row would fire the Indeed alert
+    every time a sweep was killed mid-flight."""
+    client = FakeClient(rows=[
+        # completed, found rows
+        {"last_run_at": "2026-08-05T10:00:00Z", "last_row_count": 12, "enabled": True},
+        # claimed, never finished — the run was killed
+        {"last_run_at": "2026-08-05T10:01:00Z", "last_row_count": None, "enabled": True},
+    ])
+    monkeypatch.setattr(lead_store, "_client", lambda: client)
+    health = lead_store.collector_health("company-1")
+    assert health["swept"] == 1
+    assert health["unfinished"] == 1
+    assert health["zero_row_targets"] == 0
+    assert health["alert"] is None
+
+
+def test_band_distribution_counts_keeps_only(monkeypatch):
+    """The band measures confidence in the VERDICT, not lead quality — a
+    confidently-rejected hospital system also scores 'ready'. Since discards
+    outnumber keeps ~9:1, counting everything makes the chart read as a pile
+    of strong leads when it is mostly confident rejections."""
+    rows = (
+        [{"decision": "discard", "confidence_band": "ready", "status": "new",
+          "created_at": "2026-08-05T00:00:00Z", "posting": {"source": "indeed"}}] * 9
+        + [{"decision": "keep", "confidence_band": "check", "status": "new",
+            "created_at": "2026-08-05T00:00:00Z", "posting": {"source": "indeed"}}]
+    )
+    client = FakeClient(rows=rows)
+    monkeypatch.setattr(lead_store, "_client", lambda: client)
+    result = lead_store.lead_analytics("company-1")
+
+    assert result["bands"] == {"check": 1}, "discards must not inflate the bands"
+    assert result["total"] == 10, "the total still counts everything qualified"
+    assert result["keep_rate"] == 0.1

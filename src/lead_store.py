@@ -627,9 +627,15 @@ def lead_analytics(company_id: str, days: int = 30) -> dict:
             bucket["total"] += 1
             source = posting.get("source") or "unknown"
             bucket[source] = bucket.get(source, 0) + 1
-        if row.get("decision") == "keep":
+        is_keep = row.get("decision") == "keep"
+        if is_keep:
             keeps += 1
-        if band := row.get("confidence_band"):
+        # Bands are counted over KEEPS ONLY. The band measures confidence in
+        # the verdict, not lead quality, so a confidently-rejected hospital
+        # system also scores "ready" — and discards outnumber keeps roughly
+        # 9:1. Counting everything made the chart read as "766 strong leads"
+        # when 743 of those were confident rejections.
+        if is_keep and (band := row.get("confidence_band")):
             bands[band] = bands.get(band, 0) + 1
         statuses[row.get("status") or "new"] = statuses.get(row.get("status") or "new", 0) + 1
         if row.get("status") == "rejected":
@@ -660,8 +666,9 @@ def _empty_analytics() -> dict:
     return {
         "total": 0, "keep_rate": 0.0, "per_day": [], "bands": {},
         "statuses": {}, "tracks": {}, "reject_reasons": [],
-        "collector": {"targets": 0, "swept": 0, "zero_row_targets": 0,
-                      "last_run_at": None, "last_posting_at": None, "alert": None},
+        "collector": {"targets": 0, "swept": 0, "unfinished": 0,
+                      "zero_row_targets": 0, "last_run_at": None,
+                      "last_posting_at": None, "alert": None},
     }
 
 
@@ -675,7 +682,7 @@ def collector_health(company_id: str) -> dict:
     """
     client = _client()
     if not client or not company_id:
-        return {"targets": 0, "swept": 0, "zero_row_targets": 0,
+        return {"targets": 0, "swept": 0, "unfinished": 0, "zero_row_targets": 0,
                 "last_run_at": None, "last_posting_at": None, "alert": None}
     try:
         targets = (
@@ -687,9 +694,15 @@ def collector_health(company_id: str) -> dict:
     except Exception:
         targets = []
 
-    swept = [t for t in targets if t.get("last_run_at")]
-    zero_rows = [t for t in swept if (t.get("last_row_count") or 0) == 0]
-    last_run = max((t["last_run_at"] for t in swept), default=None)
+    # `last_run_at` is stamped when a target is CLAIMED, not when it finishes —
+    # that is what makes a crashed run safe to retry. So completion has to be
+    # read from `last_row_count`, which only `record_target_result` writes.
+    # Treating a claimed-but-unfinished target as a zero-row one would fire the
+    # Indeed alert every time a run was interrupted.
+    claimed = [t for t in targets if t.get("last_run_at")]
+    swept = [t for t in claimed if t.get("last_row_count") is not None]
+    zero_rows = [t for t in swept if t["last_row_count"] == 0]
+    last_run = max((t["last_run_at"] for t in claimed), default=None)
 
     try:
         newest = (
@@ -712,6 +725,10 @@ def collector_health(company_id: str) -> dict:
     return {
         "targets": len(targets),
         "swept": len(swept),
+        # Claimed but never finished — a run that was interrupted. Not an
+        # error on its own; a persistently high number means runs are being
+        # killed mid-sweep, probably by a function timeout.
+        "unfinished": len(claimed) - len(swept),
         "zero_row_targets": len(zero_rows),
         "last_run_at": last_run,
         "last_posting_at": last_posting,
