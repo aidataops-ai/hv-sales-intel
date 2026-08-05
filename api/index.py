@@ -2028,3 +2028,163 @@ def clay_webhook(
     if has_any_contact:
         add_tags(body.place_id, ["ENRICHED"])
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Job-posting leads — background stages.
+#
+# Two idempotent, bounded, cron-triggered stages: collect -> qualify (ADR-09).
+# The API deploys as serverless functions behind
+# `rewrites: /api/(.*) -> /api/index.py`, and a full sweep is minutes of wall
+# clock, so neither stage tries to finish the job. Each drains a bounded slice
+# and may not assume the previous one completed — which also makes retries free.
+#
+# See docs/specs/2026-08-05-hiring-signal-collector-{adr,design}.md.
+# ---------------------------------------------------------------------------
+
+import time as _time
+
+from src import lead_config, lead_store, lead_targets
+from src.credits import InsufficientCreditsError as _InsufficientCredits
+
+
+def _require_cron_secret(secret: str | None) -> None:
+    """Cron routes authenticate with a shared secret header, matching the
+    existing Clay webhook pattern. An unset secret disables the routes rather
+    than leaving them open — a background stage that spends model credits is
+    not something to leave unauthenticated by omission."""
+    if not app_settings.lead_cron_secret:
+        raise HTTPException(503, "Lead cron is not configured")
+    if secret != app_settings.lead_cron_secret:
+        raise HTTPException(401, "Invalid secret")
+
+
+@app.post("/api/cron/leads/collect")
+def cron_collect_leads(
+    company_id: str | None = Query(None, description="Scope to one tenant"),
+    limit: int | None = Query(None, ge=1, le=200),
+    x_cron_secret: str | None = Header(default=None, alias="X-Cron-Secret"),
+):
+    """Claim the least-recently-run targets, search the boards, upsert postings.
+
+    Boards rotate on wall clock rather than a stored cursor: consecutive
+    firings advance without any state to lose, and a crashed run costs at most
+    one slice of freshness.
+    """
+    _require_cron_secret(x_cron_secret)
+    from src.job_boards import search_jobs
+
+    batch = limit or app_settings.lead_collect_batch
+    # 30-minute buckets, so the LinkedIn cycle advances at a human-legible rate.
+    run_index = int(_time.time() // 1800)
+    sources = lead_targets.sources_for_run(run_index)
+
+    companies = [company_id] if company_id else lead_targets.companies_with_targets()
+    summary = {
+        "run_index": run_index, "sources": sources,
+        "companies": len(companies), "targets": 0,
+        "rows": 0, "written": 0, "zero_row_targets": 0, "errors": [],
+    }
+
+    for tenant in companies:
+        for target in lead_targets.claim_targets(tenant, batch):
+            summary["targets"] += 1
+            try:
+                rows, stats = search_jobs(
+                    target["term"], target["location"],
+                    sources=sources, target=target,
+                )
+            except Exception as e:
+                summary["errors"].append(f"{target['term']}@{target['location']}: {e}")
+                continue
+            for source, stat in stats.items():
+                if stat.get("error"):
+                    summary["errors"].append(f"{source}: {stat['error']}")
+            summary["rows"] += len(rows)
+            if rows:
+                summary["written"] += lead_store.upsert_postings(rows)
+            else:
+                summary["zero_row_targets"] += 1
+            lead_targets.record_target_result(target["id"], len(rows))
+
+    # The Indeed failure mode is silence, not an error (ADR-02): the library
+    # reaches an undocumented mobile API whose key can rotate upstream, after
+    # which every query returns zero rows and nothing raises. Log it loudly —
+    # this line is what an alert should watch.
+    if summary["targets"] and summary["zero_row_targets"] == summary["targets"]:
+        summary["alert"] = (
+            "Every target returned zero rows. Check the python-jobspy pin — "
+            "this is the Indeed API-key rotation failure mode."
+        )
+        log.error("[leads.collect.zero_rows] targets=%d sources=%s",
+                  summary["targets"], sources)
+    else:
+        log.info("[leads.collect] targets=%d rows=%d written=%d zero=%d",
+                 summary["targets"], summary["rows"], summary["written"],
+                 summary["zero_row_targets"])
+    return summary
+
+
+@app.post("/api/cron/leads/qualify")
+def cron_qualify_leads(
+    company_id: str | None = Query(None, description="Scope to one tenant"),
+    limit: int | None = Query(None, ge=1, le=500),
+    x_cron_secret: str | None = Header(default=None, alias="X-Cron-Secret"),
+):
+    """Claim unqualified postings per tenant, batch them to the model, write
+    the verdict half of each lead row.
+
+    `unique (company_id, posting_id)` enforces at the database that a posting
+    is never re-qualified — and so never re-billed — for the same tenant, so
+    re-running this stage after a partial failure is free.
+    """
+    _require_cron_secret(x_cron_secret)
+    from src import lead_qualifier
+
+    batch = limit or app_settings.lead_qualify_batch
+    companies = [company_id] if company_id else lead_targets.companies_with_targets()
+    summary = {
+        "companies": len(companies), "claimed": 0, "verdicts": 0,
+        "keeps": 0, "missing": 0, "errors": [],
+    }
+
+    for tenant in companies:
+        postings = lead_store.claim_unqualified(tenant, batch)
+        summary["claimed"] += len(postings)
+        for chunk in lead_qualifier.batched(postings):
+            try:
+                verdicts, stats = lead_qualifier.qualify_batch(
+                    chunk, company_id=tenant,
+                )
+            except _InsufficientCredits:
+                # Out of credits stops THIS tenant, not the whole sweep. The
+                # postings stay unqualified and are re-claimed after a top-up.
+                summary["errors"].append(f"{tenant}: insufficient credits")
+                break
+            except Exception as e:
+                summary["errors"].append(f"{tenant}: {type(e).__name__}: {str(e)[:160]}")
+                continue
+            summary["verdicts"] += lead_store.write_verdicts(tenant, verdicts)
+            summary["keeps"] += stats.get("keeps", 0)
+            summary["missing"] += stats.get("missing", 0)
+
+    log.info("[leads.qualify] claimed=%d verdicts=%d keeps=%d missing=%d",
+             summary["claimed"], summary["verdicts"], summary["keeps"],
+             summary["missing"])
+    return summary
+
+
+@app.post("/api/admin/leads/seed-targets")
+def seed_lead_targets(admin: dict = Depends(require_admin)):
+    """Re-seed this tenant's search targets after a config change.
+
+    Existing rows are left alone: `enabled` and `last_run_at` belong to the
+    tenant, so adding a term must not reset the rotation or re-enable a city
+    an operator switched off.
+    """
+    try:
+        config_summary = lead_config.validate()
+    except lead_config.LeadConfigError as e:
+        raise HTTPException(400, f"Lead config is invalid: {e}")
+    seeded = lead_targets.seed_search_targets(admin["company_id"])
+    return {"config": config_summary, "seeded": seeded}

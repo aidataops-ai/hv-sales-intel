@@ -189,6 +189,36 @@ def record_target_result(target_id: int, row_count: int) -> None:
         pass
 
 
+def companies_with_targets() -> list[str]:
+    """Tenants that have at least one enabled target.
+
+    The cron stages have no logged-in user to resolve a company from, so they
+    sweep every tenant that has opted in by seeding targets. A tenant that has
+    never called seed-targets simply does not appear.
+    """
+    from src.storage import _get_client
+
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        rows = (
+            client.table("company_search_targets")
+            .select("company_id")
+            .eq("enabled", True)
+            .limit(20_000)
+            .execute()
+        ).data or []
+    except Exception as e:
+        log.warning("[leads.companies.error] %s: %s", type(e).__name__, str(e)[:200])
+        return []
+    seen: list[str] = []
+    for row in rows:
+        if row["company_id"] not in seen:
+            seen.append(row["company_id"])
+    return seen
+
+
 def sweep_size(company_id: str) -> int:
     """Count of enabled targets — how many claims make one full sweep."""
     from src.storage import _get_client
