@@ -73,6 +73,11 @@ create table if not exists company_job_leads (
   decision        text check (decision in ('keep','discard')),
   confidence      numeric(3,2),
   confidence_band text check (confidence_band in ('ready','check','decide')),
+  -- Sort key for the band. ADR-07's default feed order is band first, then
+  -- posting recency, and 'ready' < 'check' < 'decide' is not the alphabetical
+  -- order of those words — without a rank column every page load would have to
+  -- re-sort in application code, which breaks pagination.
+  band_rank       smallint,   -- 1 = ready, 2 = check, 3 = decide
   reason          text,
   employer_type   text,     -- independent | group | system | dso | vet | agency | other
   role_suitable   boolean,
@@ -107,7 +112,7 @@ create table if not exists company_job_leads (
 );
 
 create index if not exists idx_leads_feed
-  on company_job_leads (company_id, status, confidence_band, created_at desc);
+  on company_job_leads (company_id, status, band_rank, created_at desc);
 create index if not exists idx_leads_assigned
   on company_job_leads (company_id, assigned_to);
 create index if not exists idx_leads_posting
