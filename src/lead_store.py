@@ -52,6 +52,29 @@ DECISION_FILTERS = ("keep", "discard", "all")
 # the embedded object.
 LEAD_SELECT = "*, posting:job_postings!inner(*)"
 
+# The list feed shows a table row per lead and never renders the two heavy text
+# columns — the lead `draft` (up to 8 KB) and the posting `description` (the full
+# raw posting). Fetching `*` dragged both along on every page, so a 25-row page
+# carried hundreds of KB the table throws away. This select names every column
+# EXCEPT those two, keeping the payload to what the feed actually paints. The
+# detail view still uses `LEAD_SELECT` — it needs both, and it is one row.
+_LEAD_LIST_COLS = (
+    "id, company_id, posting_id, decision, confidence, confidence_band, "
+    "band_rank, reason, employer_type, role_suitable, work_mode, service_line, "
+    "provider_count, model, qualified_at, status, reject_reason, notes, "
+    "assigned_to, assigned_at, last_touched_by, last_touched_at, contacted_at, "
+    "export_count, last_exported_at, last_exported_by, created_at"
+)
+_POSTING_LIST_COLS = (
+    "id, source, external_id, url, title, employer_name, employer_name_norm, "
+    "location_raw, city, state, posted_at, salary_min, salary_max, "
+    "salary_interval, board_remote_flag, search_term, search_location, "
+    "service_line_hint, first_seen_at, last_seen_at"
+)
+LEAD_LIST_SELECT = (
+    f"{_LEAD_LIST_COLS}, posting:job_postings!inner({_POSTING_LIST_COLS})"
+)
+
 _PAGE = 1000
 
 
@@ -368,7 +391,7 @@ def list_leads(
 
     try:
         rows = _ordered(
-            _apply_filters(client.table("company_job_leads").select(LEAD_SELECT),
+            _apply_filters(client.table("company_job_leads").select(LEAD_LIST_SELECT),
                            filters=filters)
             .eq("company_id", company_id)
         ).range(start, end).execute().data or []

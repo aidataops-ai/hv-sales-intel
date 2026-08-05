@@ -174,8 +174,6 @@ export default function SignalDetailPage({ params }: { params: { id: string } })
                   <Field label="Providers" value={lead.provider_count?.toString() ?? null} />
                   <Field label="Track" value={lead.service_line} />
                   <Field label="Work mode" value={formatWorkMode(lead.work_mode)} />
-                  <Field label="Search term" value={lead.search_term} />
-                  <Field label="Model" value={lead.model} />
                 </dl>
               </section>
 

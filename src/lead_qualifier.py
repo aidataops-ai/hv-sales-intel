@@ -14,8 +14,9 @@ It has been through two revisions driven by *measured* failures — an earlier
 version that said "guess the work mode, defaulting to onsite" returned onsite
 for almost everything including postings explicitly flagged remote, and an
 earlier version without TEST 2 kept dental hygienist roles at perfect-fit
-practices. Reword it from the ADR prose and those regressions come back. The
-only deliberate edit is the company name, which follows this repo's brand.
+practices. Reword it from the ADR prose and those regressions come back. It is
+kept verbatim from hv-collector — company name included — so the measured
+behaviour is preserved exactly.
 
 The model's field names (`practice_type`, `role_remotable`) are kept exactly as
 measured and mapped onto the `company_job_leads` columns in `parse_verdict`,
@@ -42,7 +43,7 @@ EMPLOYER_TYPES = ("independent", "group", "system", "dso", "vet",
 # a self-contradictory verdict — never to override the model's own decision.
 DISQUALIFYING_TYPES = ("system", "dso", "agency", "vet", "nonhealthcare")
 
-COMPANY_NAME = "Apex&Virtuals (Apex)"
+COMPANY_NAME = "Health & Virtuals (H&V)"
 
 
 # ---------------------------------------------------------------------------

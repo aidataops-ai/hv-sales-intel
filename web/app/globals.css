@@ -14,7 +14,7 @@
 
 /* Frosted-glass sidebar panel */
 .glass-panel {
-  @apply bg-white/80 backdrop-blur-md border border-white/50 shadow-lg;
+  @apply bg-white/90 backdrop-blur-md border border-gray-200/70 shadow-lg shadow-gray-900/5;
 }
 
 /* Leaflet container must have explicit height */

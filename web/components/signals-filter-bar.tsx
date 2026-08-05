@@ -4,7 +4,7 @@ import { Search, X } from "lucide-react"
 
 import MultiSelect from "./multi-select"
 import {
-  ALL_BANDS, ALL_SOURCES, ALL_STATUSES, ALL_WORK_MODES,
+  ALL_SOURCES, ALL_STATUSES, ALL_WORK_MODES,
   formatWorkMode, type FilterOptions,
 } from "@/lib/leads"
 import type { SignalsState } from "@/lib/use-signals-url-state"
@@ -27,7 +27,7 @@ const labelClass =
 export default function SignalsFilterBar({ state, onChange, options, onReset }: Props) {
   const active =
     state.cities.length + state.tracks.length +
-    [state.status, state.band, state.decision, state.work_mode, state.source,
+    [state.status, state.work_mode, state.source,
      state.salary, state.search].filter(Boolean).length
 
   return (
@@ -81,19 +81,6 @@ export default function SignalsFilterBar({ state, onChange, options, onReset }: 
 
       <div className="grid grid-cols-3 gap-3">
         <div>
-          <label className={labelClass}>Band</label>
-          <select
-            value={state.band}
-            onChange={(e) => onChange({ band: e.target.value })}
-            className={select}
-          >
-            <option value="">Any band</option>
-            {ALL_BANDS.map((band) => (
-              <option key={band} value={band}>{band}</option>
-            ))}
-          </select>
-        </div>
-        <div>
           <label className={labelClass}>Status</label>
           <select
             value={state.status}
@@ -146,39 +133,6 @@ export default function SignalsFilterBar({ state, onChange, options, onReset }: 
             <option value="">Any</option>
             <option value="yes">Salary stated</option>
             <option value="no">No salary</option>
-          </select>
-        </div>
-        <div>
-          {/* The feed is keeps-only unless asked otherwise. Discards are still
-              stored — they drive the reject-reason analytics — but most
-              postings are one, so showing them by default buries the leads. */}
-          <label className={labelClass}>Verdict</label>
-          <select
-            value={state.decision}
-            onChange={(e) => onChange({ decision: e.target.value })}
-            className={select}
-          >
-            <option value="">Kept only</option>
-            <option value="discard">Discarded only</option>
-            <option value="all">Everything qualified</option>
-          </select>
-        </div>
-        <div>
-          <label className={labelClass}>Sort</label>
-          <select
-            value={`${state.sort}:${state.dir}`}
-            onChange={(e) => {
-              const [sort, dir] = e.target.value.split(":")
-              onChange({ sort, dir: dir as "asc" | "desc" })
-            }}
-            className={select}
-          >
-            <option value="band:asc">Band, then recency</option>
-            <option value="posted:desc">Newest posting</option>
-            <option value="posted:asc">Oldest posting</option>
-            <option value="confidence:desc">Highest confidence</option>
-            <option value="employer:asc">Employer A–Z</option>
-            <option value="city:asc">City A–Z</option>
           </select>
         </div>
       </div>
