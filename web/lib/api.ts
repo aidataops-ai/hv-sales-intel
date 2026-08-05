@@ -2,13 +2,12 @@ import type { EmailDraft, EmailMessage, Practice, Script } from "./types"
 import { mockPractices } from "./mock-data"
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ""
+const IS_PROD = process.env.NODE_ENV === "production"
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  // Empty API_URL means same-origin: the Vercel rewrite in production, the dev
-  // proxy in next.config.mjs locally. Both reach the backend, so always make
-  // the request — bailing out here in dev used to mean the UI silently fell
-  // back to mocks against a perfectly healthy local API. A genuine connection
-  // failure still throws and the callers' mock fallbacks still apply.
+  // Empty API_URL in production = same-origin request (Vercel rewrite handles it).
+  // Empty API_URL in dev = no backend configured -> caller falls back to mocks.
+  if (!API_URL && !IS_PROD) throw new Error("NO_API")
   const res = await fetch(`${API_URL}${path}`, {
     ...init,
     credentials: "include",
