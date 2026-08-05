@@ -6,7 +6,7 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation"
 import { EMPTY_LEAD_FILTERS, type LeadFilters } from "@/lib/leads"
 
 export interface SignalsState extends LeadFilters {
-  sort: string                 // band | posted | employer | role | city | track | confidence | status
+  sort: string                 // band | posted | employer | role | city | track | confidence | disposition
   dir: "asc" | "desc"
   page: number
 }
@@ -39,13 +39,11 @@ export function useSignalsUrlState(): [
     () => ({
       cities: (params.get("cities") ?? "").split(",").filter(Boolean),
       tracks: (params.get("tracks") ?? "").split(",").filter(Boolean),
-      status: params.get("status") ?? "",
       band: params.get("band") ?? "",
       decision: params.get("decision") ?? "",
       work_mode: params.get("work_mode") ?? "",
       source: params.get("source") ?? "",
       salary: params.get("salary") ?? "",
-      assigned_to: params.get("assigned_to") ?? "",
       search: params.get("search") ?? "",
       sort: params.get("sort") ?? "band",
       dir: (params.get("dir") as "asc" | "desc") ?? "asc",
@@ -67,13 +65,11 @@ export function useSignalsUrlState(): [
       const sp = new URLSearchParams()
       if (merged.cities.length) sp.set("cities", merged.cities.join(","))
       if (merged.tracks.length) sp.set("tracks", merged.tracks.join(","))
-      if (merged.status) sp.set("status", merged.status)
       if (merged.band) sp.set("band", merged.band)
       if (merged.decision) sp.set("decision", merged.decision)
       if (merged.work_mode) sp.set("work_mode", merged.work_mode)
       if (merged.source) sp.set("source", merged.source)
       if (merged.salary) sp.set("salary", merged.salary)
-      if (merged.assigned_to) sp.set("assigned_to", merged.assigned_to)
       if (merged.search) sp.set("search", merged.search)
       if (merged.sort !== "band") sp.set("sort", merged.sort)
       if (merged.dir !== "asc") sp.set("dir", merged.dir)

@@ -36,7 +36,7 @@ The module shares only what every module shares: auth, tenancy, the usage ledger
           |
    [2] QUALIFY   gpt-5.6-terra, batched, per tenant
           |
-     company_job_leads                   (verdict + workflow, status='new')
+     company_job_leads                   (verdict + workflow, disposition='undecided')
           |
           v
      LEADS UI  ->  triage -> approve -> copy draft -> outreach
@@ -158,13 +158,10 @@ create table if not exists company_job_leads (
   qualified_at    timestamptz,
 
   -- workflow columns — written by operators, NEVER touched by re-qualification
-  status          text not null default 'new'
-                  check (status in ('new','approved','contacted','replied',
-                                    'booked','rejected')),
+  disposition     text not null default 'undecided'
+                  check (disposition in ('undecided','approved','rejected')),
   reject_reason   text,
   notes           text,
-  assigned_to     uuid references auth.users(id),
-  assigned_at     timestamptz,
   last_touched_by uuid references auth.users(id),
   last_touched_at timestamptz,
   contacted_at    timestamptz,
@@ -178,9 +175,7 @@ create table if not exists company_job_leads (
   unique (company_id, posting_id)
 );
 create index if not exists idx_leads_feed
-  on company_job_leads (company_id, status, confidence_band, created_at desc);
-create index if not exists idx_leads_assigned
-  on company_job_leads (company_id, assigned_to);
+  on company_job_leads (company_id, disposition, confidence_band, created_at desc);
 
 -- Search targets, seeded from config, rotated by the collector.
 create table if not exists company_search_targets (
@@ -200,8 +195,8 @@ create index if not exists idx_targets_rotation
 ```
 
 > The verdict/workflow column split inside one table is load-bearing. Re-qualification
-> writes only the first group. A single `UPDATE ... SET status = ...` from the qualifier
-> would silently reset an SDR's pipeline.
+> writes only the first group. A single `UPDATE ... SET disposition = ...` from the
+> qualifier would silently reset an SDR's pipeline.
 
 ### RLS (ADR-11)
 
@@ -241,10 +236,10 @@ Reuse rather than rebuild:
 |---|---|
 | `cn()` in `lib/utils.ts` | class merging (`clsx` + `tailwind-merge`) |
 | `timeAgo()` in `lib/utils.ts` | the "2d ago" column |
-| `status-badge.tsx` | pattern for the band + status badges — a `Record<string,string>` of light/dark class pairs |
+| `status-badge.tsx` | pattern for the band + decision badges — a `Record<string,string>` of light/dark class pairs |
 | `filter-bar.tsx`, `search-bar.tsx`, `tags-filter.tsx` | filter row |
 | `pagination.tsx` | table paging |
-| `assign-dropdown.tsx`, `notes-panel.tsx` | detail panel |
+| `notes-panel.tsx` | detail panel |
 | `export-button.tsx` | CSV export — **generalised with props**, see §4.4 |
 | `top-bar.tsx`, `company-switcher.tsx`, `theme-toggle.tsx` | shell, unchanged |
 
@@ -274,12 +269,12 @@ compared row to row.
 | Mode | on-site / remote / hybrid |
 | Band | Ready / Check / Decide badge |
 | Posted | `timeAgo()` |
-| Status | new / approved / contacted / … |
+| Decision | undecided / approved / rejected |
 | Actions | Approve · Reject · View |
 
 Sort: band first, then posting recency. Column headers sortable. `pagination.tsx` below.
 
-**Approve** opens the drafted message with a copy button and sets `status='approved'`.
+**Approve** opens the drafted message with a copy button and sets `disposition='approved'`.
 **Reject** asks for a reason — those reasons are the tuning signal for the prompt and the
 config prefilter, so keep the field one click away.
 
@@ -296,7 +291,7 @@ Two are the priority:
 
 Both combine as `city IN (...) AND service_line IN (...)`.
 
-Also: status · band · work mode · source · salary present · assigned-to · free-text
+Also: band · work mode · source · salary present · free-text
 search over employer and title.
 
 Filter state lives in the query string so a filtered view is shareable and survives a
@@ -332,17 +327,17 @@ takes the same filter params as `GET /api/leads`.
 
 Columns: employer, title, city, state, source, url, posted_at, salary_min, salary_max,
 salary_interval, work_mode, service_line, employer_type, provider_count, confidence,
-confidence_band, reason, draft, status, assigned_to_name, created_at.
+confidence_band, reason, draft, disposition, created_at.
 
 ### 4.5 Detail — `/signals/{id}`
 
-Full posting text, every qualifier field, the draft, notes, assignment, status history,
-and a link to the original posting.
+Full posting text, every qualifier field, the draft, the approve/reject decision, notes,
+history, and a link to the original posting.
 
 ### 4.6 Analytics — `/signals/analytics`
 
-Leads per day by source and track · qualifier keep-rate · band distribution · status
-funnel · reject-reason breakdown · collector health (last run per source, targets swept,
+Leads per day by source and track · qualifier keep-rate · band distribution · decision
+breakdown · reject-reason breakdown · collector health (last run per source, targets swept,
 zero-row alerts).
 
 ---
@@ -355,7 +350,7 @@ zero-row alerts).
 | `src/lead_targets.py` | `seed_search_targets(company_id)`; rotation query |
 | `src/job_boards.py` | `search_jobs(term, location, sources, ...)` — wraps `python-jobspy`; normalises rows; per-source `external_id`; config prefilter |
 | `src/lead_qualifier.py` | Prompt, batched OpenAI call, validation, `usage.record_openai(kind="openai_qualify")` |
-| `src/lead_store.py` | Reads/writes the three tables; stage claiming; status transitions |
+| `src/lead_store.py` | Reads/writes the three tables; stage claiming; disposition transitions |
 
 New dependency: `python-jobspy`, pinned.
 
@@ -379,7 +374,7 @@ lead_qualify_batch: int = 60
 | `POST /api/cron/leads/qualify` | Claims unqualified postings for the tenant, batches to the model, writes `company_job_leads` |
 | `GET /api/leads` | Tenant-scoped feed; filters + paging |
 | `GET /api/leads/{id}` | Lead detail |
-| `PATCH /api/leads/{id}` | Status, reject reason, notes, assignment |
+| `PATCH /api/leads/{id}` | Decision (approve/reject), reject reason, notes |
 | `GET /api/leads/export.csv` | Filtered CSV export; honours the same filters as the feed plus `max_exports`; stamps `export_count` |
 | `GET /api/leads/analytics` | Feed for the analytics page |
 | `POST /api/admin/leads/seed-targets` | Re-seed targets after a config change |

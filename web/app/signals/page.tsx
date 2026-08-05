@@ -47,8 +47,8 @@ function SignalsContent() {
     // The filter fields, not the whole state — re-sorting shouldn't rebuild
     // the export params object and re-render the button.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [state.cities, state.tracks, state.status, state.band, state.decision,
-     state.work_mode, state.source, state.salary, state.assigned_to,
+    [state.cities, state.tracks, state.band, state.decision,
+     state.work_mode, state.source, state.salary,
      state.search],
   )
 
@@ -174,7 +174,7 @@ function SignalsContent() {
           isSaving={busyIds.has(approving.id)}
           onClose={() => setApproving(null)}
           onConfirm={async () => {
-            await patch(approving, { status: "approved" })
+            await patch(approving, { disposition: "approved" })
             setApproving(null)
           }}
         />
@@ -186,7 +186,7 @@ function SignalsContent() {
           isSaving={busyIds.has(rejecting.id)}
           onClose={() => setRejecting(null)}
           onConfirm={async (reason) => {
-            await patch(rejecting, { status: "rejected", reject_reason: reason })
+            await patch(rejecting, { disposition: "rejected", reject_reason: reason })
             setRejecting(null)
           }}
         />

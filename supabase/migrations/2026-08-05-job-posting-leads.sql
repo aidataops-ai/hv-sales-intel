@@ -61,7 +61,7 @@ create index if not exists idx_job_postings_seen
 -- 2) One row per (company, posting): verdict AND workflow (ADR-04).
 --
 -- The column split below is LOAD-BEARING. Re-qualification writes only
--- the verdict group; a single `update ... set status = ...` from the
+-- the verdict group; a single `update ... set disposition = ...` from the
 -- qualifier would silently reset an SDR's pipeline.
 -- ---------------------------------------------------------------
 create table if not exists company_job_leads (
@@ -92,13 +92,10 @@ create table if not exists company_job_leads (
   qualified_at    timestamptz,
 
   -- workflow columns — written by operators, NEVER touched by re-qualification
-  status          text not null default 'new'
-                  check (status in ('new','approved','contacted','replied',
-                                    'booked','rejected')),
+  disposition     text not null default 'undecided'
+                  check (disposition in ('undecided','approved','rejected')),
   reject_reason   text,
   notes           text,
-  assigned_to     uuid references auth.users(id),
-  assigned_at     timestamptz,
   last_touched_by uuid references auth.users(id),
   last_touched_at timestamptz,
   contacted_at    timestamptz,
@@ -115,9 +112,7 @@ create table if not exists company_job_leads (
 );
 
 create index if not exists idx_leads_feed
-  on company_job_leads (company_id, status, band_rank, created_at desc);
-create index if not exists idx_leads_assigned
-  on company_job_leads (company_id, assigned_to);
+  on company_job_leads (company_id, disposition, band_rank, created_at desc);
 create index if not exists idx_leads_posting
   on company_job_leads (posting_id);
 

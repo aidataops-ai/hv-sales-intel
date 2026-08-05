@@ -86,7 +86,7 @@ def _written(client, op):
 def test_write_verdicts_never_writes_workflow_columns(fake):
     """The regression that would reset every SDR's pipeline.
 
-    A re-qualification pass carrying a stale `status` must not be able to
+    A re-qualification pass carrying a stale `disposition` must not be able to
     overwrite one an operator set — so the payload is filtered, not trusted.
     """
     lead_store.write_verdicts("company-1", [{
@@ -96,9 +96,8 @@ def test_write_verdicts_never_writes_workflow_columns(fake):
         "confidence_band": "ready",
         "band_rank": 1,
         # A caller bug: these belong to the operator, not the qualifier.
-        "status": "new",
+        "disposition": "approved",
         "notes": "clobbered",
-        "assigned_to": "someone-else",
         "reject_reason": "wrong",
         "contacted_at": "2026-08-01T00:00:00Z",
     }])
@@ -134,7 +133,7 @@ def test_update_lead_workflow_never_writes_verdict_columns(fake):
     """The mirror image: an operator action must not rewrite the reason the
     lead was surfaced."""
     lead_store.update_lead_workflow("company-1", 7, {
-        "status": "approved",
+        "disposition": "approved",
         "notes": "called, left voicemail",
         # A caller bug in the other direction.
         "decision": "discard",
@@ -146,27 +145,15 @@ def test_update_lead_workflow_never_writes_verdict_columns(fake):
     payload = _written(fake, "update")[0]
     for column in lead_store.VERDICT_COLUMNS:
         assert column not in payload, f"{column} leaked into a workflow write"
-    assert payload["status"] == "approved"
+    assert payload["disposition"] == "approved"
 
 
 def test_the_two_column_groups_do_not_overlap():
     assert not (lead_store.VERDICT_COLUMNS & lead_store.WORKFLOW_COLUMNS)
 
 
-def test_contacted_at_is_stamped_from_the_transition(fake):
-    """Trusting a client-supplied timestamp would let the analytics funnel
-    measure when someone clicked, not when the lead was worked."""
-    lead_store.update_lead_workflow("company-1", 7, {"status": "contacted"})
-    assert _written(fake, "update")[0]["contacted_at"]
-
-
-def test_assignment_clears_its_timestamp_when_unassigned(fake):
-    lead_store.update_lead_workflow("company-1", 7, {"assigned_to": None})
-    assert _written(fake, "update")[0]["assigned_at"] is None
-
-
 def test_workflow_write_records_who_touched_it(fake):
-    lead_store.update_lead_workflow("company-1", 7, {"status": "booked"},
+    lead_store.update_lead_workflow("company-1", 7, {"disposition": "approved"},
                                     user_id="user-9")
     payload = _written(fake, "update")[0]
     assert payload["last_touched_by"] == "user-9"
@@ -211,7 +198,7 @@ def test_an_unqualified_lead_lands_in_the_review_queue():
 
 def test_flatten_lifts_the_posting_onto_the_lead():
     row = lead_store._flatten({
-        "id": 3, "status": "new", "service_line": "Virtual Dental Assistant",
+        "id": 3, "disposition": "undecided", "service_line": "Virtual Dental Assistant",
         "posting": {"id": 99, "title": "Dental Receptionist", "city": "Tampa",
                     "first_seen_at": "2026-08-01T00:00:00Z"},
     })
@@ -224,10 +211,10 @@ def test_flatten_lifts_the_posting_onto_the_lead():
 
 def test_flatten_never_lets_a_posting_field_shadow_a_lead_field():
     row = lead_store._flatten({
-        "id": 3, "status": "approved", "created_at": "2026-08-05T00:00:00Z",
-        "posting": {"id": 99, "status": "ignored", "created_at": "1999-01-01T00:00:00Z"},
+        "id": 3, "disposition": "approved", "created_at": "2026-08-05T00:00:00Z",
+        "posting": {"id": 99, "disposition": "ignored", "created_at": "1999-01-01T00:00:00Z"},
     })
-    assert row["status"] == "approved"
+    assert row["disposition"] == "approved"
     assert row["created_at"] == "2026-08-05T00:00:00Z"
 
 
@@ -334,9 +321,9 @@ def test_band_distribution_counts_keeps_only(monkeypatch):
     outnumber keeps ~9:1, counting everything makes the chart read as a pile
     of strong leads when it is mostly confident rejections."""
     rows = (
-        [{"decision": "discard", "confidence_band": "ready", "status": "new",
+        [{"decision": "discard", "confidence_band": "ready", "disposition": "undecided",
           "created_at": "2026-08-05T00:00:00Z", "posting": {"source": "indeed"}}] * 9
-        + [{"decision": "keep", "confidence_band": "check", "status": "new",
+        + [{"decision": "keep", "confidence_band": "check", "disposition": "undecided",
             "created_at": "2026-08-05T00:00:00Z", "posting": {"source": "indeed"}}]
     )
     client = FakeClient(rows=rows)

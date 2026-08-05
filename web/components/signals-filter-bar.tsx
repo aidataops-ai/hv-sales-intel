@@ -4,7 +4,7 @@ import { Search, X } from "lucide-react"
 
 import MultiSelect from "./multi-select"
 import {
-  ALL_SOURCES, ALL_STATUSES, ALL_WORK_MODES,
+  ALL_SOURCES, ALL_WORK_MODES,
   formatWorkMode, type FilterOptions,
 } from "@/lib/leads"
 import type { SignalsState } from "@/lib/use-signals-url-state"
@@ -27,7 +27,7 @@ const labelClass =
 export default function SignalsFilterBar({ state, onChange, options, onReset }: Props) {
   const active =
     state.cities.length + state.tracks.length +
-    [state.status, state.work_mode, state.source,
+    [state.work_mode, state.source,
      state.salary, state.search].filter(Boolean).length
 
   return (
@@ -80,19 +80,6 @@ export default function SignalsFilterBar({ state, onChange, options, onReset }: 
       </div>
 
       <div className="grid grid-cols-3 gap-3">
-        <div>
-          <label className={labelClass}>Status</label>
-          <select
-            value={state.status}
-            onChange={(e) => onChange({ status: e.target.value })}
-            className={select}
-          >
-            <option value="">Any status</option>
-            {ALL_STATUSES.map((status) => (
-              <option key={status} value={status}>{status}</option>
-            ))}
-          </select>
-        </div>
         <div>
           <label className={labelClass}>Mode</label>
           <select

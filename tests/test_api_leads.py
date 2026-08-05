@@ -14,7 +14,7 @@ def test_every_lead_route_requires_auth():
     assert client.get("/api/leads/filters").status_code == 401
     assert client.get("/api/leads/analytics").status_code == 401
     assert client.get("/api/leads/export.csv").status_code == 401
-    assert client.patch("/api/leads/1", json={"status": "approved"}).status_code == 401
+    assert client.patch("/api/leads/1", json={"disposition": "approved"}).status_code == 401
 
 
 def test_export_route_is_not_swallowed_by_the_id_route():
@@ -33,8 +33,8 @@ def test_analytics_and_filters_routes_are_not_swallowed_either():
 def test_multi_select_params_split_on_commas():
     filters = _lead_filters(
         cities="Miami,Tampa", tracks="Virtual Dental Assistant",
-        status=None, band=None, decision=None, work_mode=None,
-        source=None, state=None, salary=None, assigned_to=None, search=None,
+        disposition=None, band=None, decision=None, work_mode=None,
+        source=None, state=None, salary=None, search=None,
     )
     assert filters["cities"] == ["Miami", "Tampa"]
     assert filters["tracks"] == ["Virtual Dental Assistant"]
@@ -42,9 +42,9 @@ def test_multi_select_params_split_on_commas():
 
 def test_empty_multi_select_params_produce_no_filter():
     filters = _lead_filters(
-        cities="", tracks=",,", status=None, band=None, decision=None,
+        cities="", tracks=",,", disposition=None, band=None, decision=None,
         work_mode=None, source=None, state=None, salary=None,
-        assigned_to=None, search=None,
+        search=None,
     )
     assert filters["cities"] == []
     assert filters["tracks"] == []
@@ -60,8 +60,8 @@ def test_the_feed_and_the_export_build_filters_the_same_way():
     feed_params = set(inspect.signature(list_leads_endpoint).parameters)
     export_params = set(inspect.signature(export_leads_csv).parameters)
     filter_params = {
-        "cities", "tracks", "status", "band", "decision", "work_mode",
-        "source", "state", "salary", "assigned_to", "search",
+        "cities", "tracks", "disposition", "band", "decision", "work_mode",
+        "source", "state", "salary", "search",
     }
     assert filter_params <= feed_params
     assert filter_params <= export_params
@@ -74,7 +74,7 @@ def test_export_columns_match_the_design():
         "employer_name", "title", "city", "state", "source", "url", "posted_at",
         "salary_min", "salary_max", "salary_interval", "work_mode",
         "service_line", "employer_type", "provider_count", "confidence",
-        "confidence_band", "reason", "draft", "status", "assigned_to_name",
+        "confidence_band", "reason", "draft", "disposition",
         "created_at",
     ]
     assert _LEAD_EXPORT_COLUMNS == expected
@@ -91,9 +91,9 @@ def test_the_feed_defaults_to_keeps_only():
     """Most postings are discards — systems, DSOs, clinical roles. Showing them
     by default buries the handful of real leads."""
     filters = _lead_filters(
-        cities=None, tracks=None, status=None, band=None, decision=None,
+        cities=None, tracks=None, disposition=None, band=None, decision=None,
         work_mode=None, source=None, state=None, salary=None,
-        assigned_to=None, search=None,
+        search=None,
     )
     assert filters["decision"] in (None, "", "keep")
 
@@ -133,7 +133,7 @@ def test_an_unknown_decision_filter_is_rejected():
 
     with pytest.raises(HTTPException):
         _lead_filters(
-            cities=None, tracks=None, status=None, band=None, decision="maybe",
+            cities=None, tracks=None, disposition=None, band=None, decision="maybe",
             work_mode=None, source=None, state=None, salary=None,
-            assigned_to=None, search=None,
+            search=None,
         )

@@ -5,18 +5,16 @@ import Link from "next/link"
 import { ArrowLeft, Check, Copy, ExternalLink } from "lucide-react"
 
 import SignalsTopBar from "@/components/signals-top-bar"
-import { BandBadge, LeadStatusBadge, SourceBadge } from "@/components/signal-badges"
-import { listUsers, type AdminUserSummary } from "@/lib/api"
+import { BandBadge, DispositionBadge, SourceBadge } from "@/components/signal-badges"
 import {
-  ALL_STATUSES, employerLabel, formatSalary, formatWorkMode,
-  getLead, updateLead, type Lead, type LeadStatus,
+  ALL_DISPOSITIONS, employerLabel, formatSalary, formatWorkMode,
+  getLead, updateLead, type Lead, type LeadDisposition,
 } from "@/lib/leads"
 import { timeAgo } from "@/lib/utils"
 
 export default function SignalDetailPage({ params }: { params: { id: string } }) {
   const leadId = Number(params.id)
   const [lead, setLead] = useState<Lead | null>(null)
-  const [users, setUsers] = useState<AdminUserSummary[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [notes, setNotes] = useState("")
@@ -28,7 +26,6 @@ export default function SignalDetailPage({ params }: { params: { id: string } })
       setNotes(found?.notes ?? "")
       setIsLoading(false)
     })
-    listUsers().then(setUsers).catch(() => setUsers([]))
   }, [leadId])
 
   const patch = useCallback(
@@ -109,7 +106,7 @@ export default function SignalDetailPage({ params }: { params: { id: string } })
                   </h1>
                   <SourceBadge source={lead.source} />
                   <BandBadge band={lead.confidence_band} />
-                  <LeadStatusBadge status={lead.status} />
+                  <DispositionBadge disposition={lead.disposition} />
                 </div>
                 <p className="text-sm text-gray-600 dark:text-[#d9d9d9]">{lead.title}</p>
                 <p className="text-xs text-gray-500 dark:text-gray-400">
@@ -159,7 +156,7 @@ export default function SignalDetailPage({ params }: { params: { id: string } })
                   </p>
                 )}
                 <dl className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
-                  <Field label="Decision" value={lead.decision} />
+                  <Field label="Verdict" value={lead.decision} />
                   <Field
                     label="Confidence"
                     value={lead.confidence != null ? lead.confidence.toFixed(2) : null}
@@ -215,20 +212,20 @@ export default function SignalDetailPage({ params }: { params: { id: string } })
                 </h2>
 
                 <div>
-                  <label className={fieldLabel}>Status</label>
+                  <label className={fieldLabel}>Decision</label>
                   <select
-                    value={lead.status}
-                    onChange={(e) => patch({ status: e.target.value as LeadStatus })}
+                    value={lead.disposition}
+                    onChange={(e) => patch({ disposition: e.target.value as LeadDisposition })}
                     disabled={isSaving}
                     className={control}
                   >
-                    {ALL_STATUSES.map((status) => (
-                      <option key={status} value={status}>{status}</option>
+                    {ALL_DISPOSITIONS.map((disposition) => (
+                      <option key={disposition} value={disposition}>{disposition}</option>
                     ))}
                   </select>
                 </div>
 
-                {lead.status === "rejected" && (
+                {lead.disposition === "rejected" && (
                   <div>
                     <label className={fieldLabel}>Reject reason</label>
                     <input
@@ -243,23 +240,6 @@ export default function SignalDetailPage({ params }: { params: { id: string } })
                     />
                   </div>
                 )}
-
-                <div>
-                  <label className={fieldLabel}>Assigned to</label>
-                  <select
-                    value={lead.assigned_to ?? ""}
-                    onChange={(e) => patch({ assigned_to: e.target.value || null })}
-                    disabled={isSaving}
-                    className={control}
-                  >
-                    <option value="">Unassigned</option>
-                    {users.map((user) => (
-                      <option key={user.id} value={user.id}>
-                        {user.name ?? user.email}
-                      </option>
-                    ))}
-                  </select>
-                </div>
 
                 <div>
                   <label className={fieldLabel}>Notes</label>

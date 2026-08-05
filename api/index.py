@@ -2234,15 +2234,15 @@ _LEAD_EXPORT_COLUMNS = [
     "employer_name", "title", "city", "state", "source", "url", "posted_at",
     "salary_min", "salary_max", "salary_interval", "work_mode", "service_line",
     "employer_type", "provider_count", "confidence", "confidence_band",
-    "reason", "draft", "status", "assigned_to_name", "created_at",
+    "reason", "draft", "disposition", "created_at",
 ]
 
 
 def _lead_filters(
-    cities: str | None, tracks: str | None, status: str | None,
+    cities: str | None, tracks: str | None, disposition: str | None,
     band: str | None, decision: str | None, work_mode: str | None,
     source: str | None, state: str | None, salary: str | None,
-    assigned_to: str | None, search: str | None,
+    search: str | None,
 ) -> dict:
     """Build the filter dict once, so the feed and the export cannot drift.
 
@@ -2258,20 +2258,10 @@ def _lead_filters(
     return {
         "cities": [c for c in (cities.split(",") if cities else []) if c],
         "tracks": [t for t in (tracks.split(",") if tracks else []) if t],
-        "status": status, "band": band, "decision": decision,
+        "disposition": disposition, "band": band, "decision": decision,
         "work_mode": work_mode, "source": source, "state": state,
-        "salary": salary, "assigned_to": assigned_to, "search": search,
+        "salary": salary, "search": search,
     }
-
-
-def _attach_assignee_names(rows: list[dict]) -> list[dict]:
-    """Resolve assigned_to UUIDs to display names in one round-trip."""
-    ids = [r.get("assigned_to") for r in rows if r.get("assigned_to")]
-    names = resolve_user_names(ids) if ids else {}
-    for row in rows:
-        assignee = row.get("assigned_to")
-        row["assigned_to_name"] = names.get(assignee, "") if assignee else ""
-    return rows
 
 
 @app.get("/api/leads/filters")
@@ -2303,14 +2293,13 @@ def export_leads_csv(
     ),
     cities: str | None = Query(None),
     tracks: str | None = Query(None),
-    status: str | None = Query(None),
+    disposition: str | None = Query(None),
     band: str | None = Query(None),
     decision: str | None = Query(None),
     work_mode: str | None = Query(None),
     source: str | None = Query(None),
     state: str | None = Query(None),
     salary: str | None = Query(None),
-    assigned_to: str | None = Query(None),
     search: str | None = Query(None),
     user: dict = Depends(get_current_user),
 ):
@@ -2333,11 +2322,10 @@ def export_leads_csv(
 
     rows = lead_store.leads_for_export(
         user["company_id"],
-        filters=_lead_filters(cities, tracks, status, band, decision, work_mode,
-                              source, state, salary, assigned_to, search),
+        filters=_lead_filters(cities, tracks, disposition, band, decision,
+                              work_mode, source, state, salary, search),
         max_exports=cap,
     )
-    _attach_assignee_names(rows)
 
     def _serialize(value) -> str:
         if value is None:
@@ -2377,7 +2365,9 @@ def export_leads_csv(
 def list_leads_endpoint(
     cities: str | None = Query(None, description="comma-separated"),
     tracks: str | None = Query(None, description="comma-separated"),
-    status: str | None = Query(None),
+    disposition: str | None = Query(
+        None, description="undecided | approved | rejected",
+    ),
     band: str | None = Query(None),          # ready | check | decide
     decision: str | None = Query(
         None, description="keep (default) | discard | all",
@@ -2386,7 +2376,6 @@ def list_leads_endpoint(
     source: str | None = Query(None),        # indeed | linkedin
     state: str | None = Query(None),
     salary: str | None = Query(None),        # "yes" | "no"
-    assigned_to: str | None = Query(None),
     search: str | None = Query(None),        # employer + title
     sort: str = Query("band"),
     dir: str = Query("asc"),
@@ -2396,11 +2385,10 @@ def list_leads_endpoint(
 ):
     rows, total = lead_store.list_leads(
         user["company_id"],
-        filters=_lead_filters(cities, tracks, status, band, decision, work_mode,
-                              source, state, salary, assigned_to, search),
+        filters=_lead_filters(cities, tracks, disposition, band, decision,
+                              work_mode, source, state, salary, search),
         sort=sort, direction=dir, offset=offset, limit=limit,
     )
-    _attach_assignee_names(rows)
     return {
         "leads": rows,
         "count": len(rows),
@@ -2416,15 +2404,13 @@ def get_lead_endpoint(lead_id: int, user: dict = Depends(get_current_user)):
     lead = lead_store.get_lead(user["company_id"], lead_id)
     if not lead:
         raise HTTPException(404, "Lead not found")
-    _attach_assignee_names([lead])
     return lead
 
 
 class PatchLeadRequest(BaseModel):
-    status: str | None = None
+    disposition: str | None = None
     reject_reason: str | None = None
     notes: str | None = None
-    assigned_to: str | None = None
 
 
 @app.patch("/api/leads/{lead_id}")
@@ -2435,13 +2421,14 @@ def patch_lead_endpoint(
 ):
     """Update the workflow half of a lead.
 
-    Only the four fields above are accepted, and `lead_store` strips anything
+    Only the three fields above are accepted, and `lead_store` strips anything
     outside `WORKFLOW_COLUMNS` again before writing — an operator action must
     never rewrite the reason the lead was surfaced.
     """
-    if body.status and body.status not in lead_store.LEAD_STATUSES:
+    if body.disposition and body.disposition not in lead_store.LEAD_DISPOSITIONS:
         raise HTTPException(
-            400, f"status must be one of: {', '.join(lead_store.LEAD_STATUSES)}"
+            400,
+            f"disposition must be one of: {', '.join(lead_store.LEAD_DISPOSITIONS)}",
         )
     if not lead_store.get_lead(user["company_id"], lead_id):
         raise HTTPException(404, "Lead not found")
@@ -2452,5 +2439,4 @@ def patch_lead_endpoint(
     )
     if not updated:
         raise HTTPException(500, "Lead update failed")
-    _attach_assignee_names([updated])
     return updated

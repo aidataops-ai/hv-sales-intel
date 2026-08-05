@@ -107,7 +107,7 @@ tenant-private.
 and state into separate tables. Here they are one row, because the lead feed is the hot
 path and a single-table read beats a join on every page load. The cost is that
 re-qualification must write **only** the verdict columns and never touch workflow
-columns, or it would clobber an SDR's status.
+columns, or it would clobber an SDR's disposition.
 
 ---
 

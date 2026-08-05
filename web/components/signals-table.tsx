@@ -3,7 +3,7 @@
 import Link from "next/link"
 import { ExternalLink } from "lucide-react"
 
-import { LeadStatusBadge } from "./signal-badges"
+import { DispositionBadge } from "./signal-badges"
 import { cn } from "@/lib/utils"
 import { employerLabel, formatWorkMode, type Lead } from "@/lib/leads"
 import type { SignalsState } from "@/lib/use-signals-url-state"
@@ -28,7 +28,7 @@ const COLUMNS: Array<{ label: string; sort: string | null; width: string; classN
   { label: "Role", sort: "role", width: "34%" },
   { label: "Track", sort: "track", width: "24%" },
   { label: "Mode", sort: null, width: "9%" },
-  { label: "Status", sort: "status", width: "9%" },
+  { label: "Decision", sort: "disposition", width: "9%" },
 ]
 
 const cell = "px-3 py-2.5 align-middle"
@@ -152,7 +152,7 @@ export default function SignalsTable({
                 </td>
 
                 <td className={cell}>
-                  <LeadStatusBadge status={lead.status} />
+                  <DispositionBadge disposition={lead.disposition} />
                 </td>
               </tr>
             )

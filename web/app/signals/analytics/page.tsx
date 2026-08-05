@@ -9,7 +9,7 @@ import {
   BarList, ColumnChart, DataTable, RAMP_DARK, RAMP_LIGHT, StatTile,
   type BarRow,
 } from "@/components/signal-charts"
-import { ALL_SOURCES, ALL_STATUSES, getLeadAnalytics, type LeadAnalytics } from "@/lib/leads"
+import { ALL_DISPOSITIONS, ALL_SOURCES, getLeadAnalytics, type LeadAnalytics } from "@/lib/leads"
 import { timeAgo } from "@/lib/utils"
 
 // The bands are an ordered scale, not categories, so they get one hue
@@ -73,11 +73,11 @@ export default function SignalsAnalyticsPage() {
     [data, ramp],
   )
 
-  const statusRows: BarRow[] = useMemo(
+  const dispositionRows: BarRow[] = useMemo(
     () =>
-      ALL_STATUSES.map((status) => ({
-        label: status,
-        value: data?.statuses?.[status] ?? 0,
+      ALL_DISPOSITIONS.map((disposition) => ({
+        label: disposition,
+        value: data?.dispositions?.[disposition] ?? 0,
       })).filter((row) => row.value > 0),
     [data],
   )
@@ -198,8 +198,8 @@ export default function SignalsAnalyticsPage() {
                            emptyHint="Nothing qualified yet." />
                 </Panel>
 
-                <Panel title="Status funnel" subtitle="Where the pipeline actually stands.">
-                  <BarList rows={statusRows} total={data.total}
+                <Panel title="Decisions" subtitle="How reps have triaged the feed — approved, rejected, or not yet decided.">
+                  <BarList rows={dispositionRows} total={data.total}
                            emptyHint="No leads have been worked yet." />
                 </Panel>
 

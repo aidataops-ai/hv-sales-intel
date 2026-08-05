@@ -7,10 +7,10 @@ is the whole point:
     WORKFLOW_COLUMNS  written by operators, never touched by the qualifier
 
 `write_verdicts` filters its payload down to `VERDICT_COLUMNS` before it
-writes. A careless `update ... set status = ...` from a re-qualification pass
-would silently reset every SDR's pipeline, and because the leads still *look*
-fine afterwards nobody would notice until a rep asked where their approvals
-went. `tests/test_lead_store.py` covers it.
+writes. A careless `update ... set disposition = ...` from a re-qualification
+pass would silently reset every SDR's pipeline, and because the leads still
+*look* fine afterwards nobody would notice until a rep asked where their
+approvals went. `tests/test_lead_store.py` covers it.
 """
 
 from __future__ import annotations
@@ -36,11 +36,11 @@ VERDICT_COLUMNS = frozenset({
 
 # Written by operators. The qualifier must never touch these.
 WORKFLOW_COLUMNS = frozenset({
-    "status", "reject_reason", "notes", "assigned_to", "assigned_at",
+    "disposition", "reject_reason", "notes",
     "last_touched_by", "last_touched_at", "contacted_at",
 })
 
-LEAD_STATUSES = ("new", "approved", "contacted", "replied", "booked", "rejected")
+LEAD_DISPOSITIONS = ("undecided", "approved", "rejected")
 
 # What the feed shows when nothing is asked for. See `_apply_filters`.
 DEFAULT_DECISION = "keep"
@@ -61,8 +61,8 @@ LEAD_SELECT = "*, posting:job_postings!inner(*)"
 _LEAD_LIST_COLS = (
     "id, company_id, posting_id, decision, confidence, confidence_band, "
     "band_rank, reason, employer_type, role_suitable, work_mode, service_line, "
-    "provider_count, model, qualified_at, status, reject_reason, notes, "
-    "assigned_to, assigned_at, last_touched_by, last_touched_at, contacted_at, "
+    "provider_count, model, qualified_at, disposition, reject_reason, notes, "
+    "last_touched_by, last_touched_at, contacted_at, "
     "export_count, last_exported_at, last_exported_by, created_at"
 )
 _POSTING_LIST_COLS = (
@@ -234,12 +234,12 @@ def write_verdicts(company_id: str, verdicts: list[dict]) -> int:
     """Insert or refresh the verdict half of a lead row. Returns rows written.
 
     **Workflow columns are stripped, not merely omitted.** A caller that
-    accidentally passes `status` gets it dropped here rather than clobbering an
-    SDR's pipeline — the qualifier runs unattended on a cron, so a bug in it
-    would go unnoticed until someone asked where their approvals went.
+    accidentally passes `disposition` gets it dropped here rather than
+    clobbering an SDR's pipeline — the qualifier runs unattended on a cron, so a
+    bug in it would go unnoticed until someone asked where their approvals went.
 
-    New rows land at `status='new'` via the column default. Re-qualified rows
-    keep whatever status they had.
+    New rows land at `disposition='undecided'` via the column default.
+    Re-qualified rows keep whatever disposition they had.
     """
     client = _client()
     if not client or not company_id or not verdicts:
@@ -295,7 +295,7 @@ _SORT_COLUMNS: dict[str, tuple[str, bool]] = {
     "city":       ("city", True),
     "track":      ("service_line", False),
     "confidence": ("confidence", False),
-    "status":     ("status", False),
+    "disposition": ("disposition", False),
     "created":    ("created_at", False),
 }
 
@@ -310,8 +310,8 @@ def _apply_filters(query, *, filters: dict):
         query = query.in_("posting.city", cities)
     if tracks := filters.get("tracks"):
         query = query.in_("service_line", tracks)
-    if status := filters.get("status"):
-        query = query.eq("status", status)
+    if disposition := filters.get("disposition"):
+        query = query.eq("disposition", disposition)
     if band := filters.get("band"):
         query = query.eq("confidence_band", band)
     # The qualifier writes a row for every posting it judges, and most are
@@ -329,8 +329,6 @@ def _apply_filters(query, *, filters: dict):
         query = query.eq("posting.source", source)
     if state := filters.get("state"):
         query = query.eq("posting.state", state)
-    if assigned := filters.get("assigned_to"):
-        query = query.eq("assigned_to", assigned)
     if filters.get("salary") == "yes":
         query = query.not_.is_("posting.salary_min", "null")
     elif filters.get("salary") == "no":
@@ -445,12 +443,11 @@ def update_lead_workflow(
     """Write the workflow half of a lead. Verdict columns are stripped.
 
     The mirror image of `write_verdicts`: an operator action must never
-    overwrite a qualifier field, or a status change would rewrite the reason
-    the lead was surfaced in the first place.
+    overwrite a qualifier field, or a disposition change would rewrite the
+    reason the lead was surfaced in the first place.
 
-    `contacted_at` and `assigned_at` are stamped from the transition rather
-    than trusted from the client, so the funnel in the analytics view measures
-    when something actually happened.
+    `last_touched_by`/`last_touched_at` are stamped from the write rather than
+    trusted from the client, so the history reflects who actually touched it.
     """
     client = _client()
     if not client or not company_id:
@@ -460,10 +457,6 @@ def update_lead_workflow(
     if not payload:
         return get_lead(company_id, lead_id)
 
-    if payload.get("status") == "contacted":
-        payload.setdefault("contacted_at", _now())
-    if "assigned_to" in payload:
-        payload["assigned_at"] = _now() if payload["assigned_to"] else None
     if user_id:
         payload["last_touched_by"] = user_id
         payload["last_touched_at"] = _now()
@@ -623,7 +616,7 @@ def lead_analytics(company_id: str, days: int = 30) -> dict:
         rows = (
             client.table("company_job_leads")
             .select(
-                "decision, confidence_band, status, reject_reason, service_line, "
+                "decision, confidence_band, disposition, reject_reason, service_line, "
                 "created_at, posting:job_postings!inner(source, posted_at)"
             )
             .eq("company_id", company_id)
@@ -637,7 +630,7 @@ def lead_analytics(company_id: str, days: int = 30) -> dict:
 
     by_day: dict[str, dict[str, int]] = {}
     bands: dict[str, int] = {}
-    statuses: dict[str, int] = {}
+    dispositions: dict[str, int] = {}
     reject_reasons: dict[str, int] = {}
     tracks: dict[str, int] = {}
     keeps = 0
@@ -660,8 +653,9 @@ def lead_analytics(company_id: str, days: int = 30) -> dict:
         # when 743 of those were confident rejections.
         if is_keep and (band := row.get("confidence_band")):
             bands[band] = bands.get(band, 0) + 1
-        statuses[row.get("status") or "new"] = statuses.get(row.get("status") or "new", 0) + 1
-        if row.get("status") == "rejected":
+        disposition = row.get("disposition") or "undecided"
+        dispositions[disposition] = dispositions.get(disposition, 0) + 1
+        if disposition == "rejected":
             reason = (row.get("reject_reason") or "(no reason given)").strip()
             reject_reasons[reason] = reject_reasons.get(reason, 0) + 1
         if track := row.get("service_line"):
@@ -675,7 +669,7 @@ def lead_analytics(company_id: str, days: int = 30) -> dict:
             for day, counts in sorted(by_day.items())[-days:]
         ],
         "bands": bands,
-        "statuses": statuses,
+        "dispositions": dispositions,
         "tracks": tracks,
         "reject_reasons": sorted(
             ({"reason": r, "count": c} for r, c in reject_reasons.items()),
@@ -688,7 +682,7 @@ def lead_analytics(company_id: str, days: int = 30) -> dict:
 def _empty_analytics() -> dict:
     return {
         "total": 0, "keep_rate": 0.0, "per_day": [], "bands": {},
-        "statuses": {}, "tracks": {}, "reject_reasons": [],
+        "dispositions": {}, "tracks": {}, "reject_reasons": [],
         "collector": {"targets": 0, "swept": 0, "unfinished": 0,
                       "zero_row_targets": 0, "last_run_at": None,
                       "last_posting_at": None, "alert": None},

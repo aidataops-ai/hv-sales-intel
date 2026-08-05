@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils"
-import type { Band, LeadStatus } from "@/lib/leads"
+import type { Band, LeadDisposition } from "@/lib/leads"
 
 const pill =
   "text-[10px] font-semibold px-2 py-0.5 rounded-full uppercase tracking-wide whitespace-nowrap"
@@ -32,19 +32,21 @@ export function BandBadge({ band }: { band: Band | null }) {
   )
 }
 
-const STATUS_COLORS: Record<LeadStatus, string> = {
-  new: "bg-gray-100 text-gray-600 dark:bg-white/10 dark:text-[#d9d9d9]",
-  approved: "bg-navy-100 text-navy-700 dark:bg-navy-500/25 dark:text-navy-200",
-  contacted: "bg-teal-100 text-teal-700 dark:bg-teal-500/20 dark:text-teal-300",
-  replied: "bg-teal-100 text-teal-800 dark:bg-teal-500/25 dark:text-teal-200",
-  booked: "bg-teal-600 text-white dark:bg-teal-600 dark:text-white",
+/**
+ * The operator's call on a lead: the lightweight approve/reject flag that
+ * replaced the old multi-stage status pipeline. `undecided` is the resting
+ * state a lead lands in before anyone has triaged it.
+ */
+const DISPOSITION_COLORS: Record<LeadDisposition, string> = {
+  undecided: "bg-gray-100 text-gray-600 dark:bg-white/10 dark:text-[#d9d9d9]",
+  approved: "bg-teal-600 text-white dark:bg-teal-600 dark:text-white",
   rejected: "bg-gray-200 text-gray-500 dark:bg-white/5 dark:text-gray-400",
 }
 
-export function LeadStatusBadge({ status }: { status: LeadStatus }) {
+export function DispositionBadge({ disposition }: { disposition: LeadDisposition }) {
   return (
-    <span className={cn(pill, STATUS_COLORS[status] ?? STATUS_COLORS.new)}>
-      {status}
+    <span className={cn(pill, DISPOSITION_COLORS[disposition] ?? DISPOSITION_COLORS.undecided)}>
+      {disposition}
     </span>
   )
 }

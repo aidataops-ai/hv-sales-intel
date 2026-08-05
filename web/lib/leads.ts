@@ -15,11 +15,12 @@ const IS_PROD = process.env.NODE_ENV === "production"
 
 export type Band = "ready" | "check" | "decide"
 export type WorkMode = "onsite" | "remote" | "hybrid"
-export type LeadStatus =
-  | "new" | "approved" | "contacted" | "replied" | "booked" | "rejected"
+/** The operator's call on a lead — the lightweight approve/reject flag that
+ *  replaced the old multi-stage status pipeline. */
+export type LeadDisposition = "undecided" | "approved" | "rejected"
 
-export const ALL_STATUSES: LeadStatus[] = [
-  "new", "approved", "contacted", "replied", "booked", "rejected",
+export const ALL_DISPOSITIONS: LeadDisposition[] = [
+  "undecided", "approved", "rejected",
 ]
 export const ALL_BANDS: Band[] = ["ready", "check", "decide"]
 export const ALL_WORK_MODES: WorkMode[] = ["onsite", "remote", "hybrid"]
@@ -62,11 +63,9 @@ export interface Lead {
   qualified_at: string | null
 
   // Workflow (written by operators)
-  status: LeadStatus
+  disposition: LeadDisposition
   reject_reason: string | null
   notes: string | null
-  assigned_to: string | null
-  assigned_to_name?: string | null
   last_touched_at: string | null
   contacted_at: string | null
   created_at: string
@@ -78,20 +77,18 @@ export type DecisionFilter = "keep" | "discard" | "all"
 export interface LeadFilters {
   cities: string[]
   tracks: string[]
-  status: string
   band: string
   /** "" means the API default, which is keeps only. */
   decision: string
   work_mode: string
   source: string
   salary: string          // "" | "yes" | "no"
-  assigned_to: string
   search: string
 }
 
 export const EMPTY_LEAD_FILTERS: LeadFilters = {
-  cities: [], tracks: [], status: "", band: "", decision: "", work_mode: "",
-  source: "", salary: "", assigned_to: "", search: "",
+  cities: [], tracks: [], band: "", decision: "", work_mode: "",
+  source: "", salary: "", search: "",
 }
 
 /** Turn the filter state into the query params both the feed and the CSV
@@ -102,13 +99,11 @@ export function filterParams(
   const out: Record<string, string | string[]> = {}
   if (filters.cities.length) out.cities = filters.cities
   if (filters.tracks.length) out.tracks = filters.tracks
-  if (filters.status) out.status = filters.status
   if (filters.band) out.band = filters.band
   if (filters.decision) out.decision = filters.decision
   if (filters.work_mode) out.work_mode = filters.work_mode
   if (filters.source) out.source = filters.source
   if (filters.salary) out.salary = filters.salary
-  if (filters.assigned_to) out.assigned_to = filters.assigned_to
   if (filters.search) out.search = filters.search
   return out
 }
@@ -183,7 +178,7 @@ export async function getLead(id: number): Promise<Lead | null> {
 
 export async function updateLead(
   id: number,
-  fields: Partial<Pick<Lead, "status" | "reject_reason" | "notes" | "assigned_to">>,
+  fields: Partial<Pick<Lead, "disposition" | "reject_reason" | "notes">>,
 ): Promise<Lead> {
   return leadFetch<Lead>(`/api/leads/${id}`, {
     method: "PATCH",
@@ -211,7 +206,7 @@ export interface LeadAnalytics {
   keep_rate: number
   per_day: Array<Record<string, string | number>>
   bands: Record<string, number>
-  statuses: Record<string, number>
+  dispositions: Record<string, number>
   tracks: Record<string, number>
   reject_reasons: Array<{ reason: string; count: number }>
   collector: {

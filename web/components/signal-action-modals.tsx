@@ -39,7 +39,7 @@ function Shell({
 }
 
 /**
- * Approve: set status and hand over the drafted message.
+ * Approve: set the disposition and hand over the drafted message.
  *
  * The draft is editable before copying because the pitch is matched to work
  * mode — an on-site posting with an advertised wage leads with the cost
