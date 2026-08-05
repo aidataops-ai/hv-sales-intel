@@ -2188,3 +2188,230 @@ def seed_lead_targets(admin: dict = Depends(require_admin)):
         raise HTTPException(400, f"Lead config is invalid: {e}")
     seeded = lead_targets.seed_search_targets(admin["company_id"])
     return {"config": config_summary, "seeded": seeded}
+
+
+# ---------------------------------------------------------------------------
+# Job-posting leads — operator routes.
+#
+# Route order matters: `/api/leads/export.csv` and the other literal paths must
+# be declared BEFORE `/api/leads/{lead_id}`, or FastAPI matches the parameter
+# route first and rejects "export.csv" as a non-integer id.
+# ---------------------------------------------------------------------------
+
+# CSV column order — kept in sync with the export endpoint below.
+_LEAD_EXPORT_COLUMNS = [
+    "employer_name", "title", "city", "state", "source", "url", "posted_at",
+    "salary_min", "salary_max", "salary_interval", "work_mode", "service_line",
+    "employer_type", "provider_count", "confidence", "confidence_band",
+    "reason", "draft", "status", "assigned_to_name", "created_at",
+]
+
+
+def _lead_filters(
+    cities: str | None, tracks: str | None, status: str | None,
+    band: str | None, decision: str | None, work_mode: str | None,
+    source: str | None, state: str | None, salary: str | None,
+    assigned_to: str | None, search: str | None,
+) -> dict:
+    """Build the filter dict once, so the feed and the export cannot drift.
+
+    Exporting the whole table while the operator is looking at "Miami + Tampa,
+    Dental track" is the obvious trap here; sharing this is what prevents it.
+    """
+    return {
+        "cities": [c for c in (cities.split(",") if cities else []) if c],
+        "tracks": [t for t in (tracks.split(",") if tracks else []) if t],
+        "status": status, "band": band, "decision": decision,
+        "work_mode": work_mode, "source": source, "state": state,
+        "salary": salary, "assigned_to": assigned_to, "search": search,
+    }
+
+
+def _attach_assignee_names(rows: list[dict]) -> list[dict]:
+    """Resolve assigned_to UUIDs to display names in one round-trip."""
+    ids = [r.get("assigned_to") for r in rows if r.get("assigned_to")]
+    names = resolve_user_names(ids) if ids else {}
+    for row in rows:
+        assignee = row.get("assigned_to")
+        row["assigned_to_name"] = names.get(assignee, "") if assignee else ""
+    return rows
+
+
+@app.get("/api/leads/filters")
+def lead_filter_options(user: dict = Depends(get_current_user)):
+    """Distinct cities and tracks present in this tenant's leads.
+
+    Derived from the data rather than a fixed list — a tenant whose targets
+    cover three cities should not scroll past thirty empty ones.
+    """
+    return lead_store.filter_options(user["company_id"])
+
+
+@app.get("/api/leads/analytics")
+def lead_analytics(
+    days: int = Query(30, ge=1, le=365),
+    user: dict = Depends(get_current_user),
+):
+    return lead_store.lead_analytics(user["company_id"], days=days)
+
+
+@app.get("/api/leads/export.csv")
+def export_leads_csv(
+    max_exports: str | None = Query(
+        None,
+        description=(
+            "Filter on existing export_count. Missing/empty exports every row. "
+            "0 = only never-exported rows. N = export_count <= N."
+        ),
+    ),
+    cities: str | None = Query(None),
+    tracks: str | None = Query(None),
+    status: str | None = Query(None),
+    band: str | None = Query(None),
+    decision: str | None = Query(None),
+    work_mode: str | None = Query(None),
+    source: str | None = Query(None),
+    state: str | None = Query(None),
+    salary: str | None = Query(None),
+    assigned_to: str | None = Query(None),
+    search: str | None = Query(None),
+    user: dict = Depends(get_current_user),
+):
+    """Stream a filtered CSV and stamp export_count on every row included.
+
+    Takes the same filter params as `GET /api/leads` so a filtered view
+    exports exactly what it is showing. `max_exports` has the same semantics
+    as the practices export: leave it empty to take everything, pass `0` next
+    time to skip rows already downloaded.
+    """
+    import csv
+    import io
+
+    cap: int | None = None
+    if max_exports is not None and max_exports != "":
+        try:
+            cap = max(0, int(max_exports))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="max_exports must be an integer")
+
+    rows = lead_store.leads_for_export(
+        user["company_id"],
+        filters=_lead_filters(cities, tracks, status, band, decision, work_mode,
+                              source, state, salary, assigned_to, search),
+        max_exports=cap,
+    )
+    _attach_assignee_names(rows)
+
+    def _serialize(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, list):
+            return ", ".join(str(v) for v in value)
+        if isinstance(value, dict):
+            return json.dumps(value)
+        return str(value)
+
+    def iter_csv():
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(_LEAD_EXPORT_COLUMNS)
+        yield buf.getvalue()
+        buf.seek(0); buf.truncate(0)
+        for row in rows:
+            writer.writerow([_serialize(row.get(col)) for col in _LEAD_EXPORT_COLUMNS])
+            yield buf.getvalue()
+            buf.seek(0); buf.truncate(0)
+
+    lead_store.increment_export_counts(
+        [r["id"] for r in rows if r.get("id")], user_id=user.get("id"),
+    )
+
+    cap_label = "all" if cap is None else f"max{cap}"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+    filename = f"instant-signals-{cap_label}-{stamp}.csv"
+    return StreamingResponse(
+        iter_csv(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.get("/api/leads")
+def list_leads_endpoint(
+    cities: str | None = Query(None, description="comma-separated"),
+    tracks: str | None = Query(None, description="comma-separated"),
+    status: str | None = Query(None),
+    band: str | None = Query(None),          # ready | check | decide
+    decision: str | None = Query(None),      # keep | discard
+    work_mode: str | None = Query(None),     # onsite | remote | hybrid
+    source: str | None = Query(None),        # indeed | linkedin
+    state: str | None = Query(None),
+    salary: str | None = Query(None),        # "yes" | "no"
+    assigned_to: str | None = Query(None),
+    search: str | None = Query(None),        # employer + title
+    sort: str = Query("band"),
+    dir: str = Query("asc"),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(50, ge=1, le=200),
+    user: dict = Depends(get_current_user),
+):
+    rows, total = lead_store.list_leads(
+        user["company_id"],
+        filters=_lead_filters(cities, tracks, status, band, decision, work_mode,
+                              source, state, salary, assigned_to, search),
+        sort=sort, direction=dir, offset=offset, limit=limit,
+    )
+    _attach_assignee_names(rows)
+    return {
+        "leads": rows,
+        "count": len(rows),
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+        "has_more": offset + len(rows) < total,
+    }
+
+
+@app.get("/api/leads/{lead_id}")
+def get_lead_endpoint(lead_id: int, user: dict = Depends(get_current_user)):
+    lead = lead_store.get_lead(user["company_id"], lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    _attach_assignee_names([lead])
+    return lead
+
+
+class PatchLeadRequest(BaseModel):
+    status: str | None = None
+    reject_reason: str | None = None
+    notes: str | None = None
+    assigned_to: str | None = None
+
+
+@app.patch("/api/leads/{lead_id}")
+def patch_lead_endpoint(
+    lead_id: int,
+    body: PatchLeadRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Update the workflow half of a lead.
+
+    Only the four fields above are accepted, and `lead_store` strips anything
+    outside `WORKFLOW_COLUMNS` again before writing — an operator action must
+    never rewrite the reason the lead was surfaced.
+    """
+    if body.status and body.status not in lead_store.LEAD_STATUSES:
+        raise HTTPException(
+            400, f"status must be one of: {', '.join(lead_store.LEAD_STATUSES)}"
+        )
+    if not lead_store.get_lead(user["company_id"], lead_id):
+        raise HTTPException(404, "Lead not found")
+
+    fields = body.model_dump(exclude_unset=True)
+    updated = lead_store.update_lead_workflow(
+        user["company_id"], lead_id, fields, user_id=user.get("id"),
+    )
+    if not updated:
+        raise HTTPException(500, "Lead update failed")
+    _attach_assignee_names([updated])
+    return updated
