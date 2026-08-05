@@ -79,7 +79,10 @@ create table if not exists company_job_leads (
   -- re-sort in application code, which breaks pagination.
   band_rank       smallint,   -- 1 = ready, 2 = check, 3 = decide
   reason          text,
-  employer_type   text,     -- independent | group | system | dso | vet | agency | other
+  -- Left unconstrained on purpose: the qualifier validates against its own
+  -- enum (src/lead_qualifier.py:EMPLOYER_TYPES) and a check constraint here
+  -- would turn a prompt revision into a migration.
+  employer_type   text,     -- independent | group | system | dso | vet | agency | nonhealthcare
   role_suitable   boolean,
   work_mode       text check (work_mode in ('onsite','remote','hybrid')),
   service_line    text,

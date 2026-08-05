@@ -51,6 +51,14 @@ OPENAI_COST_PER_MILLION_TOKENS: dict[str, dict[str, float]] = {
     "default":      {"input": 200,   "cached_input": 50,     "output": 800},
 }
 
+# NOTE: `gpt-5.6-terra` — the lead qualifier's pinned model (ADR-06) — has no
+# band above, so its usage is costed and billed against `default`. That is a
+# deliberate placeholder, not an omission: published pricing for it could not
+# be confirmed at the time this shipped, and inventing a band would put wrong
+# numbers straight into the credit ledger. Qualification is ~172 in / ~175 out
+# tokens per posting, so the absolute error stays small — but add the real
+# band here before anyone reasons about lead-level unit economics.
+
 # Cents per Places-API call. Pro SKU Text Search is $0.032 = 3.2¢; Place
 # Details (Pro) is $0.017 = 1.7¢. Update if you're on a different SKU.
 PLACES_COST_CENTS: dict[str, float] = {
@@ -170,7 +178,7 @@ def record_event(
 
 def record_openai(
     *,
-    kind: str,                 # 'openai_analyze' | 'openai_script' | 'openai_email' | 'openai_icp_parse'
+    kind: str,                 # 'openai_analyze' | 'openai_script' | 'openai_email' | 'openai_icp_parse' | 'openai_qualify'
     response: Any,             # the openai chat completion response
     company_id: str | None = None,
     user_id: str | None = None,

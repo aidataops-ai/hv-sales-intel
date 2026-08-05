@@ -11,6 +11,23 @@ class Settings(BaseSettings):
     # more accurate than gpt-4o on multi-criteria classification.
     openai_model: str = "gpt-4.1"
 
+    # ----- Job-posting leads (docs/specs/2026-08-05-hiring-signal-collector-*) --
+    # Benchmarked against higher reasoning effort on identical inputs: both
+    # scored identically on every accuracy test, while high effort cost ~57%
+    # more output tokens and ~81% more wall clock (ADR-06).
+    qualifier_model: str = "gpt-5.6-terra"
+    qualifier_reasoning_effort: str = "medium"
+    qualifier_batch_size: int = 20
+    # Stage batch sizes. Both stages run as serverless invocations behind
+    # /api/index.py, so a full sweep can't fit one call — each drains a
+    # bounded slice and is safe to re-run (ADR-09).
+    lead_collect_batch: int = 40
+    lead_qualify_batch: int = 60
+    # Shared secret for the cron stages, matching the existing webhook
+    # pattern. Empty disables the cron routes outright rather than leaving
+    # them open.
+    lead_cron_secret: str = ""
+
     # Bootstrap admin (seeded on startup if profiles has zero admins)
     bootstrap_admin_email: str = ""
     bootstrap_admin_password: str = ""
