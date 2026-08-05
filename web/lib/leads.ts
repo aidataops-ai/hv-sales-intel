@@ -11,7 +11,6 @@
  */
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ""
-const IS_PROD = process.env.NODE_ENV === "production"
 
 export type Band = "ready" | "check" | "decide"
 export type WorkMode = "onsite" | "remote" | "hybrid"
@@ -114,7 +113,11 @@ export function filterParams(
 }
 
 async function leadFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  if (!API_URL && !IS_PROD) throw new Error("NO_API")
+  // An empty API_URL means same-origin: the Vercel rewrite in production, the
+  // dev proxy in next.config.mjs locally. Both work, so the request is always
+  // worth making — an earlier version bailed out here when API_URL was unset
+  // in dev, which silently produced an empty feed without ever hitting the
+  // network. A real connection failure is caught by the callers below.
   const res = await fetch(`${API_URL}${path}`, { ...init, credentials: "include" })
   if (res.status === 401 && typeof window !== "undefined") {
     const redirect = encodeURIComponent(window.location.pathname)
@@ -218,6 +221,7 @@ export interface LeadAnalytics {
     targets: number
     swept: number
     zero_row_targets: number
+    unfinished: number
     last_run_at: string | null
     last_posting_at: string | null
     alert: string | null
