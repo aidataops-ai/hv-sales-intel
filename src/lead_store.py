@@ -42,6 +42,10 @@ WORKFLOW_COLUMNS = frozenset({
 
 LEAD_STATUSES = ("new", "approved", "contacted", "replied", "booked", "rejected")
 
+# What the feed shows when nothing is asked for. See `_apply_filters`.
+DEFAULT_DECISION = "keep"
+DECISION_FILTERS = ("keep", "discard", "all")
+
 # One row per lead, with its posting inlined. `!inner` matters: it makes the
 # embed a join rather than a nested fetch, so filters on posting columns
 # (city, source, work mode) restrict the *lead* rows instead of just blanking
@@ -287,7 +291,14 @@ def _apply_filters(query, *, filters: dict):
         query = query.eq("status", status)
     if band := filters.get("band"):
         query = query.eq("confidence_band", band)
-    if decision := filters.get("decision"):
+    # The qualifier writes a row for every posting it judges, and most are
+    # discards — systems, DSOs, agencies, clinical roles. Storing them is
+    # deliberate (they feed the reject-reason analytics and stop a posting
+    # being re-qualified and re-billed), but showing them by default would
+    # bury a handful of real leads in the noise. "all" is the explicit
+    # opt-out, used when spot-checking the qualifier.
+    decision = filters.get("decision") or DEFAULT_DECISION
+    if decision != "all":
         query = query.eq("decision", decision)
     if work_mode := filters.get("work_mode"):
         query = query.eq("work_mode", work_mode)

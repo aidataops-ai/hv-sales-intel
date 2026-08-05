@@ -85,3 +85,55 @@ def test_patch_only_exposes_workflow_fields():
     from api.index import PatchLeadRequest
 
     assert set(PatchLeadRequest.model_fields) <= lead_store.WORKFLOW_COLUMNS
+
+
+def test_the_feed_defaults_to_keeps_only():
+    """Most postings are discards — systems, DSOs, clinical roles. Showing them
+    by default buries the handful of real leads."""
+    filters = _lead_filters(
+        cities=None, tracks=None, status=None, band=None, decision=None,
+        work_mode=None, source=None, state=None, salary=None,
+        assigned_to=None, search=None,
+    )
+    assert filters["decision"] in (None, "", "keep")
+
+    captured = {}
+
+    class Q:
+        def __getattr__(self, name):
+            def f(*a, **k):
+                if name == "eq":
+                    captured[a[0]] = a[1]
+                return self
+            return f
+
+    lead_store._apply_filters(Q(), filters=filters)
+    assert captured["decision"] == "keep"
+
+
+def test_all_is_the_explicit_opt_out():
+    captured = {}
+
+    class Q:
+        def __getattr__(self, name):
+            def f(*a, **k):
+                if name == "eq":
+                    captured[a[0]] = a[1]
+                return self
+            return f
+
+    lead_store._apply_filters(Q(), filters={"decision": "all"})
+    assert "decision" not in captured
+
+
+def test_an_unknown_decision_filter_is_rejected():
+    from fastapi import HTTPException
+
+    import pytest
+
+    with pytest.raises(HTTPException):
+        _lead_filters(
+            cities=None, tracks=None, status=None, band=None, decision="maybe",
+            work_mode=None, source=None, state=None, salary=None,
+            assigned_to=None, search=None,
+        )

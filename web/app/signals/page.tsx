@@ -47,8 +47,9 @@ function SignalsContent() {
     // The filter fields, not the whole state — re-sorting shouldn't rebuild
     // the export params object and re-render the button.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [state.cities, state.tracks, state.status, state.band, state.work_mode,
-     state.source, state.salary, state.assigned_to, state.search],
+    [state.cities, state.tracks, state.status, state.band, state.decision,
+     state.work_mode, state.source, state.salary, state.assigned_to,
+     state.search],
   )
 
   const load = useCallback(async () => {

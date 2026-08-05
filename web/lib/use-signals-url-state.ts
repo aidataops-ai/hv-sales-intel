@@ -41,6 +41,7 @@ export function useSignalsUrlState(): [
       tracks: (params.get("tracks") ?? "").split(",").filter(Boolean),
       status: params.get("status") ?? "",
       band: params.get("band") ?? "",
+      decision: params.get("decision") ?? "",
       work_mode: params.get("work_mode") ?? "",
       source: params.get("source") ?? "",
       salary: params.get("salary") ?? "",
@@ -68,6 +69,7 @@ export function useSignalsUrlState(): [
       if (merged.tracks.length) sp.set("tracks", merged.tracks.join(","))
       if (merged.status) sp.set("status", merged.status)
       if (merged.band) sp.set("band", merged.band)
+      if (merged.decision) sp.set("decision", merged.decision)
       if (merged.work_mode) sp.set("work_mode", merged.work_mode)
       if (merged.source) sp.set("source", merged.source)
       if (merged.salary) sp.set("salary", merged.salary)

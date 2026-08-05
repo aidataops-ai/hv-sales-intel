@@ -72,11 +72,16 @@ export interface Lead {
   created_at: string
 }
 
+/** What the feed shows. The API defaults to `keep`; `all` is the opt-out. */
+export type DecisionFilter = "keep" | "discard" | "all"
+
 export interface LeadFilters {
   cities: string[]
   tracks: string[]
   status: string
   band: string
+  /** "" means the API default, which is keeps only. */
+  decision: string
   work_mode: string
   source: string
   salary: string          // "" | "yes" | "no"
@@ -85,7 +90,7 @@ export interface LeadFilters {
 }
 
 export const EMPTY_LEAD_FILTERS: LeadFilters = {
-  cities: [], tracks: [], status: "", band: "", work_mode: "",
+  cities: [], tracks: [], status: "", band: "", decision: "", work_mode: "",
   source: "", salary: "", assigned_to: "", search: "",
 }
 
@@ -99,6 +104,7 @@ export function filterParams(
   if (filters.tracks.length) out.tracks = filters.tracks
   if (filters.status) out.status = filters.status
   if (filters.band) out.band = filters.band
+  if (filters.decision) out.decision = filters.decision
   if (filters.work_mode) out.work_mode = filters.work_mode
   if (filters.source) out.source = filters.source
   if (filters.salary) out.salary = filters.salary

@@ -27,7 +27,7 @@ const labelClass =
 export default function SignalsFilterBar({ state, onChange, options, onReset }: Props) {
   const active =
     state.cities.length + state.tracks.length +
-    [state.status, state.band, state.work_mode, state.source,
+    [state.status, state.band, state.decision, state.work_mode, state.source,
      state.salary, state.search].filter(Boolean).length
 
   return (
@@ -146,6 +146,21 @@ export default function SignalsFilterBar({ state, onChange, options, onReset }: 
             <option value="">Any</option>
             <option value="yes">Salary stated</option>
             <option value="no">No salary</option>
+          </select>
+        </div>
+        <div>
+          {/* The feed is keeps-only unless asked otherwise. Discards are still
+              stored — they drive the reject-reason analytics — but most
+              postings are one, so showing them by default buries the leads. */}
+          <label className={labelClass}>Verdict</label>
+          <select
+            value={state.decision}
+            onChange={(e) => onChange({ decision: e.target.value })}
+            className={select}
+          >
+            <option value="">Kept only</option>
+            <option value="discard">Discarded only</option>
+            <option value="all">Everything qualified</option>
           </select>
         </div>
         <div>
