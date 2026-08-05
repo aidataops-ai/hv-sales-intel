@@ -14,8 +14,27 @@ import { Download, ChevronDown } from "lucide-react"
  * After the file lands, the backend has already incremented export_count
  * by 1 on every exported row, so a follow-up export with `0` will skip
  * the rows you already pulled.
+ *
+ * `params` carries the caller's active filters through to the endpoint, so an
+ * export from a filtered view contains exactly the rows on screen. Exporting
+ * the whole table while the operator is looking at "Miami + Tampa, Dental
+ * track" is the trap this prop exists to close — pass the same values the
+ * list is showing.
  */
-export default function ExportButton() {
+interface ExportButtonProps {
+  /** API path to stream the CSV from. Defaults to the practices export. */
+  endpoint?: string
+  /** Tooltip / aria label. */
+  label?: string
+  /** Extra query params — the caller's active filters. */
+  params?: Record<string, string | string[] | number | undefined | null>
+}
+
+export default function ExportButton({
+  endpoint = "/api/practices/export.csv",
+  label = "Bulk export leads to CSV",
+  params,
+}: ExportButtonProps = {}) {
   const [open, setOpen] = useState(false)
   const [maxExports, setMaxExports] = useState<string>("")
   const wrapperRef = useRef<HTMLDivElement>(null)
@@ -33,11 +52,23 @@ export default function ExportButton() {
 
   function triggerDownload() {
     const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ""
-    const qs = maxExports.trim() === "" ? "" : `?max_exports=${encodeURIComponent(maxExports.trim())}`
+    const qs = new URLSearchParams()
+    if (maxExports.trim() !== "") qs.set("max_exports", maxExports.trim())
+    for (const [key, value] of Object.entries(params ?? {})) {
+      if (value == null) continue
+      // An empty array is "no filter", not "match nothing" — omit it, or the
+      // export would come back empty for a view that is showing rows.
+      if (Array.isArray(value)) {
+        if (value.length) qs.set(key, value.join(","))
+      } else if (String(value) !== "") {
+        qs.set(key, String(value))
+      }
+    }
     // Use a hidden anchor so credentials: include behaviour applies the
     // session cookie. window.location.href works too but doesn't preserve
     // referrer or download attribute hints.
-    const url = `${API_URL}/api/practices/export.csv${qs}`
+    const query = qs.toString()
+    const url = `${API_URL}${endpoint}${query ? `?${query}` : ""}`
     const a = document.createElement("a")
     a.href = url
     a.rel = "noopener"
@@ -53,7 +84,7 @@ export default function ExportButton() {
       <button
         onClick={() => setOpen((v) => !v)}
         className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-gray-300 dark:border-white/10 text-gray-700 dark:text-[#d9d9d9] text-sm font-medium hover:bg-gray-50 dark:hover:bg-white/10 transition"
-        title="Bulk export leads to CSV"
+        title={label}
       >
         <Download className="w-4 h-4" />
         Export CSV
@@ -83,6 +114,11 @@ export default function ExportButton() {
               Filters by <code>export_count</code>. Leave empty to grab every lead.
               Set <code>0</code> next time to skip ones you&apos;ve already downloaded.
             </p>
+            {params && Object.keys(params).length > 0 && (
+              <p className="text-[11px] text-teal-700 dark:text-teal-400 mt-1.5 leading-snug">
+                Exports only the rows matching your current filters.
+              </p>
+            )}
           </div>
           <button
             onClick={triggerDownload}
