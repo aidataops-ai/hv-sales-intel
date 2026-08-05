@@ -132,3 +132,42 @@ def test_running_out_of_credits_stops_one_tenant_not_the_sweep(monkeypatch):
 
 def test_seed_targets_requires_an_admin():
     assert client.post("/api/admin/leads/seed-targets").status_code == 401
+
+
+def test_vercel_cron_bearer_header_is_accepted(monkeypatch):
+    """Vercel's scheduler sends `Authorization: Bearer $CRON_SECRET` and cannot
+    be configured to send anything else."""
+    monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
+    monkeypatch.setattr("src.lead_targets.companies_with_targets", lambda: [])
+    resp = client.post("/api/cron/leads/collect",
+                       headers={"Authorization": "Bearer s3cret"})
+    assert resp.status_code == 200
+
+
+def test_a_wrong_bearer_token_is_still_rejected(monkeypatch):
+    monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
+    resp = client.post("/api/cron/leads/collect",
+                       headers={"Authorization": "Bearer nope"})
+    assert resp.status_code == 401
+
+
+def test_both_stages_answer_a_get(monkeypatch):
+    """Vercel cron issues a GET, not a POST."""
+    monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
+    monkeypatch.setattr("src.lead_targets.companies_with_targets", lambda: [])
+    headers = {"X-Cron-Secret": "s3cret"}
+    assert client.get("/api/cron/leads/collect", headers=headers).status_code == 200
+    assert client.get("/api/cron/leads/qualify", headers=headers).status_code == 200
+
+
+def test_the_scheduled_paths_exist_on_the_app():
+    """A typo'd path in vercel.json is a cron that silently 404s forever."""
+    import json
+    import pathlib
+
+    config = json.loads(
+        (pathlib.Path(__file__).resolve().parent.parent / "vercel.json").read_text()
+    )
+    registered = {route.path for route in app.routes if hasattr(route, "path")}
+    for job in config.get("crons", []):
+        assert job["path"] in registered, job["path"]

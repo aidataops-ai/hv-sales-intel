@@ -2048,22 +2048,42 @@ from src import lead_config, lead_store, lead_targets
 from src.credits import InsufficientCreditsError as _InsufficientCredits
 
 
-def _require_cron_secret(secret: str | None) -> None:
-    """Cron routes authenticate with a shared secret header, matching the
-    existing Clay webhook pattern. An unset secret disables the routes rather
-    than leaving them open — a background stage that spends model credits is
-    not something to leave unauthenticated by omission."""
-    if not app_settings.lead_cron_secret:
+def _require_cron_secret(
+    secret: str | None,
+    authorization: str | None = None,
+) -> None:
+    """Authenticate a cron stage against the shared secret.
+
+    Two headers are accepted for one reason: `X-Cron-Secret` matches the
+    existing Clay webhook pattern and is what a manual `curl` or an external
+    scheduler would send, while Vercel's own cron sends
+    `Authorization: Bearer $CRON_SECRET` and cannot be configured to send
+    anything else.
+
+    An unset secret disables the routes rather than leaving them open — a
+    background stage that spends model credits is not something to leave
+    unauthenticated by omission.
+    """
+    expected = app_settings.lead_cron_secret
+    if not expected:
         raise HTTPException(503, "Lead cron is not configured")
-    if secret != app_settings.lead_cron_secret:
+    bearer = None
+    if authorization and authorization.lower().startswith("bearer "):
+        bearer = authorization[len("bearer "):].strip()
+    if secret != expected and bearer != expected:
         raise HTTPException(401, "Invalid secret")
 
 
+# GET is registered alongside POST on both stages because Vercel's scheduler
+# only ever issues a GET. The stages are idempotent and claim a bounded slice,
+# so neither is a meaningful mutation of anything a GET shouldn't touch.
 @app.post("/api/cron/leads/collect")
+@app.get("/api/cron/leads/collect")
 def cron_collect_leads(
     company_id: str | None = Query(None, description="Scope to one tenant"),
     limit: int | None = Query(None, ge=1, le=200),
     x_cron_secret: str | None = Header(default=None, alias="X-Cron-Secret"),
+    authorization: str | None = Header(default=None),
 ):
     """Claim the least-recently-run targets, search the boards, upsert postings.
 
@@ -2071,7 +2091,7 @@ def cron_collect_leads(
     firings advance without any state to lose, and a crashed run costs at most
     one slice of freshness.
     """
-    _require_cron_secret(x_cron_secret)
+    _require_cron_secret(x_cron_secret, authorization)
     from src.job_boards import search_jobs
 
     batch = limit or app_settings.lead_collect_batch
@@ -2126,10 +2146,12 @@ def cron_collect_leads(
 
 
 @app.post("/api/cron/leads/qualify")
+@app.get("/api/cron/leads/qualify")
 def cron_qualify_leads(
     company_id: str | None = Query(None, description="Scope to one tenant"),
     limit: int | None = Query(None, ge=1, le=500),
     x_cron_secret: str | None = Header(default=None, alias="X-Cron-Secret"),
+    authorization: str | None = Header(default=None),
 ):
     """Claim unqualified postings per tenant, batch them to the model, write
     the verdict half of each lead row.
@@ -2138,7 +2160,7 @@ def cron_qualify_leads(
     is never re-qualified — and so never re-billed — for the same tenant, so
     re-running this stage after a partial failure is free.
     """
-    _require_cron_secret(x_cron_secret)
+    _require_cron_secret(x_cron_secret, authorization)
     from src import lead_qualifier
 
     batch = limit or app_settings.lead_qualify_batch
