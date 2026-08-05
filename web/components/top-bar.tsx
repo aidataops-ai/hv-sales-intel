@@ -1,7 +1,8 @@
 "use client"
 
 import { useState } from "react"
-import { Brain, RefreshCw, Layers } from "lucide-react"
+import Link from "next/link"
+import { Brain, RefreshCw, Layers, Zap } from "lucide-react"
 import SearchBar from "./search-bar"
 import UserMenu from "./user-menu"
 import ExportButton from "./export-button"
@@ -70,6 +71,17 @@ export default function TopBar({
           <Brain className="w-4 h-4" />
           {scoreProgress ?? "Score loaded"}
         </button>
+        {/* The two lead queues ship side by side rather than merged — which
+            one an operator reaches for is a question to answer from behaviour,
+            not up front. */}
+        <Link
+          href="/signals"
+          className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-teal-600 text-teal-700 dark:text-teal-400 text-sm font-medium hover:bg-teal-50 dark:hover:bg-[#284b63]/40 transition"
+          title="Practices actively hiring for the roles we place"
+        >
+          <Zap className="w-4 h-4" />
+          Instant Signals
+        </Link>
         <ExportButton />
         <CreditBalance />
         <ThemeToggle />
