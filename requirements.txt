@@ -6,6 +6,11 @@ pydantic-settings>=2.2,<3
 python-dotenv>=1.0,<2
 openai>=1.30,<2
 beautifulsoup4>=4.12,<5
+# Pinned exactly, not ranged: JobSpy reaches Indeed through an undocumented
+# mobile-app API using a key embedded in the library. A minor release can
+# change that surface, and the failure mode is zero rows rather than an
+# error. See ADR-02 in docs/specs/2026-08-05-hiring-signal-collector-adr.md.
+python-jobspy==1.1.82
 markdownify>=0.13,<1
 pypdf>=4.0,<6
 pytest>=8.2,<9
