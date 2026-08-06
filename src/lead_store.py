@@ -46,11 +46,22 @@ LEAD_DISPOSITIONS = ("undecided", "approved", "rejected")
 DEFAULT_DECISION = "keep"
 DECISION_FILTERS = ("keep", "discard", "all")
 
+# Columns of the linked practice (job_postings.practice_id -> practices.id).
+# The provider data an operator needs to act on a signal — who to call, where,
+# the website — plus the match fields so a 'review'-grade link reads as less
+# certain than an auto one. Embedded to-one, so it is null on unlinked postings.
+_PRACTICE_COLS = (
+    "id, place_id, name, address, city, state, phone, website, "
+    "category, service_line, rating, review_count"
+)
+
 # One row per lead, with its posting inlined. `!inner` matters: it makes the
 # embed a join rather than a nested fetch, so filters on posting columns
 # (city, source, work mode) restrict the *lead* rows instead of just blanking
-# the embedded object.
-LEAD_SELECT = "*, posting:job_postings!inner(*)"
+# the embedded object. The practice is a nested to-one embed under the posting.
+LEAD_SELECT = (
+    f"*, posting:job_postings!inner(*, practice:practices({_PRACTICE_COLS}))"
+)
 
 # The list feed shows a table row per lead and never renders the two heavy text
 # columns — the lead `draft` (up to 8 KB) and the posting `description` (the full
@@ -69,10 +80,12 @@ _POSTING_LIST_COLS = (
     "id, source, external_id, url, title, employer_name, employer_name_norm, "
     "location_raw, city, state, posted_at, salary_min, salary_max, "
     "salary_interval, board_remote_flag, search_term, search_location, "
-    "service_line_hint, first_seen_at, last_seen_at"
+    "service_line_hint, first_seen_at, last_seen_at, "
+    "practice_id, match_confidence, match_status"
 )
 LEAD_LIST_SELECT = (
-    f"{_LEAD_LIST_COLS}, posting:job_postings!inner({_POSTING_LIST_COLS})"
+    f"{_LEAD_LIST_COLS}, posting:job_postings!inner("
+    f"{_POSTING_LIST_COLS}, practice:practices({_PRACTICE_COLS}))"
 )
 
 _PAGE = 1000
@@ -113,7 +126,12 @@ def _flatten(row: dict) -> dict:
     if not row:
         return row
     posting = row.pop("posting", None) or {}
+    # Lift the nested practice up to a top-level key, not folded into the
+    # posting fields — it is its own object (or null), and callers render it
+    # as a distinct panel rather than more posting columns.
+    practice = posting.pop("practice", None)
     merged = dict(row)
+    merged["practice"] = practice
     merged["posting_created_at"] = posting.pop("first_seen_at", None)
     posting.pop("id", None)
     for key, value in posting.items():
@@ -333,6 +351,13 @@ def _apply_filters(query, *, filters: dict):
         query = query.not_.is_("posting.salary_min", "null")
     elif filters.get("salary") == "no":
         query = query.is_("posting.salary_min", "null")
+    # Whether the posting resolved to a practice in the bank. "yes" is the set
+    # an operator can act on with provider data in hand; "no" is the backlog
+    # the next scan/matcher pass should try to cover.
+    if filters.get("practice") == "yes":
+        query = query.not_.is_("posting.practice_id", "null")
+    elif filters.get("practice") == "no":
+        query = query.is_("posting.practice_id", "null")
     if search := (filters.get("search") or "").strip():
         # Commas separate OR members and parens delimit groups; `*` is the
         # wildcard. Strip all of them so a search term can't corrupt the filter.

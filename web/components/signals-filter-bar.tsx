@@ -28,7 +28,7 @@ export default function SignalsFilterBar({ state, onChange, options, onReset }: 
   const active =
     state.cities.length + state.tracks.length +
     [state.work_mode, state.source,
-     state.salary, state.search].filter(Boolean).length
+     state.salary, state.practice, state.search].filter(Boolean).length
 
   return (
     <div className="px-5 py-4 border-b border-gray-200/60 dark:border-white/10 space-y-3">
@@ -79,7 +79,7 @@ export default function SignalsFilterBar({ state, onChange, options, onReset }: 
         </div>
       </div>
 
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3">
         <div>
           <label className={labelClass}>Mode</label>
           <select
@@ -120,6 +120,20 @@ export default function SignalsFilterBar({ state, onChange, options, onReset }: 
             <option value="">Any</option>
             <option value="yes">Salary stated</option>
             <option value="no">No salary</option>
+          </select>
+        </div>
+        <div>
+          {/* Whether the posting resolved to a practice in the bank — "Linked"
+              is the set an operator can act on with provider data in hand. */}
+          <label className={labelClass}>Practice</label>
+          <select
+            value={state.practice}
+            onChange={(e) => onChange({ practice: e.target.value })}
+            className={select}
+          >
+            <option value="">Any</option>
+            <option value="yes">Linked</option>
+            <option value="no">Not linked</option>
           </select>
         </div>
       </div>

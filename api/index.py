@@ -2302,7 +2302,7 @@ def _lead_filters(
     cities: str | None, tracks: str | None, disposition: str | None,
     band: str | None, decision: str | None, work_mode: str | None,
     source: str | None, state: str | None, salary: str | None,
-    search: str | None,
+    search: str | None, practice: str | None = None,
 ) -> dict:
     """Build the filter dict once, so the feed and the export cannot drift.
 
@@ -2320,7 +2320,7 @@ def _lead_filters(
         "tracks": [t for t in (tracks.split(",") if tracks else []) if t],
         "disposition": disposition, "band": band, "decision": decision,
         "work_mode": work_mode, "source": source, "state": state,
-        "salary": salary, "search": search,
+        "salary": salary, "search": search, "practice": practice,
     }
 
 
@@ -2361,6 +2361,7 @@ def export_leads_csv(
     state: str | None = Query(None),
     salary: str | None = Query(None),
     search: str | None = Query(None),
+    practice: str | None = Query(None),
     user: dict = Depends(get_current_user),
 ):
     """Stream a filtered CSV and stamp export_count on every row included.
@@ -2383,7 +2384,7 @@ def export_leads_csv(
     rows = lead_store.leads_for_export(
         user["company_id"],
         filters=_lead_filters(cities, tracks, disposition, band, decision,
-                              work_mode, source, state, salary, search),
+                              work_mode, source, state, salary, search, practice),
         max_exports=cap,
     )
 
@@ -2437,6 +2438,7 @@ def list_leads_endpoint(
     state: str | None = Query(None),
     salary: str | None = Query(None),        # "yes" | "no"
     search: str | None = Query(None),        # employer + title
+    practice: str | None = Query(None),      # "yes" | "no" — linked to a practice
     sort: str = Query("band"),
     dir: str = Query("asc"),
     offset: int = Query(0, ge=0),
@@ -2446,7 +2448,7 @@ def list_leads_endpoint(
     rows, total = lead_store.list_leads(
         user["company_id"],
         filters=_lead_filters(cities, tracks, disposition, band, decision,
-                              work_mode, source, state, salary, search),
+                              work_mode, source, state, salary, search, practice),
         sort=sort, direction=dir, offset=offset, limit=limit,
     )
     return {

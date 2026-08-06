@@ -1,8 +1,10 @@
 "use client"
 
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useState, type ReactNode } from "react"
 import Link from "next/link"
-import { ArrowLeft, Check, Copy, ExternalLink } from "lucide-react"
+import {
+  ArrowLeft, Check, Copy, ExternalLink, Globe, MapPin, Phone,
+} from "lucide-react"
 
 import SignalsTopBar from "@/components/signals-top-bar"
 import { BandBadge, DispositionBadge, SourceBadge } from "@/components/signal-badges"
@@ -206,6 +208,12 @@ export default function SignalDetailPage({ params }: { params: { id: string } })
 
             {/* --------------------------------------------- right column */}
             <div className="space-y-4">
+              {/* Linked practice — the provider data to act on this signal:
+                  who to call, where, and the site. Null when the employer never
+                  matched the Places universe (a system, an unscanned city, or a
+                  practice below the Places 60-cap). */}
+              <PracticePanel lead={lead} />
+
               <section className="glass-panel dark:bg-night-800/90 dark:border-white/10 rounded-2xl p-5 space-y-3">
                 <h2 className="font-serif font-semibold text-gray-900 dark:text-white">
                   Workflow
@@ -298,5 +306,104 @@ function HistoryRow({ label, value }: { label: string; value: string | null }) {
         {value ? timeAgo(value) : "—"}
       </span>
     </p>
+  )
+}
+
+function Pill({ children }: { children: ReactNode }) {
+  return (
+    <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-white/10 text-gray-600 dark:text-gray-300">
+      {children}
+    </span>
+  )
+}
+
+function prettyHost(url: string): string {
+  try {
+    return new URL(url).host.replace(/^www\./, "")
+  } catch {
+    return url
+  }
+}
+
+/** The practice a posting resolved to — a contact card when linked, an honest
+ *  explanation when not. `match_status`/`match_confidence` ride on the lead
+ *  (flattened from the posting); `practice` is the embedded row or null. */
+function PracticePanel({ lead }: { lead: Lead }) {
+  const p = lead.practice
+  return (
+    <section className="glass-panel dark:bg-night-800/90 dark:border-white/10 rounded-2xl p-5 space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="font-serif font-semibold text-gray-900 dark:text-white">
+          Linked practice
+        </h2>
+        {lead.match_status && (
+          <span
+            title="How the posting was matched to this practice"
+            className={`text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full ${
+              lead.match_status === "auto"
+                ? "bg-teal-500/15 text-teal-700 dark:text-teal-300"
+                : "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+            }`}
+          >
+            {lead.match_status}
+            {lead.match_confidence != null ? ` · ${lead.match_confidence.toFixed(2)}` : ""}
+          </span>
+        )}
+      </div>
+
+      {p ? (
+        <div className="space-y-2.5 text-sm">
+          <p className="font-medium text-gray-900 dark:text-white">{p.name}</p>
+
+          {p.address && (
+            <p className="flex items-start gap-2 text-gray-600 dark:text-gray-400">
+              <MapPin className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+              <span>{p.address}</span>
+            </p>
+          )}
+
+          {p.phone && (
+            <a
+              href={`tel:${p.phone}`}
+              className="flex items-center gap-2 text-teal-700 dark:text-teal-400 hover:underline"
+            >
+              <Phone className="w-3.5 h-3.5 shrink-0" />
+              {p.phone}
+            </a>
+          )}
+
+          {p.website && (
+            <a
+              href={p.website}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 text-teal-700 dark:text-teal-400 hover:underline"
+            >
+              <Globe className="w-3.5 h-3.5 shrink-0" />
+              <span className="truncate">{prettyHost(p.website)}</span>
+              <ExternalLink className="w-3 h-3 shrink-0 opacity-60" />
+            </a>
+          )}
+
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {p.service_line && <Pill>{p.service_line}</Pill>}
+            {p.category && <Pill>{p.category}</Pill>}
+            {p.rating != null && (
+              <Pill>
+                ★ {p.rating}
+                {p.review_count ? ` (${p.review_count})` : ""}
+              </Pill>
+            )}
+          </div>
+        </div>
+      ) : (
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          No practice matched this posting yet — the employer may be a hospital
+          system, in a city we haven&apos;t scanned, or ranked below the Places
+          result cap. It links automatically once a matching practice is in the
+          bank.
+        </p>
+      )}
+    </section>
   )
 }

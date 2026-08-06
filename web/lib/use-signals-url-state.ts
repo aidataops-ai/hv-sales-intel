@@ -44,6 +44,7 @@ export function useSignalsUrlState(): [
       work_mode: params.get("work_mode") ?? "",
       source: params.get("source") ?? "",
       salary: params.get("salary") ?? "",
+      practice: params.get("practice") ?? "",
       search: params.get("search") ?? "",
       sort: params.get("sort") ?? "band",
       dir: (params.get("dir") as "asc" | "desc") ?? "asc",
@@ -70,6 +71,7 @@ export function useSignalsUrlState(): [
       if (merged.work_mode) sp.set("work_mode", merged.work_mode)
       if (merged.source) sp.set("source", merged.source)
       if (merged.salary) sp.set("salary", merged.salary)
+      if (merged.practice) sp.set("practice", merged.practice)
       if (merged.search) sp.set("search", merged.search)
       if (merged.sort !== "band") sp.set("sort", merged.sort)
       if (merged.dir !== "asc") sp.set("dir", merged.dir)
