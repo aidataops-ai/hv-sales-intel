@@ -146,36 +146,6 @@ export default function SignalDetailPage({ params }: { params: { id: string } })
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             {/* ---------------------------------------------- left column */}
             <div className="lg:col-span-2 space-y-4">
-              {/* Verdict — every field the qualifier produced, so an operator
-                  can see WHY this surfaced before spending a call on it. */}
-              <section className="glass-panel dark:bg-night-800/90 dark:border-white/10 rounded-2xl p-5 space-y-3">
-                <h2 className="font-serif font-semibold text-gray-900 dark:text-white">
-                  Qualifier verdict
-                </h2>
-                {lead.reason && (
-                  <p className="text-sm text-gray-700 dark:text-[#d9d9d9] leading-relaxed">
-                    {lead.reason}
-                  </p>
-                )}
-                <dl className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
-                  <Field label="Verdict" value={lead.decision} />
-                  <Field
-                    label="Confidence"
-                    value={lead.confidence != null ? lead.confidence.toFixed(2) : null}
-                  />
-                  <Field label="Employer type" value={lead.employer_type} />
-                  <Field
-                    label="Role suitable"
-                    value={
-                      lead.role_suitable == null ? null : lead.role_suitable ? "yes" : "no"
-                    }
-                  />
-                  <Field label="Providers" value={lead.provider_count?.toString() ?? null} />
-                  <Field label="Track" value={lead.service_line} />
-                  <Field label="Work mode" value={formatWorkMode(lead.work_mode)} />
-                </dl>
-              </section>
-
               {lead.draft && (
                 <section className="glass-panel dark:bg-night-800/90 dark:border-white/10 rounded-2xl p-5 space-y-3">
                   <div className="flex items-center justify-between">
@@ -288,15 +258,6 @@ const control =
   "w-full text-sm rounded-md border border-gray-200 dark:border-white/10 " +
   "bg-transparent dark:bg-white/5 dark:text-white dark:placeholder:text-gray-500 " +
   "px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-teal-500/40 disabled:opacity-50"
-
-function Field({ label, value }: { label: string; value: string | null | undefined }) {
-  return (
-    <div>
-      <dt className={fieldLabel}>{label}</dt>
-      <dd className="text-gray-800 dark:text-[#d9d9d9]">{value || "—"}</dd>
-    </div>
-  )
-}
 
 function HistoryRow({ label, value }: { label: string; value: string | null }) {
   return (

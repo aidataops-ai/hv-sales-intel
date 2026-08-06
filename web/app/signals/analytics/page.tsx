@@ -6,15 +6,11 @@ import { AlertTriangle, ArrowLeft } from "lucide-react"
 
 import SignalsTopBar from "@/components/signals-top-bar"
 import {
-  BarList, ColumnChart, DataTable, RAMP_DARK, RAMP_LIGHT, StatTile,
+  BarList, ColumnChart, DataTable, StatTile,
   type BarRow,
 } from "@/components/signal-charts"
 import { ALL_DISPOSITIONS, ALL_SOURCES, getLeadAnalytics, type LeadAnalytics } from "@/lib/leads"
 import { timeAgo } from "@/lib/utils"
-
-// The bands are an ordered scale, not categories, so they get one hue
-// light→dark rather than three unrelated colours.
-const BAND_ORDER = ["ready", "check", "decide"] as const
 
 function Panel({
   title, subtitle, children,
@@ -41,7 +37,6 @@ function Panel({
 export default function SignalsAnalyticsPage() {
   const [data, setData] = useState<LeadAnalytics | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  const [isDark, setIsDark] = useState(false)
 
   useEffect(() => {
     getLeadAnalytics(30).then((result) => {
@@ -49,29 +44,6 @@ export default function SignalsAnalyticsPage() {
       setIsLoading(false)
     })
   }, [])
-
-  // Dark mode is a class on <html> (no theme provider), and the band ramp is
-  // re-stepped per surface rather than flipped, so the chart needs to know.
-  useEffect(() => {
-    const root = document.documentElement
-    const sync = () => setIsDark(root.classList.contains("dark"))
-    sync()
-    const observer = new MutationObserver(sync)
-    observer.observe(root, { attributes: true, attributeFilter: ["class"] })
-    return () => observer.disconnect()
-  }, [])
-
-  const ramp = isDark ? RAMP_DARK : RAMP_LIGHT
-
-  const bandRows: BarRow[] = useMemo(
-    () =>
-      BAND_ORDER.map((band, i) => ({
-        label: band,
-        value: data?.bands?.[band] ?? 0,
-        color: ramp[i],
-      })).filter((row) => row.value > 0),
-    [data, ramp],
-  )
 
   const dispositionRows: BarRow[] = useMemo(
     () =>
@@ -190,14 +162,6 @@ export default function SignalsAnalyticsPage() {
               </Panel>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                <Panel
-                  title="Confidence bands"
-                  subtitle="Ready ≥ 0.85 · Check 0.70–0.85 · Decide below 0.70. An ordered scale, so one hue light→dark."
-                >
-                  <BarList rows={bandRows} total={data.total}
-                           emptyHint="Nothing qualified yet." />
-                </Panel>
-
                 <Panel title="Decisions" subtitle="How reps have triaged the feed — approved, rejected, or not yet decided.">
                   <BarList rows={dispositionRows} total={data.total}
                            emptyHint="No leads have been worked yet." />
