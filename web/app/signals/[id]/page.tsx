@@ -146,11 +146,40 @@ export default function SignalDetailPage({ params }: { params: { id: string } })
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             {/* ---------------------------------------------- left column */}
             <div className="lg:col-span-2 space-y-4">
+              {/* The qualifier's reasoning and signals — minus the keep/discard
+                  call itself, which the feed already implies. */}
+              <section className="glass-panel dark:bg-night-800/90 dark:border-white/10 rounded-2xl p-5 space-y-3">
+                <h2 className="font-serif font-semibold text-gray-900 dark:text-white">
+                  Qualifier Verdict
+                </h2>
+                {lead.reason && (
+                  <p className="text-sm text-gray-700 dark:text-[#d9d9d9] leading-relaxed">
+                    {lead.reason}
+                  </p>
+                )}
+                <dl className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
+                  <Field
+                    label="Confidence"
+                    value={lead.confidence != null ? lead.confidence.toFixed(2) : null}
+                  />
+                  <Field label="Employer type" value={lead.employer_type} />
+                  <Field
+                    label="Role suitable"
+                    value={
+                      lead.role_suitable == null ? null : lead.role_suitable ? "yes" : "no"
+                    }
+                  />
+                  <Field label="Providers" value={lead.provider_count?.toString() ?? null} />
+                  <Field label="Track" value={lead.service_line} />
+                  <Field label="Work mode" value={formatWorkMode(lead.work_mode)} />
+                </dl>
+              </section>
+
               {lead.draft && (
                 <section className="glass-panel dark:bg-night-800/90 dark:border-white/10 rounded-2xl p-5 space-y-3">
                   <div className="flex items-center justify-between">
                     <h2 className="font-serif font-semibold text-gray-900 dark:text-white">
-                      Outreach draft
+                      Outreach Draft
                     </h2>
                     <button
                       onClick={copyDraft}
@@ -168,7 +197,7 @@ export default function SignalDetailPage({ params }: { params: { id: string } })
 
               <section className="glass-panel dark:bg-night-800/90 dark:border-white/10 rounded-2xl p-5 space-y-2">
                 <h2 className="font-serif font-semibold text-gray-900 dark:text-white">
-                  Posting text
+                  Posting Text
                 </h2>
                 <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap leading-relaxed">
                   {lead.description || "The board returned no description for this posting."}
@@ -259,6 +288,15 @@ const control =
   "bg-transparent dark:bg-white/5 dark:text-white dark:placeholder:text-gray-500 " +
   "px-2.5 py-1.5 focus:outline-none focus:ring-2 focus:ring-teal-500/40 disabled:opacity-50"
 
+function Field({ label, value }: { label: string; value: string | null | undefined }) {
+  return (
+    <div>
+      <dt className={fieldLabel}>{label}</dt>
+      <dd className="text-gray-800 dark:text-[#d9d9d9]">{value || "—"}</dd>
+    </div>
+  )
+}
+
 function HistoryRow({ label, value }: { label: string; value: string | null }) {
   return (
     <p className="flex items-center justify-between gap-2">
@@ -295,7 +333,7 @@ function PracticePanel({ lead }: { lead: Lead }) {
     <section className="glass-panel dark:bg-night-800/90 dark:border-white/10 rounded-2xl p-5 space-y-3">
       <div className="flex items-center justify-between gap-2">
         <h2 className="font-serif font-semibold text-gray-900 dark:text-white">
-          Linked practice
+          Linked Practice
         </h2>
         {lead.match_status && (
           <span
