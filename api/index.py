@@ -2178,7 +2178,7 @@ def cron_qualify_leads(
 
     summary = {
         "company_id": tenant, "claimed": 0, "verdicts": 0,
-        "keeps": 0, "missing": 0, "errors": [],
+        "keeps": 0, "missing": 0, "linked": 0, "link_review": 0, "errors": [],
     }
 
     postings = lead_store.claim_unqualified(tenant, batch)
@@ -2202,6 +2202,25 @@ def cron_qualify_leads(
     log.info("[leads.qualify] claimed=%d verdicts=%d keeps=%d missing=%d",
              summary["claimed"], summary["verdicts"], summary["keeps"],
              summary["missing"])
+
+    # Link the fresh keepers to their practice while the batch is hot. The
+    # matcher scopes to the postings we just claimed and to their cities, so
+    # this is a small incremental pass, not the full 20k-row universe. A match
+    # failure must never fail the qualify run — the verdicts are already
+    # written and billed, and the next run re-matches for free.
+    if summary["keeps"]:
+        try:
+            from src import practice_matcher
+            m = practice_matcher.link_postings(
+                tenant, posting_ids=[p["id"] for p in postings],
+            )
+            summary["linked"] = m["linked"]
+            summary["link_review"] = m["review"]
+            log.info("[leads.qualify.match] linked=%d review=%d cleared=%d",
+                     m["linked"], m["review"], m["cleared"])
+        except Exception as e:
+            summary["errors"].append(f"match: {type(e).__name__}: {str(e)[:120]}")
+
     return summary
 
 

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react"
 import Link from "next/link"
 import {
-  ArrowLeft, Check, Copy, ExternalLink, Globe, MapPin, Phone,
+  ArrowLeft, ArrowRight, Check, Copy, ExternalLink, Globe, MapPin, Phone,
 } from "lucide-react"
 
 import SignalsTopBar from "@/components/signals-top-bar"
@@ -395,6 +395,14 @@ function PracticePanel({ lead }: { lead: Lead }) {
               </Pill>
             )}
           </div>
+
+          <Link
+            href={`/practice/${p.place_id}`}
+            className="inline-flex items-center gap-1.5 mt-1 px-3 py-1.5 rounded-lg border border-gray-300 dark:border-white/10 text-xs font-medium text-gray-700 dark:text-[#d9d9d9] hover:bg-gray-50 dark:hover:bg-white/10 transition"
+          >
+            View practice
+            <ArrowRight className="w-3.5 h-3.5" />
+          </Link>
         </div>
       ) : (
         <p className="text-sm text-gray-500 dark:text-gray-400">
