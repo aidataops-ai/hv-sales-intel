@@ -229,7 +229,13 @@ def summarise(company_id: str) -> None:
     _rule("RESULT")
     rows, total = lead_store.list_leads(company_id, limit=10)
     analytics = lead_store.lead_analytics(company_id)
+    # Kept leads that resolved to a practice — the actionable, contactable
+    # subset. A live count of current state, so it reflects every link the
+    # matcher has made, not just this run's.
+    _, linked = lead_store.list_leads(company_id, filters={"practice": "yes"}, limit=1)
     print(f"  kept leads     : {total}")
+    print(f"  linked         : {linked}"
+          + (f" ({linked / total * 100:.0f}% of kept)" if total else ""))
     print(f"  all qualified  : {analytics['total']}")
     print(f"  keep rate      : {analytics['keep_rate'] * 100:.0f}%")
     print(f"  bands          : {analytics['bands']}")
