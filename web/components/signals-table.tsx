@@ -108,18 +108,33 @@ export default function SignalsTable({
                 )}
               >
                 <td className={cell}>
-                  <Link
-                    href={`/signals/${lead.id}`}
-                    className={cn(
-                      "block truncate font-semibold hover:text-teal-700 dark:hover:text-teal-400 transition",
-                      lead.employer_name
-                        ? "text-gray-900 dark:text-white"
-                        : "text-gray-400 dark:text-gray-500 italic",
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <Link
+                      href={`/signals/${lead.id}`}
+                      className={cn(
+                        "block truncate min-w-0 font-semibold hover:text-teal-700 dark:hover:text-teal-400 transition",
+                        lead.employer_name
+                          ? "text-gray-900 dark:text-white"
+                          : "text-gray-400 dark:text-gray-500 italic",
+                      )}
+                      title={employerLabel(lead)}
+                    >
+                      {employerLabel(lead)}
+                    </Link>
+                    {/* Linked-to-a-practice marker: teal = auto, amber = review.
+                        The at-a-glance counterpart to the Practice filter. */}
+                    {lead.practice_id != null && (
+                      <span
+                        title={`Linked to ${lead.practice?.name ?? "a practice"}${
+                          lead.match_status ? ` (${lead.match_status})` : ""
+                        }`}
+                        className={cn(
+                          "shrink-0 w-1.5 h-1.5 rounded-full",
+                          lead.match_status === "review" ? "bg-amber-500" : "bg-teal-500",
+                        )}
+                      />
                     )}
-                    title={employerLabel(lead)}
-                  >
-                    {employerLabel(lead)}
-                  </Link>
+                  </div>
                 </td>
 
                 <td className={cell}>

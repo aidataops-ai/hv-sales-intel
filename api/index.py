@@ -2178,7 +2178,7 @@ def cron_qualify_leads(
 
     summary = {
         "company_id": tenant, "claimed": 0, "verdicts": 0,
-        "keeps": 0, "missing": 0, "errors": [],
+        "keeps": 0, "missing": 0, "linked": 0, "link_review": 0, "errors": [],
     }
 
     postings = lead_store.claim_unqualified(tenant, batch)
@@ -2202,6 +2202,25 @@ def cron_qualify_leads(
     log.info("[leads.qualify] claimed=%d verdicts=%d keeps=%d missing=%d",
              summary["claimed"], summary["verdicts"], summary["keeps"],
              summary["missing"])
+
+    # Link the fresh keepers to their practice while the batch is hot. The
+    # matcher scopes to the postings we just claimed and to their cities, so
+    # this is a small incremental pass, not the full 20k-row universe. A match
+    # failure must never fail the qualify run — the verdicts are already
+    # written and billed, and the next run re-matches for free.
+    if summary["keeps"]:
+        try:
+            from src import practice_matcher
+            m = practice_matcher.link_postings(
+                tenant, posting_ids=[p["id"] for p in postings],
+            )
+            summary["linked"] = m["linked"]
+            summary["link_review"] = m["review"]
+            log.info("[leads.qualify.match] linked=%d review=%d cleared=%d",
+                     m["linked"], m["review"], m["cleared"])
+        except Exception as e:
+            summary["errors"].append(f"match: {type(e).__name__}: {str(e)[:120]}")
+
     return summary
 
 
@@ -2302,7 +2321,7 @@ def _lead_filters(
     cities: str | None, tracks: str | None, disposition: str | None,
     band: str | None, decision: str | None, work_mode: str | None,
     source: str | None, state: str | None, salary: str | None,
-    search: str | None,
+    search: str | None, practice: str | None = None,
 ) -> dict:
     """Build the filter dict once, so the feed and the export cannot drift.
 
@@ -2320,7 +2339,7 @@ def _lead_filters(
         "tracks": [t for t in (tracks.split(",") if tracks else []) if t],
         "disposition": disposition, "band": band, "decision": decision,
         "work_mode": work_mode, "source": source, "state": state,
-        "salary": salary, "search": search,
+        "salary": salary, "search": search, "practice": practice,
     }
 
 
@@ -2361,6 +2380,7 @@ def export_leads_csv(
     state: str | None = Query(None),
     salary: str | None = Query(None),
     search: str | None = Query(None),
+    practice: str | None = Query(None),
     user: dict = Depends(get_current_user),
 ):
     """Stream a filtered CSV and stamp export_count on every row included.
@@ -2383,7 +2403,7 @@ def export_leads_csv(
     rows = lead_store.leads_for_export(
         user["company_id"],
         filters=_lead_filters(cities, tracks, disposition, band, decision,
-                              work_mode, source, state, salary, search),
+                              work_mode, source, state, salary, search, practice),
         max_exports=cap,
     )
 
@@ -2437,6 +2457,7 @@ def list_leads_endpoint(
     state: str | None = Query(None),
     salary: str | None = Query(None),        # "yes" | "no"
     search: str | None = Query(None),        # employer + title
+    practice: str | None = Query(None),      # "yes" | "no" — linked to a practice
     sort: str = Query("band"),
     dir: str = Query("asc"),
     offset: int = Query(0, ge=0),
@@ -2446,7 +2467,7 @@ def list_leads_endpoint(
     rows, total = lead_store.list_leads(
         user["company_id"],
         filters=_lead_filters(cities, tracks, disposition, band, decision,
-                              work_mode, source, state, salary, search),
+                              work_mode, source, state, salary, search, practice),
         sort=sort, direction=dir, offset=offset, limit=limit,
     )
     return {

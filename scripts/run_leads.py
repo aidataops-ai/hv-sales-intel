@@ -208,6 +208,20 @@ def qualify(company_id: str, limit: int) -> dict:
 
     print(f"\n  {totals['verdicts']} leads written, {totals['keeps']} keeps "
           f"in {(time.time() - started) / 60:.1f} min")
+
+    # Link the fresh keepers to their practice. This is the path the GitHub
+    # Actions pipeline actually runs (leads.yml calls THIS script, not the HTTP
+    # cron), so the matcher has to fire here too — same shared incremental
+    # matcher `cron_qualify_leads` uses, scoped to the postings just claimed.
+    if totals["keeps"]:
+        from src import practice_matcher
+
+        m = practice_matcher.link_postings(
+            company_id, posting_ids=[p["id"] for p in postings],
+        )
+        totals["linked"] = m["linked"]
+        print(f"  linked {m['linked']} to practices "
+              f"({m['auto']} auto, {m['review']} review, {m['cleared']} cleared)")
     return dict(totals)
 
 
@@ -215,7 +229,13 @@ def summarise(company_id: str) -> None:
     _rule("RESULT")
     rows, total = lead_store.list_leads(company_id, limit=10)
     analytics = lead_store.lead_analytics(company_id)
+    # Kept leads that resolved to a practice — the actionable, contactable
+    # subset. A live count of current state, so it reflects every link the
+    # matcher has made, not just this run's.
+    _, linked = lead_store.list_leads(company_id, filters={"practice": "yes"}, limit=1)
     print(f"  kept leads     : {total}")
+    print(f"  linked         : {linked}"
+          + (f" ({linked / total * 100:.0f}% of kept)" if total else ""))
     print(f"  all qualified  : {analytics['total']}")
     print(f"  keep rate      : {analytics['keep_rate'] * 100:.0f}%")
     print(f"  bands          : {analytics['bands']}")

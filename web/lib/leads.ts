@@ -15,6 +15,26 @@ const IS_PROD = process.env.NODE_ENV === "production"
 
 export type Band = "ready" | "check" | "decide"
 export type WorkMode = "onsite" | "remote" | "hybrid"
+/** How the posting was linked to its practice: an auto-link (high confidence)
+ *  or a 'review'-grade suggestion an operator should confirm. */
+export type MatchStatus = "auto" | "review"
+
+/** The practice a posting resolved to in the Places universe, or null when the
+ *  employer never matched (a system, an unscanned city, or below the 60-cap). */
+export interface LinkedPractice {
+  id: number
+  place_id: string
+  name: string
+  address: string | null
+  city: string | null
+  state: string | null
+  phone: string | null
+  website: string | null
+  category: string | null
+  service_line: string | null
+  rating: number | null
+  review_count: number | null
+}
 /** The operator's call on a lead — the lightweight approve/reject flag that
  *  replaced the old multi-stage status pipeline. */
 export type LeadDisposition = "undecided" | "approved" | "rejected"
@@ -62,6 +82,12 @@ export interface Lead {
   model: string | null
   qualified_at: string | null
 
+  // Practice link (from job_postings.practice_id -> practices)
+  practice_id: number | null
+  match_confidence: number | null
+  match_status: MatchStatus | null
+  practice: LinkedPractice | null
+
   // Workflow (written by operators)
   disposition: LeadDisposition
   reject_reason: string | null
@@ -83,12 +109,14 @@ export interface LeadFilters {
   work_mode: string
   source: string
   salary: string          // "" | "yes" | "no"
+  /** "" | "yes" | "no" — whether the posting is linked to a practice. */
+  practice: string
   search: string
 }
 
 export const EMPTY_LEAD_FILTERS: LeadFilters = {
   cities: [], tracks: [], band: "", decision: "", work_mode: "",
-  source: "", salary: "", search: "",
+  source: "", salary: "", practice: "", search: "",
 }
 
 /** Turn the filter state into the query params both the feed and the CSV
@@ -104,6 +132,7 @@ export function filterParams(
   if (filters.work_mode) out.work_mode = filters.work_mode
   if (filters.source) out.source = filters.source
   if (filters.salary) out.salary = filters.salary
+  if (filters.practice) out.practice = filters.practice
   if (filters.search) out.search = filters.search
   return out
 }
