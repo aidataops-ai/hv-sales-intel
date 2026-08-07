@@ -78,6 +78,11 @@ PLACE_NOUNS: dict[str, list[str]] = {
         "home health agency",
         "home care agency",
     ],
+    "Virtual Medical Scheduler": [
+        "medical clinic",
+        "specialty clinic",
+    ],
+    "Virtual Chiropractic Assistant": ["chiropractic clinic"],
 }
 
 
