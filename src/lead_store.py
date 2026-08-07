@@ -503,34 +503,53 @@ def update_lead_workflow(
 
 
 def filter_options(company_id: str) -> dict[str, list[str]]:
-    """Distinct cities and tracks present in this tenant's leads.
+    """Distinct cities and tracks present in this tenant's KEPT leads.
 
     Derived from the data rather than a fixed list: a tenant whose targets
     cover three cities should not scroll past thirty empty ones.
+
+    Two things this must get right, both learned the hard way:
+
+    - Kept leads only (`service_line not null`). Discards outnumber keeps ~13:1,
+      carry no track, and are never shown in the signals list — so they must not
+      populate its filters, and letting them in silently starved the real facets.
+    - Paginate. PostgREST caps any response at `_PAGE` rows regardless of the
+      requested `limit`, so a single `.limit(20_000)` returned an arbitrary
+      1000-row window. A track with only a handful of leads (a freshly added
+      one) fell outside that window and never appeared in the dropdown.
     """
     client = _client()
     if not client or not company_id:
         return {"cities": [], "tracks": [], "states": []}
-    try:
-        rows = (
-            client.table("company_job_leads")
-            .select("service_line, posting:job_postings!inner(city, state)")
-            .eq("company_id", company_id)
-            .limit(20_000)
-            .execute()
-        ).data or []
-    except Exception:
-        return {"cities": [], "tracks": [], "states": []}
 
     cities, tracks, states = set(), set(), set()
-    for row in rows:
-        posting = row.get("posting") or {}
-        if posting.get("city"):
-            cities.add(posting["city"])
-        if posting.get("state"):
-            states.add(posting["state"])
-        if row.get("service_line"):
-            tracks.add(row["service_line"])
+    page = 0
+    while True:
+        try:
+            batch = (
+                client.table("company_job_leads")
+                .select("service_line, posting:job_postings!inner(city, state)")
+                .eq("company_id", company_id)
+                .not_.is_("service_line", "null")
+                .range(page * _PAGE, page * _PAGE + _PAGE - 1)
+                .execute()
+            ).data or []
+        except Exception:
+            return {"cities": [], "tracks": [], "states": []}
+
+        for row in batch:
+            posting = row.get("posting") or {}
+            if posting.get("city"):
+                cities.add(posting["city"])
+            if posting.get("state"):
+                states.add(posting["state"])
+            if row.get("service_line"):
+                tracks.add(row["service_line"])
+
+        if len(batch) < _PAGE:
+            break
+        page += 1
+
     return {
         "cities": sorted(cities),
         "tracks": sorted(tracks),
