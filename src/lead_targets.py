@@ -281,3 +281,216 @@ def sweep_size(company_id: str) -> int:
         return int(result.count or 0)
     except Exception:
         return 0
+
+
+# ---------------------------------------------------------------------------
+# Config page — read the live table and edit it by hand.
+#
+# The collector already reads only this table (ADR-03), so editing rows here is
+# the supported way to tune what gets searched without forking a checked-in file
+# and deploying. See `docs/specs/2026-08-10-instant-signals-config-page-design.md`.
+# ---------------------------------------------------------------------------
+
+_GRANULARITIES = ("state", "city")
+
+
+def catalog() -> dict:
+    """The checked-in config as a UI catalog: states+cities, tracks+keywords.
+
+    Pure read of `lead_config` — no DB. This is what the "Add …" forms suggest,
+    so the common edit is picking from the curated file rather than free text.
+    `locations()` flattens states into rows; we regroup them back into
+    states-with-cities for display.
+    """
+    from src import lead_config
+
+    states: dict[str, dict] = {}
+    for loc in lead_config.locations():
+        state = states.setdefault(
+            loc["state"], {"code": loc["state"], "cities": [], "statewide_query": None}
+        )
+        if loc["granularity"] == "state":
+            state["statewide_query"] = loc["query"]
+        else:
+            state["cities"].append(loc["query"])
+
+    tracks: dict[str, list[str]] = {}
+    for entry in lead_config.role_terms():
+        tracks.setdefault(entry["service_line"], []).append(entry["term"])
+
+    return {
+        "states": [
+            {
+                "code": code,
+                "statewide_query": s["statewide_query"],
+                "cities": s["cities"],
+            }
+            for code, s in states.items()
+        ],
+        "tracks": [
+            {"service_line": sl, "terms": terms} for sl, terms in tracks.items()
+        ],
+        "search": lead_config.search_params(),
+        "sources": list(lead_config.enabled_sources()),
+    }
+
+
+def list_targets(company_id: str) -> list[dict]:
+    """Every target row for a tenant, un-clipped by the PostgREST 1000-row cap.
+
+    Ordered so the UI table reads as a geography: state, then location, then
+    term. Uses the shared paginator because a multi-state tenant can exceed the
+    ceiling (31 FL locations x 21 terms is already 651, and each new state adds
+    ~another 650).
+    """
+    from src.storage import _get_client, _paginated_query
+
+    client = _get_client()
+    if not client or not company_id:
+        return []
+    builder = (
+        client.table("company_search_targets")
+        .select("*")
+        .eq("company_id", company_id)
+        .order("state", desc=False)
+        .order("location", desc=False)
+        .order("term", desc=False)
+    )
+    return _paginated_query(builder, limit=100000)
+
+
+class TargetValidationError(ValueError):
+    """A row handed to `add_targets` is missing or malformed."""
+
+
+def _clean_target_row(company_id: str, row: dict) -> dict:
+    """Normalise one incoming row to the table's shape, or raise.
+
+    Same invariants the DB check constraints enforce, checked here first so a
+    bad row returns a 400 with a readable message instead of a Postgres error.
+    """
+    term = (row.get("term") or "").strip()
+    service_line = (row.get("service_line") or "").strip()
+    location = (row.get("location") or "").strip()
+    state = (row.get("state") or "").strip().upper()
+    granularity = (row.get("granularity") or "").strip().lower()
+
+    if not term:
+        raise TargetValidationError("a target row has no `term`")
+    if not service_line:
+        raise TargetValidationError(f"term {term!r} has no `service_line`")
+    if not location:
+        raise TargetValidationError(f"term {term!r} has no `location`")
+    if len(state) != 2:
+        raise TargetValidationError(
+            f"location {location!r} needs a 2-letter `state` (got {state!r})"
+        )
+    if granularity not in _GRANULARITIES:
+        raise TargetValidationError(
+            f"granularity must be one of {_GRANULARITIES} (got {granularity!r})"
+        )
+
+    return {
+        "company_id": company_id,
+        "term": term,
+        "service_line": service_line,
+        "location": location,
+        "state": state,
+        "granularity": granularity,
+        "enabled": bool(row.get("enabled", True)),
+    }
+
+
+def add_targets(company_id: str, rows: list[dict]) -> dict[str, int]:
+    """Insert hand-added target rows. Idempotent, like `seed_search_targets`.
+
+    Existing `(term, location)` pairs are skipped rather than reset, so adding a
+    city that overlaps an existing one never re-enables a target an operator
+    switched off or disturbs its rotation. Validation runs on the whole batch
+    before any write, so one bad row rejects the request instead of leaving a
+    half-applied add.
+    """
+    from src.storage import _get_client
+
+    client = _get_client()
+    if not client or not company_id:
+        return {"requested": 0, "inserted": 0, "skipped": 0}
+
+    cleaned = [_clean_target_row(company_id, r) for r in rows]
+    if not cleaned:
+        return {"requested": 0, "inserted": 0, "skipped": 0}
+
+    try:
+        current = (
+            client.table("company_search_targets")
+            .select("term,location")
+            .eq("company_id", company_id)
+            .execute()
+        )
+        existing = {(r["term"], r["location"]) for r in (current.data or [])}
+    except Exception as e:
+        log.warning("[leads.add.read_error] %s: %s", type(e).__name__, str(e)[:200])
+        existing = set()
+
+    # Dedupe within the incoming batch too — a state's statewide row can repeat
+    # a term the caller also listed per city if the payload is built loosely.
+    missing: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for row in cleaned:
+        key = (row["term"], row["location"])
+        if key in existing or key in seen:
+            continue
+        seen.add(key)
+        missing.append(row)
+
+    inserted = 0
+    CHUNK = 200
+    for i in range(0, len(missing), CHUNK):
+        batch = missing[i:i + CHUNK]
+        try:
+            client.table("company_search_targets").upsert(
+                batch,
+                on_conflict="company_id,term,location",
+                ignore_duplicates=True,
+            ).execute()
+            inserted += len(batch)
+        except Exception as e:
+            log.warning("[leads.add.write_error] %s: %s", type(e).__name__, str(e)[:200])
+
+    log.info(
+        "[leads.add] company=%s requested=%d inserted=%d skipped=%d",
+        company_id, len(cleaned), inserted, len(cleaned) - inserted,
+    )
+    return {
+        "requested": len(cleaned),
+        "inserted": inserted,
+        "skipped": len(cleaned) - inserted,
+    }
+
+
+def set_target_enabled(
+    company_id: str, target_id: int, enabled: bool
+) -> dict | None:
+    """Flip one target's `enabled`, scoped to the tenant. Returns the row.
+
+    Scoping the update by `company_id` as well as `id` means a stray id from
+    another tenant updates nothing rather than reaching across the boundary.
+    """
+    from src.storage import _get_client
+
+    client = _get_client()
+    if not client or not company_id or not target_id:
+        return None
+    try:
+        result = (
+            client.table("company_search_targets")
+            .update({"enabled": bool(enabled)})
+            .eq("company_id", company_id)
+            .eq("id", target_id)
+            .execute()
+        )
+    except Exception as e:
+        log.warning("[leads.toggle.error] %s: %s", type(e).__name__, str(e)[:200])
+        return None
+    rows = result.data or []
+    return rows[0] if rows else None
