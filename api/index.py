@@ -2301,6 +2301,94 @@ async def retrigger_lead_pipeline(admin: dict = Depends(require_admin)):
 
 
 # ---------------------------------------------------------------------------
+# Instant Signals — config page. Reads the config catalog and edits the live
+# `company_search_targets` table by hand (admin only). The collector reads only
+# the table (ADR-03), so this is the supported way to tune what gets searched
+# without a config-file change and deploy. See
+# `docs/specs/2026-08-10-instant-signals-config-page-design.md`.
+# ---------------------------------------------------------------------------
+
+
+class AddTargetRow(BaseModel):
+    term: str
+    service_line: str
+    location: str
+    state: str
+    granularity: str
+    enabled: bool = True
+
+
+class AddTargetsRequest(BaseModel):
+    rows: list[AddTargetRow]
+
+
+class ToggleTargetRequest(BaseModel):
+    enabled: bool
+
+
+@app.get("/api/admin/leads/config")
+def get_leads_config(admin: dict = Depends(require_admin)):
+    """The search-target config for the current tenant.
+
+    `catalog` is the checked-in lead config surfaced as suggestions;
+    `targets` is the live, editable table the collector actually reads. The two
+    can drift on purpose — the whole point of the page is editing the table
+    without touching the file.
+    """
+    try:
+        cat = lead_targets.catalog()
+    except lead_config.LeadConfigError as e:
+        raise HTTPException(500, f"Lead config is invalid: {e}")
+    rows = lead_targets.list_targets(admin["company_id"])
+    return {
+        "catalog": cat,
+        "targets": {
+            "total": len(rows),
+            "enabled": sum(1 for r in rows if r.get("enabled")),
+            "rows": rows,
+        },
+    }
+
+
+@app.post("/api/admin/leads/targets")
+def add_leads_targets(
+    body: AddTargetsRequest, admin: dict = Depends(require_admin)
+):
+    """Add hand-built target rows (a state, some cities, or a track's keywords).
+
+    The frontend does the `location x term` expansion and posts the rows; this
+    validates and dedupe-inserts them. Idempotent: existing rows are skipped,
+    never reset, so an add never re-enables a target an operator switched off.
+    """
+    if not body.rows:
+        raise HTTPException(400, "No target rows supplied")
+    try:
+        result = lead_targets.add_targets(
+            admin["company_id"], [r.model_dump() for r in body.rows]
+        )
+    except lead_targets.TargetValidationError as e:
+        raise HTTPException(400, str(e))
+    return result
+
+
+@app.patch("/api/admin/leads/targets/{target_id}")
+def toggle_leads_target(
+    target_id: int,
+    body: ToggleTargetRequest,
+    admin: dict = Depends(require_admin),
+):
+    """Enable or disable a single target. Disable is the off switch — we never
+    delete, because `last_run_at` is the rotation history and dropping a row
+    would lose it (design doc §Not in scope)."""
+    updated = lead_targets.set_target_enabled(
+        admin["company_id"], target_id, body.enabled
+    )
+    if not updated:
+        raise HTTPException(404, "Target not found")
+    return updated
+
+
+# ---------------------------------------------------------------------------
 # Job-posting leads — operator routes.
 #
 # Route order matters: `/api/leads/export.csv` and the other literal paths must
