@@ -2,6 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 
+import ConfigButton from "@/components/config-button"
 import ExportButton from "@/components/export-button"
 import Pagination from "@/components/pagination"
 import RetriggerButton from "@/components/retrigger-button"
@@ -115,6 +116,7 @@ function SignalsContent() {
   return (
     <div className="min-h-screen bg-cream dark:bg-night-900">
       <SignalsTopBar>
+        <ConfigButton />
         <RetriggerButton />
         <ExportButton
           endpoint="/api/leads/export.csv"
