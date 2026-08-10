@@ -1,5 +1,5 @@
 {
-  "_comment": "Florida only for v1. Both granularities are searched deliberately: a statewide query does NOT saturate, because statewide relevance ranking favours large employers with many postings. Measured 2026-08-04: a Tampa-level query surfaced 10 employers absent from the statewide results, Miami surfaced 6. Statewide catches breadth, cities catch the single-location independents.",
+  "_comment": "Southeast US footprint: Florida plus Georgia, the Carolinas and Tennessee. Both granularities are searched deliberately: a statewide query does NOT saturate, because statewide relevance ranking favours large employers with many postings. Measured 2026-08-04: a Tampa-level query surfaced 10 employers absent from the statewide results, Miami surfaced 6. Statewide catches breadth, cities catch the single-location independents.",
 
   "_cities_note": "Top 30 Florida cities by population. Population rank is not the same as independent-practice density — Naples, Sarasota, Ocala and Pensacola fall outside the top 30 but are high-density independent-specialty markets, while Deltona, Palm Coast and Miami Gardens are largely residential. Revisit once yield-per-city data exists (design doc §11.4).",
 
@@ -40,6 +40,98 @@
         "Largo, FL",
         "Melbourne, FL",
         "Boynton Beach, FL"
+      ]
+    },
+    {
+      "code": "GA",
+      "name": "Georgia",
+      "enabled": true,
+      "statewide_query": "Georgia, USA",
+      "cities": [
+        "Atlanta, GA",
+        "Augusta, GA",
+        "Columbus, GA",
+        "Macon, GA",
+        "Savannah, GA",
+        "Athens, GA",
+        "Sandy Springs, GA",
+        "Roswell, GA",
+        "Johns Creek, GA",
+        "Warner Robins, GA",
+        "Albany, GA",
+        "Alpharetta, GA",
+        "Marietta, GA",
+        "Valdosta, GA",
+        "Smyrna, GA"
+      ]
+    },
+    {
+      "code": "NC",
+      "name": "North Carolina",
+      "enabled": true,
+      "statewide_query": "North Carolina, USA",
+      "cities": [
+        "Charlotte, NC",
+        "Raleigh, NC",
+        "Greensboro, NC",
+        "Durham, NC",
+        "Winston-Salem, NC",
+        "Fayetteville, NC",
+        "Cary, NC",
+        "Wilmington, NC",
+        "High Point, NC",
+        "Concord, NC",
+        "Asheville, NC",
+        "Greenville, NC",
+        "Gastonia, NC",
+        "Chapel Hill, NC",
+        "Huntersville, NC"
+      ]
+    },
+    {
+      "code": "SC",
+      "name": "South Carolina",
+      "enabled": true,
+      "statewide_query": "South Carolina, USA",
+      "cities": [
+        "Charleston, SC",
+        "Columbia, SC",
+        "North Charleston, SC",
+        "Mount Pleasant, SC",
+        "Rock Hill, SC",
+        "Greenville, SC",
+        "Summerville, SC",
+        "Goose Creek, SC",
+        "Hilton Head Island, SC",
+        "Spartanburg, SC",
+        "Florence, SC",
+        "Myrtle Beach, SC",
+        "Aiken, SC",
+        "Anderson, SC",
+        "Greer, SC"
+      ]
+    },
+    {
+      "code": "TN",
+      "name": "Tennessee",
+      "enabled": true,
+      "statewide_query": "Tennessee, USA",
+      "cities": [
+        "Nashville, TN",
+        "Memphis, TN",
+        "Knoxville, TN",
+        "Chattanooga, TN",
+        "Clarksville, TN",
+        "Murfreesboro, TN",
+        "Franklin, TN",
+        "Johnson City, TN",
+        "Jackson, TN",
+        "Hendersonville, TN",
+        "Bartlett, TN",
+        "Kingsport, TN",
+        "Smyrna, TN",
+        "Cleveland, TN",
+        "Brentwood, TN"
       ]
     }
   ],
