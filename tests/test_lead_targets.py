@@ -93,6 +93,62 @@ def test_no_companies_at_all_is_an_error(monkeypatch):
         lead_targets.resolve_company_id()
 
 
+# --------------------------------------------------------------------------
+# Config page — catalog and hand-added-target validation.
+# --------------------------------------------------------------------------
+
+
+def test_catalog_regroups_locations_back_into_states_with_cities():
+    """The UI shows states-with-cities, but `locations()` is flat. The catalog
+    must rebuild the grouping (and pick out the statewide query) so the config
+    file round-trips to the same shape it was authored in."""
+    cat = lead_targets.catalog()
+    codes = {s["code"] for s in cat["states"]}
+    assert "FL" in codes
+    fl = next(s for s in cat["states"] if s["code"] == "FL")
+    assert fl["statewide_query"] == "Florida, USA"
+    assert "Miami, FL" in fl["cities"]
+    assert fl["statewide_query"] not in fl["cities"]
+
+
+def test_catalog_tracks_group_every_term_under_its_service_line():
+    cat = lead_targets.catalog()
+    tracks = {t["service_line"]: t["terms"] for t in cat["tracks"]}
+    assert set(tracks) == set(lead_config.service_lines())
+    flat = [term for terms in tracks.values() for term in terms]
+    assert len(flat) == len(lead_config.role_terms())
+
+
+def test_clean_target_row_normalises_state_and_granularity():
+    row = lead_targets._clean_target_row(
+        "co",
+        {"term": " Nurse ", "service_line": "X", "location": "Austin, TX",
+         "state": "tx", "granularity": "City"},
+    )
+    assert row["term"] == "Nurse"          # trimmed
+    assert row["state"] == "TX"            # upper-cased
+    assert row["granularity"] == "city"    # lower-cased
+    assert row["enabled"] is True          # defaulted
+    assert row["company_id"] == "co"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"term": "", "service_line": "X", "location": "L", "state": "TX", "granularity": "city"},
+        {"term": "t", "service_line": "", "location": "L", "state": "TX", "granularity": "city"},
+        {"term": "t", "service_line": "X", "location": "", "state": "TX", "granularity": "city"},
+        {"term": "t", "service_line": "X", "location": "L", "state": "TEX", "granularity": "city"},
+        {"term": "t", "service_line": "X", "location": "L", "state": "TX", "granularity": "county"},
+    ],
+)
+def test_clean_target_row_rejects_rows_the_db_constraints_would(bad):
+    """Same invariants as the table's CHECK/NOT NULL constraints, caught early
+    so the add endpoint answers 400 instead of leaking a Postgres error."""
+    with pytest.raises(lead_targets.TargetValidationError):
+        lead_targets._clean_target_row("co", bad)
+
+
 class _FakeCompanies:
     def __init__(self, rows):
         self.rows = rows
