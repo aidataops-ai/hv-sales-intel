@@ -282,6 +282,114 @@ export async function getLeadAnalytics(days = 30): Promise<LeadAnalytics | null>
 }
 
 // --------------------------------------------------------------------------
+// Config page — editable search targets (admin)
+// --------------------------------------------------------------------------
+
+/** One `(term x location)` search the collector runs, from
+ *  `company_search_targets`. This is the live, editable row — not the config
+ *  file. */
+export interface SearchTarget {
+  id: number
+  term: string
+  service_line: string
+  location: string
+  state: string
+  granularity: "state" | "city"
+  enabled: boolean
+  last_run_at: string | null
+  last_row_count: number | null
+}
+
+/** A state as it appears in the checked-in config catalog (suggestions for the
+ *  "Add state" form). */
+export interface CatalogState {
+  code: string
+  statewide_query: string | null
+  cities: string[]
+}
+
+/** A track (service line) and its search keywords, from the config catalog. */
+export interface CatalogTrack {
+  service_line: string
+  terms: string[]
+}
+
+export interface SignalsConfig {
+  catalog: {
+    states: CatalogState[]
+    tracks: CatalogTrack[]
+    search: { hours_old: number; results_wanted: number; distance_miles: number }
+    sources: string[]
+  }
+  targets: {
+    total: number
+    enabled: number
+    rows: SearchTarget[]
+  }
+}
+
+/** The shape POSTed to add targets — the frontend expands a state or track into
+ *  these before sending. */
+export interface NewTargetRow {
+  term: string
+  service_line: string
+  location: string
+  state: string
+  granularity: "state" | "city"
+  enabled?: boolean
+}
+
+export async function getSignalsConfig(): Promise<SignalsConfig | null> {
+  try {
+    return await leadFetch<SignalsConfig>("/api/admin/leads/config")
+  } catch {
+    return null
+  }
+}
+
+export type AddTargetsResult =
+  | { ok: true; requested: number; inserted: number; skipped: number }
+  | { ok: false; error: string }
+
+/** Add search targets (admin). Returns a discriminated result so the UI can
+ *  show the server's validation message rather than a bare failure. */
+export async function addTargets(
+  rows: NewTargetRow[],
+): Promise<AddTargetsResult> {
+  try {
+    const res = await fetch(`${API_URL}/api/admin/leads/targets`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows }),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      return { ok: false, error: body.detail || `Failed (${res.status})` }
+    }
+    return { ok: true, ...(await res.json()) }
+  } catch {
+    return { ok: false, error: "Could not reach the server." }
+  }
+}
+
+/** Enable or disable one target (admin). Returns the updated row, or null. */
+export async function setTargetEnabled(
+  id: number,
+  enabled: boolean,
+): Promise<SearchTarget | null> {
+  try {
+    return await leadFetch<SearchTarget>(`/api/admin/leads/targets/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    })
+  } catch {
+    return null
+  }
+}
+
+// --------------------------------------------------------------------------
 // Formatting
 // --------------------------------------------------------------------------
 
