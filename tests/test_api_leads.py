@@ -67,17 +67,74 @@ def test_the_feed_and_the_export_build_filters_the_same_way():
     assert filter_params <= export_params
 
 
-def test_export_columns_match_the_design():
-    from api.index import _LEAD_EXPORT_COLUMNS
+def test_export_columns_are_the_talentdb_field_mapping():
+    """The CSV columns are the Talent-DB `fields` keys, so an exported CSV
+    round-trips into a Talent-DB CSV import. The envelope-only ids are NOT
+    columns."""
+    from src import talentdb
 
-    expected = [
-        "employer_name", "title", "city", "state", "source", "url", "posted_at",
-        "salary_min", "salary_max", "salary_interval", "work_mode",
-        "service_line", "employer_type", "provider_count", "confidence",
-        "confidence_band", "reason", "draft", "disposition",
-        "created_at",
-    ]
-    assert _LEAD_EXPORT_COLUMNS == expected
+    cols = talentdb.CSV_COLUMNS
+    assert cols[0] == "Company"
+    assert "salesforceId" not in cols
+    assert "salesforceUpdatedAt" not in cols
+    for key in ("Company", "LastName", "Email", "Lead_Type__c",
+                "posting_source", "posting_url", "role_title",
+                "icp_tier", "summary", "sales_angles"):
+        assert key in cols
+    assert len(cols) == len(set(cols))          # no duplicate columns
+
+
+def test_posting_from_lead_maps_flattened_keys_back():
+    """`leads_for_export` flattens the posting onto the lead; the export undoes
+    that so talentdb's builders see a raw posting dict."""
+    from api.index import _posting_from_lead
+
+    posting = _posting_from_lead({
+        "posting_id": 5567, "source": "indeed", "url": "u", "title": "MA",
+        "board_remote_flag": False, "posting_created_at": "2026-08-02T06:00:00Z",
+        "last_seen_at": "2026-08-10T06:00:00Z", "match_status": "auto",
+        "employer_name": "Board Co",
+    })
+    assert posting["id"] == 5567
+    assert posting["source"] == "indeed"
+    assert posting["first_seen_at"] == "2026-08-02T06:00:00Z"   # renamed back
+    assert posting["employer_name"] == "Board Co"
+
+
+def test_export_row_maps_practice_and_posting_to_talentdb_keys():
+    """A full practice + reconstructed posting produce the same keys the webhook
+    sends — owner email, company name, the source slug and raw source. No
+    envelope ids in the row."""
+    from api.index import _posting_from_lead
+    from src import talentdb
+
+    lead = {"posting_id": 5567, "source": "linkedin", "title": "RN",
+            "employer_name": "Fallback Co"}
+    practice = {"id": 1024, "place_id": "ChIJx", "name": "Bright Smile Dental",
+                "owner_name": "Jane Doe", "owner_email": "jane@brightsmile.com",
+                "phone": "305-555-0100"}
+    row = talentdb.build_fields(practice, _posting_from_lead(lead))
+    assert row["Company"] == "Bright Smile Dental"
+    assert row["FirstName"] == "Jane"
+    assert row["LastName"] == "Doe"                      # from owner_name, not company
+    assert row["Email"] == "jane@brightsmile.com"
+    assert row["Lead_Type__c"] == "hv-sales-intel-linkedin"
+    assert row["posting_source"] == "linkedin"
+    assert "salesforceId" not in row
+    assert "salesforceUpdatedAt" not in row
+
+
+def test_export_row_uses_employer_name_when_no_practice():
+    """An unmatched posting gets Company (and the required LastName) from the
+    posting's employer; FirstName stays omitted (no owner)."""
+    from api.index import _posting_from_lead
+    from src import talentdb
+
+    lead = {"posting_id": 1, "source": "indeed", "employer_name": "Board Only Co"}
+    row = talentdb.build_fields(None, _posting_from_lead(lead))
+    assert row["Company"] == "Board Only Co"
+    assert row["LastName"] == "Board Only Co"
+    assert "FirstName" not in row
 
 
 def test_patch_only_exposes_workflow_fields():

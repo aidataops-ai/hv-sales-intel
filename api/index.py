@@ -1552,12 +1552,34 @@ async def search(body: SearchRequest, user: dict = Depends(get_current_user)):
     }
 
 
+def _practice_exported(company_id: str, practice_id: int | None) -> bool:
+    """True when the practice's newest linked posting has already been exported
+    to Talent-DB for this company.
+
+    Mirrors the dedup guard in POST /api/practices/{place_id}/import-lead so the
+    practice-detail Import Lead button can render 'Exported' after a reload
+    instead of reverting to its default state. A practice with no linked posting
+    is never deduped (always sendable), so it reports False.
+    """
+    from src import lead_store
+
+    if not practice_id:
+        return False
+    posting = lead_store.newest_posting_for_practice(practice_id)
+    if not posting:
+        return False
+    lead_row = lead_store.find_lead_by_posting(company_id, posting["id"])
+    return bool(lead_row and lead_row.get("talentdb_exported_at"))
+
+
 @app.get("/api/practices/{place_id}")
 def get_single(place_id: str, user: dict = Depends(get_current_user)):
     row = get_practice(place_id)
     if not row:
         raise HTTPException(status_code=404, detail="Practice not found")
-    return _attach_lead_url(row)
+    result = _attach_lead_url(row)
+    result["exported"] = _practice_exported(user["company_id"], row.get("id"))
+    return result
 
 
 class AnalyzeRequest(BaseModel):
@@ -1937,6 +1959,63 @@ async def update_last_call_note_endpoint(
     return {"practice": _attach_lead_url(practice), "sf_warning": warning}
 
 
+def _talentdb_response(result: dict) -> dict:
+    """Shape a talentdb.import_lead result into the endpoint response.
+
+    A non-ok result becomes a non-blocking `talentdb_warning` string rather
+    than an error — the Import Lead button is fail-soft.
+    """
+    warning = None
+    if not result.get("ok"):
+        msg = result.get("message") or result.get("status") or "unknown error"
+        warning = f"Talent-DB import failed: {msg}"
+    return {
+        "talentdb_status": result.get("status"),
+        "talentdb_warning": warning,
+        "local_entity_id": result.get("local_entity_id"),
+    }
+
+
+@app.post("/api/practices/{place_id}/import-lead")
+async def import_lead_practice_endpoint(
+    place_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Push a practice (+ its newest linked job posting) to Talent-DB as a Lead.
+
+    One-way and fire-and-forget. Deduped per (company, posting): a posting
+    already exported is not re-sent. Practices with no linked posting are always
+    sendable (there is nothing to dedup on).
+    """
+    from src import lead_store, talentdb
+
+    practice = get_practice(place_id)
+    if not practice:
+        raise HTTPException(404, "Practice not found")
+
+    company_id = user["company_id"]
+    posting = None
+    lead_row = None
+    pid = practice.get("id")
+    if pid:
+        posting = lead_store.newest_posting_for_practice(pid)
+    if posting:
+        lead_row = lead_store.find_lead_by_posting(company_id, posting["id"])
+        if lead_row and lead_row.get("talentdb_exported_at"):
+            log.info("[api.import_lead.skip] place_id=%s already_exported", place_id)
+            return {"talentdb_status": "already_exported", "talentdb_warning": None,
+                    "local_entity_id": None}
+
+    log.info("[api.import_lead] place_id=%s user=%s posting=%s",
+             place_id, user.get("email"), posting["id"] if posting else None)
+    result = await talentdb.import_lead(practice, posting)
+    if result.get("ok") and lead_row:
+        lead_store.mark_lead_exported(company_id, lead_row["id"])
+    log.info("[api.import_lead.response] place_id=%s ok=%s status=%s",
+             place_id, result.get("ok"), result.get("status"))
+    return _talentdb_response(result)
+
+
 @app.get("/api/debug/env")
 async def debug_env(user: dict = Depends(require_admin)):
     """Admin-only sanity check: which env vars does the deployed function see?
@@ -2309,12 +2388,33 @@ async def retrigger_lead_pipeline(admin: dict = Depends(require_admin)):
 # ---------------------------------------------------------------------------
 
 # CSV column order — kept in sync with the export endpoint below.
-_LEAD_EXPORT_COLUMNS = [
-    "employer_name", "title", "city", "state", "source", "url", "posted_at",
-    "salary_min", "salary_max", "salary_interval", "work_mode", "service_line",
-    "employer_type", "provider_count", "confidence", "confidence_band",
-    "reason", "draft", "disposition", "created_at",
-]
+# The posting facts an operator acts on, then the outreach contact columns.
+def _posting_from_lead(lead: dict) -> dict:
+    """Reconstruct a posting dict from a flattened export lead.
+
+    `leads_for_export` lifts the posting's columns onto the lead (renaming
+    `first_seen_at` → `posting_created_at` and dropping the posting `id`), so
+    talentdb's builders — which expect a raw posting dict — get their keys back.
+    """
+    return {
+        "id": lead.get("posting_id"),
+        "source": lead.get("source"),
+        "url": lead.get("url"),
+        "title": lead.get("title"),
+        "posted_at": lead.get("posted_at"),
+        "board_remote_flag": lead.get("board_remote_flag"),
+        "description": lead.get("description"),
+        "search_term": lead.get("search_term"),
+        "search_location": lead.get("search_location"),
+        "first_seen_at": lead.get("posting_created_at"),
+        "last_seen_at": lead.get("last_seen_at"),
+        "match_confidence": lead.get("match_confidence"),
+        "match_status": lead.get("match_status"),
+        "matched_at": lead.get("matched_at"),
+        "employer_name": lead.get("employer_name"),
+        "city": lead.get("city"),
+        "state": lead.get("state"),
+    }
 
 
 def _lead_filters(
@@ -2400,6 +2500,9 @@ def export_leads_csv(
         except ValueError:
             raise HTTPException(status_code=400, detail="max_exports must be an integer")
 
+    from src import talentdb
+    from src.storage import get_practices_by_place_ids
+
     rows = lead_store.leads_for_export(
         user["company_id"],
         filters=_lead_filters(cities, tracks, disposition, band, decision,
@@ -2407,23 +2510,38 @@ def export_leads_csv(
         max_exports=cap,
     )
 
+    # Attach the FULL practice record to each lead in one query — the embedded
+    # practice on the lead only carries a handful of columns, but the Talent-DB
+    # mapping needs the analysis/CRM fields too.
+    place_ids = [
+        (r.get("practice") or {}).get("place_id")
+        for r in rows
+        if (r.get("practice") or {}).get("place_id")
+    ]
+    practices_by_place = get_practices_by_place_ids(place_ids)
+
     def _serialize(value) -> str:
         if value is None:
             return ""
-        if isinstance(value, list):
-            return ", ".join(str(v) for v in value)
-        if isinstance(value, dict):
+        # Lists/dicts as JSON so structured fields (tags, sales_angles,
+        # icp_breakdown, website_contacts) round-trip into a CSV import.
+        if isinstance(value, (list, dict)):
             return json.dumps(value)
+        if isinstance(value, bool):
+            return "true" if value else "false"
         return str(value)
 
     def iter_csv():
         buf = io.StringIO()
         writer = csv.writer(buf)
-        writer.writerow(_LEAD_EXPORT_COLUMNS)
+        writer.writerow(talentdb.CSV_COLUMNS)
         yield buf.getvalue()
         buf.seek(0); buf.truncate(0)
         for row in rows:
-            writer.writerow([_serialize(row.get(col)) for col in _LEAD_EXPORT_COLUMNS])
+            embedded = row.get("practice") or {}
+            full = practices_by_place.get(embedded.get("place_id")) or embedded or None
+            fields = talentdb.build_fields(full, _posting_from_lead(row))
+            writer.writerow([_serialize(fields.get(col)) for col in talentdb.CSV_COLUMNS])
             yield buf.getvalue()
             buf.seek(0); buf.truncate(0)
 
@@ -2521,3 +2639,40 @@ def patch_lead_endpoint(
     if not updated:
         raise HTTPException(500, "Lead update failed")
     return updated
+
+
+@app.post("/api/leads/{lead_id}/import")
+async def import_lead_signal_endpoint(
+    lead_id: int,
+    user: dict = Depends(get_current_user),
+):
+    """Push a signals lead (its posting + linked practice) to Talent-DB.
+
+    The lead IS a (company, posting) row, so its `talentdb_exported_at` marker
+    is the dedup key: an already-exported lead is not re-sent. Fail-soft.
+    """
+    from src import talentdb
+
+    company_id = user["company_id"]
+    lead = lead_store.get_lead(company_id, lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    if lead.get("talentdb_exported_at"):
+        log.info("[api.lead_import.skip] lead_id=%s already_exported", lead_id)
+        return {"talentdb_status": "already_exported", "talentdb_warning": None,
+                "local_entity_id": None}
+
+    posting = lead_store.get_posting(lead.get("posting_id"))
+    practice = None
+    place_id = (lead.get("practice") or {}).get("place_id")
+    if place_id:
+        practice = get_practice(place_id)
+
+    log.info("[api.lead_import] lead_id=%s user=%s place_id=%s",
+             lead_id, user.get("email"), place_id)
+    result = await talentdb.import_lead(practice, posting)
+    if result.get("ok"):
+        lead_store.mark_lead_exported(company_id, lead_id)
+    log.info("[api.lead_import.response] lead_id=%s ok=%s status=%s",
+             lead_id, result.get("ok"), result.get("status"))
+    return _talentdb_response(result)
