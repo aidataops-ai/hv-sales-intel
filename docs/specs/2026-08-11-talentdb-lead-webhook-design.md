@@ -166,6 +166,8 @@ additionally prevents re-sending the same posting (see Export dedup).
 | `Rating` | num | `rating` |
 | `Status` | str | const `"New"` |
 | `Lead_Type__c` | str | **slug** from the linked posting's `source`: `hv-sales-intel-linkedin` / `hv-sales-intel-indeed`; `hv-sales-intel` when no posting |
+| `industry` | str | mapped from the posting's track (`service_line_hint`): Medical / Dental / Chiropractor / Home Health / Assisted Living / Legal / Spas; omitted when unmapped |
+| `country` | str | const `"USA"` (ISO alpha-3, hardcoded for now) |
 
 ### `fields` — linked job posting (`job_postings` row where `practice_id = practices.id`)
 
@@ -199,6 +201,7 @@ additionally prevents re-sending the same posting (see Export dedup).
 | `opening_hours` | str | `opening_hours` |
 | `category` | str | `category` |
 | `review_count` | num | `review_count` |
+| `organization_size` | num | `organization_size` (new `practices` column; omitted until enriched) |
 | `call_script` | obj? | `call_script` (jsonb — **not on Pydantic model**) |
 | `email_draft` | str? | `email_draft` |
 | `email_draft_updated_at` | ts? | `email_draft_updated_at` |

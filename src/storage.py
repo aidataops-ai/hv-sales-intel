@@ -161,6 +161,7 @@ _OPTIONAL_COLUMNS = {
     "icp_breakdown",
     "analysis_input_hash",
     "website_contacts",
+    "organization_size",
     "website_doctor_name",
     "website_doctor_phone",
     "call_count",

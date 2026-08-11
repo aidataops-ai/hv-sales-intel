@@ -155,6 +155,36 @@ def test_phone_prefers_owner_then_practice():
     assert fields["Phone"] == "+13125550100"
 
 
+def test_country_is_hardcoded_usa():
+    assert talentdb.build_fields(_practice(), _posting())["country"] == "USA"
+
+
+def test_organization_size_from_practice():
+    fields = talentdb.build_fields(_practice(organization_size=42), _posting())
+    assert fields["organization_size"] == 42
+    # Omitted when the practice has no value.
+    assert "organization_size" not in talentdb.build_fields(_practice(), _posting())
+
+
+@pytest.mark.parametrize("hint,industry", [
+    ("Virtual Medical Assistant", "Medical"),
+    ("Virtual Medical Scheduler", "Medical"),
+    ("Virtual Dental Assistant", "Dental"),
+    ("Virtual Chiropractic Assistant", "Chiropractor"),
+    ("Virtual Home Health Operations Coordinator", "Home Health"),
+    ("Virtual Legal Assistant", "Legal"),
+    ("Virtual Assisted Living Coordinator", "Assisted Living"),
+])
+def test_industry_mapped_from_track(hint, industry):
+    fields = talentdb.build_fields(_practice(), _posting(service_line_hint=hint))
+    assert fields["industry"] == industry
+
+
+def test_industry_omitted_when_track_unmapped():
+    fields = talentdb.build_fields(_practice(), _posting(service_line_hint="Something Else"))
+    assert "industry" not in fields
+
+
 def test_source_practice_id_is_stringified():
     fields = talentdb.build_fields(_practice(), _posting())
     assert fields["source_practice_id"] == "1024"

@@ -2079,6 +2079,31 @@ class ClayWebhookPayload(BaseModel):
     owner_phone: str | None = None
     owner_title: str | None = None
     owner_linkedin: str | None = None
+    # Headcount from Clay. Accepted as int or str (Clay returns messy values like
+    # "1,200" or "50-100"); coerced to an int below so a bad value never rejects
+    # the whole enrichment callback.
+    organization_size: int | str | None = None
+
+
+def _coerce_org_size(value) -> int | None:
+    """Best-effort parse Clay's org-size into a positive int, else None.
+
+    Takes the first run of digits (commas stripped), so "1,200" -> 1200 and
+    "50-100 employees" -> 50. Anything without digits -> None (skipped)."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        n = int(value)
+        return n if n > 0 else None
+    if isinstance(value, str):
+        digits = ""
+        for ch in value.replace(",", "").strip():
+            if ch.isdigit():
+                digits += ch
+            elif digits:
+                break
+        return int(digits) if digits else None
+    return None
 
 
 @app.post("/api/webhooks/clay")
@@ -2098,6 +2123,10 @@ def clay_webhook(
         value = getattr(body, key)
         if value is not None and value != "":
             fields[key] = value
+
+    org_size = _coerce_org_size(body.organization_size)
+    if org_size is not None:
+        fields["organization_size"] = org_size
 
     has_any_contact = any(k in fields for k in ("owner_name", "owner_email", "owner_phone"))
     fields["enrichment_status"] = "enriched" if has_any_contact else "failed"
@@ -2406,6 +2435,7 @@ def _posting_from_lead(lead: dict) -> dict:
         "description": lead.get("description"),
         "search_term": lead.get("search_term"),
         "search_location": lead.get("search_location"),
+        "service_line_hint": lead.get("service_line_hint"),
         "first_seen_at": lead.get("posting_created_at"),
         "last_seen_at": lead.get("last_seen_at"),
         "match_confidence": lead.get("match_confidence"),

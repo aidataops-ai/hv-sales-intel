@@ -1,7 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { Globe, Star, Bookmark, Info, ArrowRight } from "lucide-react"
+import { Globe, Star, Bookmark, Info, ArrowRight, Users } from "lucide-react"
 import type { Practice } from "@/lib/types"
 import type { CallLogResponse } from "@/lib/api"
 import { parseJsonArray } from "@/lib/types"
@@ -58,6 +58,12 @@ export default function PracticeInfo({
           </button>
         </div>
         <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">{practice.address}</p>
+        {practice.organization_size != null && (
+          <p className="text-xs text-gray-500 dark:text-gray-400 mt-1.5 flex items-center gap-1.5">
+            <Users className="w-3.5 h-3.5 shrink-0" />
+            {practice.organization_size.toLocaleString()} employees
+          </p>
+        )}
       </div>
 
       <div className="flex items-center gap-3">

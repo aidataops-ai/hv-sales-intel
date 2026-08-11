@@ -12,6 +12,7 @@ export interface Practice {
   lat: number | null
   lng: number | null
   opening_hours: string | null
+  organization_size?: number | null
   status: string
 
   // Phase 2 (AI analysis) — optional, absent on unscored practices

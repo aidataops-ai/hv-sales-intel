@@ -43,6 +43,29 @@ def _lead_type_slug(source: str | None) -> str:
     return _SOURCE_SLUGS.get(source or "", "hv-sales-intel")
 
 
+# Industry is derived from the posting's track (service_line_hint). One track,
+# "Virtual Wellness and Hospitality Assistant", serves two industries (Spas and
+# Hospitality & Hotels) — the track alone can't disambiguate, so it maps to
+# "Spas" for now (flagged for review). Insurance / Nursing Home have no active
+# track, so nothing maps to them.
+_INDUSTRY_BY_TRACK = {
+    "Virtual Medical Assistant": "Medical",
+    "Virtual Medical Scheduler": "Medical",
+    "Virtual Medical Scribe": "Medical",
+    "Virtual Dental Assistant": "Dental",
+    "Virtual Chiropractic Assistant": "Chiropractor",
+    "Virtual Home Health Operations Coordinator": "Home Health",
+    "Virtual Assisted Living Coordinator": "Assisted Living",
+    "Virtual Legal Assistant": "Legal",
+    "Virtual Wellness and Hospitality Assistant": "Spas",
+}
+
+
+def _industry(service_line_hint: str | None) -> str | None:
+    """Map the posting's track to an industry; None (omitted) if unmapped."""
+    return _INDUSTRY_BY_TRACK.get((service_line_hint or "").strip())
+
+
 def _coerce_json(value):
     """Return real JSON for a column that may be stored as a JSON string.
 
@@ -115,6 +138,8 @@ def build_fields(practice: dict | None, posting: dict | None) -> dict:
         "Rating": p.get("rating"),
         "Status": "New",
         "Lead_Type__c": _lead_type_slug(source),   # slug; always present
+        "industry": _industry(pg.get("service_line_hint")),   # from track
+        "country": "USA",                          # ISO alpha-3, hardcoded for now
 
         # Linked job posting (raw DB values)
         "posting_source": source,
@@ -143,6 +168,7 @@ def build_fields(practice: dict | None, posting: dict | None) -> dict:
         "opening_hours": p.get("opening_hours"),
         "category": p.get("category"),
         "review_count": p.get("review_count"),
+        "organization_size": p.get("organization_size"),
         "call_script": _coerce_json(p.get("call_script")),
         "email_draft": p.get("email_draft"),
         "email_draft_updated_at": p.get("email_draft_updated_at"),
@@ -169,7 +195,7 @@ def build_fields(practice: dict | None, posting: dict | None) -> dict:
 CSV_COLUMNS = [
     # Core (Salesforce-aliased)
     "Company", "LastName", "Email", "FirstName", "Phone", "Website",
-    "City", "State", "Rating", "Status", "Lead_Type__c",
+    "City", "State", "Rating", "Status", "Lead_Type__c", "industry", "country",
     # Linked job posting
     "posting_source", "posting_url", "role_title", "posted_at", "board_remote",
     "posting_description", "search_term", "search_location", "first_seen_at",
@@ -178,7 +204,8 @@ CSV_COLUMNS = [
     # Practice scoring / meta / CRM
     "urgency_score", "hiring_signal_score", "icp_tier", "icp_breakdown",
     "enrichment_status", "lat", "lng", "opening_hours", "category",
-    "review_count", "call_script", "email_draft", "email_draft_updated_at",
+    "review_count", "organization_size", "call_script", "email_draft",
+    "email_draft_updated_at",
     "tags", "source_assigned_at", "source_assigned_by", "last_touched_by",
     "last_touched_at", "export_count", "last_exported_at", "last_exported_by",
     "salesforce_owner_id", "salesforce_owner_name", "salesforce_lead_url",
