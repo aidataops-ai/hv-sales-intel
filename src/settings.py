@@ -76,6 +76,14 @@ class Settings(BaseSettings):
     clay_table_api_key: str = ""
     clay_inbound_secret: str = ""
 
+    # Talent-DB inbound Lead webhook ("Import Lead" button).
+    # We POST a signed Lead envelope; body is HMAC-SHA256-signed with the
+    # secret (X-HV-Signature). Empty secret/url disables the feature (endpoints
+    # return a non-blocking warning). Staging URL by default.
+    # See docs/specs/2026-08-11-talentdb-lead-webhook-design.md.
+    talentdb_webhook_url: str = ""
+    talentdb_webhook_secret: str = ""
+
     class Config:
         env_file = ".env"
         extra = "ignore"
