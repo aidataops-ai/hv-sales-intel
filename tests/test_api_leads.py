@@ -34,20 +34,22 @@ def test_multi_select_params_split_on_commas():
     filters = _lead_filters(
         cities="Miami,Tampa", tracks="Virtual Dental Assistant",
         disposition=None, band=None, decision=None, work_mode=None,
-        source=None, state=None, salary=None, search=None,
+        source=None, states="FL,GA", salary=None, search=None,
     )
     assert filters["cities"] == ["Miami", "Tampa"]
     assert filters["tracks"] == ["Virtual Dental Assistant"]
+    assert filters["states"] == ["FL", "GA"]
 
 
 def test_empty_multi_select_params_produce_no_filter():
     filters = _lead_filters(
         cities="", tracks=",,", disposition=None, band=None, decision=None,
-        work_mode=None, source=None, state=None, salary=None,
+        work_mode=None, source=None, states=None, salary=None,
         search=None,
     )
     assert filters["cities"] == []
     assert filters["tracks"] == []
+    assert filters["states"] == []
 
 
 def test_the_feed_and_the_export_build_filters_the_same_way():
@@ -61,7 +63,7 @@ def test_the_feed_and_the_export_build_filters_the_same_way():
     export_params = set(inspect.signature(export_leads_csv).parameters)
     filter_params = {
         "cities", "tracks", "disposition", "band", "decision", "work_mode",
-        "source", "state", "salary", "search",
+        "source", "states", "salary", "search",
     }
     assert filter_params <= feed_params
     assert filter_params <= export_params
@@ -149,7 +151,7 @@ def test_the_feed_defaults_to_keeps_only():
     by default buries the handful of real leads."""
     filters = _lead_filters(
         cities=None, tracks=None, disposition=None, band=None, decision=None,
-        work_mode=None, source=None, state=None, salary=None,
+        work_mode=None, source=None, states=None, salary=None,
         search=None,
     )
     assert filters["decision"] in (None, "", "keep")
@@ -191,6 +193,6 @@ def test_an_unknown_decision_filter_is_rejected():
     with pytest.raises(HTTPException):
         _lead_filters(
             cities=None, tracks=None, disposition=None, band=None, decision="maybe",
-            work_mode=None, source=None, state=None, salary=None,
+            work_mode=None, source=None, states=None, salary=None,
             search=None,
         )

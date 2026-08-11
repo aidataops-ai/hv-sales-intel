@@ -2420,7 +2420,7 @@ def _posting_from_lead(lead: dict) -> dict:
 def _lead_filters(
     cities: str | None, tracks: str | None, disposition: str | None,
     band: str | None, decision: str | None, work_mode: str | None,
-    source: str | None, state: str | None, salary: str | None,
+    source: str | None, states: str | None, salary: str | None,
     search: str | None, practice: str | None = None,
 ) -> dict:
     """Build the filter dict once, so the feed and the export cannot drift.
@@ -2437,8 +2437,9 @@ def _lead_filters(
     return {
         "cities": [c for c in (cities.split(",") if cities else []) if c],
         "tracks": [t for t in (tracks.split(",") if tracks else []) if t],
+        "states": [s for s in (states.split(",") if states else []) if s],
         "disposition": disposition, "band": band, "decision": decision,
-        "work_mode": work_mode, "source": source, "state": state,
+        "work_mode": work_mode, "source": source,
         "salary": salary, "search": search, "practice": practice,
     }
 
@@ -2477,7 +2478,7 @@ def export_leads_csv(
     decision: str | None = Query(None),
     work_mode: str | None = Query(None),
     source: str | None = Query(None),
-    state: str | None = Query(None),
+    states: str | None = Query(None, description="comma-separated 2-letter codes"),
     salary: str | None = Query(None),
     search: str | None = Query(None),
     practice: str | None = Query(None),
@@ -2506,7 +2507,7 @@ def export_leads_csv(
     rows = lead_store.leads_for_export(
         user["company_id"],
         filters=_lead_filters(cities, tracks, disposition, band, decision,
-                              work_mode, source, state, salary, search, practice),
+                              work_mode, source, states, salary, search, practice),
         max_exports=cap,
     )
 
@@ -2572,7 +2573,7 @@ def list_leads_endpoint(
     ),
     work_mode: str | None = Query(None),     # onsite | remote | hybrid
     source: str | None = Query(None),        # indeed | linkedin
-    state: str | None = Query(None),
+    states: str | None = Query(None),        # comma-separated 2-letter codes
     salary: str | None = Query(None),        # "yes" | "no"
     search: str | None = Query(None),        # employer + title
     practice: str | None = Query(None),      # "yes" | "no" — linked to a practice
@@ -2585,7 +2586,7 @@ def list_leads_endpoint(
     rows, total = lead_store.list_leads(
         user["company_id"],
         filters=_lead_filters(cities, tracks, disposition, band, decision,
-                              work_mode, source, state, salary, search, practice),
+                              work_mode, source, states, salary, search, practice),
         sort=sort, direction=dir, offset=offset, limit=limit,
     )
     return {

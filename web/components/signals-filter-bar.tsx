@@ -5,7 +5,7 @@ import { Search, X } from "lucide-react"
 import MultiSelect from "./multi-select"
 import {
   ALL_SOURCES, ALL_WORK_MODES,
-  formatWorkMode, type FilterOptions,
+  formatWorkMode, stateLabel, type FilterOptions,
 } from "@/lib/leads"
 import type { SignalsState } from "@/lib/use-signals-url-state"
 
@@ -26,7 +26,7 @@ const labelClass =
 
 export default function SignalsFilterBar({ state, onChange, options, onReset }: Props) {
   const active =
-    state.cities.length + state.tracks.length +
+    state.cities.length + state.tracks.length + state.states.length +
     [state.work_mode, state.source,
      state.salary, state.practice, state.search].filter(Boolean).length
 
@@ -54,9 +54,9 @@ export default function SignalsFilterBar({ state, onChange, options, onReset }: 
         )}
       </div>
 
-      {/* Cities and tracks are the two priority filters — free multi-selects
+      {/* Cities, tracks and states are the priority filters — free multi-selects
           over the values actually present in this tenant's leads. */}
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-3 gap-3">
         <div>
           <label className={labelClass}>Cities</label>
           <MultiSelect
@@ -74,6 +74,17 @@ export default function SignalsFilterBar({ state, onChange, options, onReset }: 
             options={options.tracks}
             selected={state.tracks}
             onChange={(tracks) => onChange({ tracks })}
+            emptyHint="No leads collected yet."
+          />
+        </div>
+        <div>
+          <label className={labelClass}>States</label>
+          <MultiSelect
+            label="States"
+            options={options.states}
+            selected={state.states}
+            onChange={(states) => onChange({ states })}
+            format={stateLabel}
             emptyHint="No leads collected yet."
           />
         </div>

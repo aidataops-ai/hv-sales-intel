@@ -347,8 +347,8 @@ def _apply_filters(query, *, filters: dict):
         query = query.eq("work_mode", work_mode)
     if source := filters.get("source"):
         query = query.eq("posting.source", source)
-    if state := filters.get("state"):
-        query = query.eq("posting.state", state)
+    if states := filters.get("states"):
+        query = query.in_("posting.state", states)
     if filters.get("salary") == "yes":
         query = query.not_.is_("posting.salary_min", "null")
     elif filters.get("salary") == "no":

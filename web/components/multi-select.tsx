@@ -11,6 +11,10 @@ interface MultiSelectProps {
   onChange: (next: string[]) => void
   /** Shown when `options` is empty — usually "no leads collected yet". */
   emptyHint?: string
+  /** Display transform for an option — the underlying value (and what's sent to
+   *  the API) stays the raw option; only the label shown changes. e.g. state
+   *  codes shown as full names. Defaults to identity. */
+  format?: (option: string) => string
 }
 
 /**
@@ -21,11 +25,12 @@ interface MultiSelectProps {
  * whose targets cover three cities should not scroll past thirty empty ones.
  */
 export default function MultiSelect({
-  label, options, selected, onChange, emptyHint,
+  label, options, selected, onChange, emptyHint, format,
 }: MultiSelectProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
   const wrapperRef = useRef<HTMLDivElement>(null)
+  const show = format ?? ((o: string) => o)
 
   useEffect(() => {
     if (!open) return
@@ -41,9 +46,13 @@ export default function MultiSelect({
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase()
     return needle
-      ? options.filter((o) => o.toLowerCase().includes(needle))
+      ? options.filter(
+          (o) =>
+            o.toLowerCase().includes(needle) ||
+            show(o).toLowerCase().includes(needle),
+        )
       : options
-  }, [options, query])
+  }, [options, query, show])
 
   function toggle(option: string) {
     onChange(
@@ -83,9 +92,9 @@ export default function MultiSelect({
               type="button"
               onClick={() => toggle(value)}
               className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-teal-100 text-teal-800 dark:bg-teal-500/20 dark:text-teal-300 hover:bg-teal-200 dark:hover:bg-teal-500/30 transition"
-              title={`Remove ${value}`}
+              title={`Remove ${show(value)}`}
             >
-              {value}
+              {show(value)}
               <X className="w-2.5 h-2.5" />
             </button>
           ))}
@@ -122,7 +131,7 @@ export default function MultiSelect({
                     onChange={() => toggle(option)}
                     className="accent-teal-600"
                   />
-                  <span className="truncate">{option}</span>
+                  <span className="truncate">{show(option)}</span>
                 </label>
               ))
             )}

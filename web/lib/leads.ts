@@ -107,6 +107,8 @@ export type DecisionFilter = "keep" | "discard" | "all"
 export interface LeadFilters {
   cities: string[]
   tracks: string[]
+  /** 2-letter state codes (e.g. "FL", "GA"). Filters on the posting's state. */
+  states: string[]
   band: string
   /** "" means the API default, which is keeps only. */
   decision: string
@@ -119,8 +121,30 @@ export interface LeadFilters {
 }
 
 export const EMPTY_LEAD_FILTERS: LeadFilters = {
-  cities: [], tracks: [], band: "", decision: "", work_mode: "",
+  cities: [], tracks: [], states: [], band: "", decision: "", work_mode: "",
   source: "", salary: "", practice: "", search: "",
+}
+
+/** 2-letter code → full state name, for display in the state filter. Filtering
+ *  still uses the code (what the backend stores); this is label-only. Unknown
+ *  codes fall through to themselves (e.g. the "US"/"UK" catch-all buckets). */
+const US_STATE_NAMES: Record<string, string> = {
+  AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California",
+  CO: "Colorado", CT: "Connecticut", DE: "Delaware", DC: "District of Columbia",
+  FL: "Florida", GA: "Georgia", HI: "Hawaii", ID: "Idaho", IL: "Illinois",
+  IN: "Indiana", IA: "Iowa", KS: "Kansas", KY: "Kentucky", LA: "Louisiana",
+  ME: "Maine", MD: "Maryland", MA: "Massachusetts", MI: "Michigan",
+  MN: "Minnesota", MS: "Mississippi", MO: "Missouri", MT: "Montana",
+  NE: "Nebraska", NV: "Nevada", NH: "New Hampshire", NJ: "New Jersey",
+  NM: "New Mexico", NY: "New York", NC: "North Carolina", ND: "North Dakota",
+  OH: "Ohio", OK: "Oklahoma", OR: "Oregon", PA: "Pennsylvania",
+  RI: "Rhode Island", SC: "South Carolina", SD: "South Dakota", TN: "Tennessee",
+  TX: "Texas", UT: "Utah", VT: "Vermont", VA: "Virginia", WA: "Washington",
+  WV: "West Virginia", WI: "Wisconsin", WY: "Wyoming",
+}
+
+export function stateLabel(code: string): string {
+  return US_STATE_NAMES[code] ?? code
 }
 
 /** Turn the filter state into the query params both the feed and the CSV
@@ -131,6 +155,7 @@ export function filterParams(
   const out: Record<string, string | string[]> = {}
   if (filters.cities.length) out.cities = filters.cities
   if (filters.tracks.length) out.tracks = filters.tracks
+  if (filters.states.length) out.states = filters.states
   if (filters.band) out.band = filters.band
   if (filters.decision) out.decision = filters.decision
   if (filters.work_mode) out.work_mode = filters.work_mode
