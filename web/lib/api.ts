@@ -327,6 +327,32 @@ export async function getPractice(placeId: string): Promise<Practice> {
   return await apiFetch<Practice>(`/api/practices/${placeId}`)
 }
 
+// ======================= Talent-DB "Import Lead" =======================
+
+export interface ImportLeadResponse {
+  talentdb_status: string | null       // ok | skipped | already_exported | error | ...
+  talentdb_warning: string | null      // non-null on a soft failure
+  local_entity_id?: number | null
+}
+
+// Push a practice (+ its newest linked posting) to Talent-DB as a Lead.
+export async function importLead(placeId: string): Promise<ImportLeadResponse> {
+  return await apiFetch<ImportLeadResponse>(
+    `/api/practices/${placeId}/import-lead`,
+    { method: "POST" },
+  )
+}
+
+// Push a signals lead (its posting + linked practice) to Talent-DB as a Lead.
+export async function importLeadFromSignal(
+  leadId: number,
+): Promise<ImportLeadResponse> {
+  return await apiFetch<ImportLeadResponse>(
+    `/api/leads/${leadId}/import`,
+    { method: "POST" },
+  )
+}
+
 export interface EnrichResponse {
   practice: Practice
   clay_warning: string | null

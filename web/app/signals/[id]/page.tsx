@@ -3,14 +3,15 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react"
 import Link from "next/link"
 import {
-  ArrowLeft, ArrowRight, Check, Copy, ExternalLink, Globe, MapPin, Phone,
+  ArrowLeft, ArrowRight, Check, Copy, ExternalLink, Globe, Loader2, MapPin,
+  Phone, Upload,
 } from "lucide-react"
 
 import SignalsTopBar from "@/components/signals-top-bar"
 import { BandBadge, DispositionBadge, SourceBadge } from "@/components/signal-badges"
 import {
   ALL_DISPOSITIONS, employerLabel, formatSalary, formatWorkMode,
-  getLead, updateLead, type Lead, type LeadDisposition,
+  getLead, importLeadFromSignal, updateLead, type Lead, type LeadDisposition,
 } from "@/lib/leads"
 import { timeAgo } from "@/lib/utils"
 
@@ -21,6 +22,34 @@ export default function SignalDetailPage({ params }: { params: { id: string } })
   const [isSaving, setIsSaving] = useState(false)
   const [notes, setNotes] = useState("")
   const [copied, setCopied] = useState(false)
+  const [importing, setImporting] = useState(false)
+  const [importMsg, setImportMsg] = useState<{ ok: boolean; text: string } | null>(null)
+
+  async function handleImport() {
+    setImporting(true)
+    setImportMsg(null)
+    try {
+      const res = await importLeadFromSignal(leadId)
+      if (res.talentdb_warning) {
+        setImportMsg({ ok: false, text: res.talentdb_warning })
+      } else {
+        setImportMsg({
+          ok: true,
+          text:
+            res.talentdb_status === "already_exported"
+              ? "Already exported to Talent-DB."
+              : "Exported to Talent-DB.",
+        })
+        setLead((cur) =>
+          cur
+            ? { ...cur, talentdb_exported_at: cur.talentdb_exported_at ?? new Date().toISOString() }
+            : cur,
+        )
+      }
+    } finally {
+      setImporting(false)
+    }
+  }
 
   useEffect(() => {
     getLead(leadId).then((found) => {
@@ -217,6 +246,40 @@ export default function SignalDetailPage({ params }: { params: { id: string } })
                 <h2 className="font-serif font-semibold text-gray-900 dark:text-white">
                   Workflow
                 </h2>
+
+                <div>
+                  <button
+                    onClick={handleImport}
+                    disabled={importing || !!lead.talentdb_exported_at}
+                    title="Send this lead to Talent-DB"
+                    className="inline-flex w-full items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg bg-teal-600 text-white text-sm font-medium hover:bg-teal-700 transition disabled:opacity-60 disabled:hover:bg-teal-600"
+                  >
+                    {lead.talentdb_exported_at ? (
+                      <>
+                        <Check className="w-4 h-4" /> Exported
+                      </>
+                    ) : importing ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" /> Exporting…
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-4 h-4" /> Import Lead
+                      </>
+                    )}
+                  </button>
+                  {importMsg && (
+                    <p
+                      className={`mt-1.5 text-xs ${
+                        importMsg.ok
+                          ? "text-teal-700 dark:text-teal-400"
+                          : "text-rose-600 dark:text-rose-400"
+                      }`}
+                    >
+                      {importMsg.text}
+                    </p>
+                  )}
+                </div>
 
                 <div>
                   <label className={fieldLabel}>Decision</label>

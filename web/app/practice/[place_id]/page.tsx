@@ -2,10 +2,10 @@
 
 import { useState, useEffect, useCallback } from "react"
 import { useParams, useRouter } from "next/navigation"
-import { ArrowLeft, MoreVertical } from "lucide-react"
+import { ArrowLeft, MoreVertical, Upload, Loader2, Check } from "lucide-react"
 import ThemeToggle from "@/components/theme-toggle"
 import type { Practice, ScriptSection } from "@/lib/types"
-import { getScript, regenerateScript, updatePractice } from "@/lib/api"
+import { getScript, importLead, regenerateScript, updatePractice } from "@/lib/api"
 import { timeAgo } from "@/lib/utils"
 import PracticeInfo from "@/components/practice-info"
 import ScriptView from "@/components/script-view"
@@ -27,6 +27,25 @@ export default function CallPrepPage() {
   const [sections, setSections] = useState<ScriptSection[]>([])
   const [isLoadingScript, setIsLoadingScript] = useState(true)
   const [loadError, setLoadError] = useState(false)
+  const [importingLead, setImportingLead] = useState(false)
+  const [importedLead, setImportedLead] = useState(false)
+
+  async function handleImportLead() {
+    if (!practice) return
+    setImportingLead(true)
+    try {
+      const res = await importLead(practice.place_id)
+      if (res.talentdb_warning) {
+        window.alert(res.talentdb_warning)
+      } else {
+        setImportedLead(true)
+      }
+    } catch {
+      window.alert("Import failed — please try again.")
+    } finally {
+      setImportingLead(false)
+    }
+  }
 
   // Load practice data
   useEffect(() => {
@@ -40,7 +59,11 @@ export default function CallPrepPage() {
         if (API_URL || IS_PROD) {
           const res = await fetch(`${API_URL}/api/practices/${placeId}`, { credentials: "include" })
           if (res.ok) {
-            setPractice(await res.json())
+            const data: Practice = await res.json()
+            setPractice(data)
+            // Restore the exported state so the button doesn't revert to
+            // "Import Lead" after a reload (the marker is persisted server-side).
+            if (data.exported) setImportedLead(true)
             loaded = true
           }
         }
@@ -156,6 +179,26 @@ export default function CallPrepPage() {
               </div>
             </div>
           )}
+          <button
+            onClick={handleImportLead}
+            disabled={importingLead || importedLead}
+            title="Send this practice to Talent-DB as a Lead"
+            className="inline-flex items-center gap-1.5 text-sm px-3 py-1.5 rounded-lg bg-teal-600 text-white hover:bg-teal-700 transition disabled:opacity-60 disabled:hover:bg-teal-600"
+          >
+            {importedLead ? (
+              <>
+                <Check className="w-4 h-4" /> Imported
+              </>
+            ) : importingLead ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" /> Importing…
+              </>
+            ) : (
+              <>
+                <Upload className="w-4 h-4" /> Import Lead
+              </>
+            )}
+          </button>
           <ThemeToggle />
           <button
             onClick={() =>

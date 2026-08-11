@@ -95,6 +95,10 @@ export interface Lead {
   last_touched_at: string | null
   contacted_at: string | null
   created_at: string
+
+  /** When this lead was pushed to Talent-DB via Import Lead. Null = never.
+   *  Set means the button shows "Exported" and won't re-send. */
+  talentdb_exported_at: string | null
 }
 
 /** What the feed shows. The API defaults to `keep`; `all` is the opt-out. */
@@ -214,6 +218,30 @@ export async function updateLead(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(fields),
   })
+}
+
+export interface ImportLeadResult {
+  talentdb_status: string | null   // ok | skipped | already_exported | error | ...
+  talentdb_warning: string | null  // non-null on a soft failure
+  local_entity_id?: number | null
+}
+
+/** Push a signals lead (its posting + linked practice) to Talent-DB.
+ *  Returns the server's status/warning rather than throwing so the button
+ *  can show the outcome; a genuine network failure returns a warning too. */
+export async function importLeadFromSignal(
+  id: number,
+): Promise<ImportLeadResult> {
+  try {
+    return await leadFetch<ImportLeadResult>(`/api/leads/${id}/import`, {
+      method: "POST",
+    })
+  } catch {
+    return {
+      talentdb_status: "error",
+      talentdb_warning: "Import failed — please try again.",
+    }
+  }
 }
 
 export type RetriggerResult =

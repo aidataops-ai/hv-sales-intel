@@ -120,9 +120,9 @@ export default function PracticeInfo({
       )}
 
       <div>
-        <h4 className="text-xs font-semibold text-gray-700 dark:text-[#d9d9d9] mb-1">Owner</h4>
+        <h4 className="text-xs font-semibold text-gray-700 dark:text-[#d9d9d9] mb-1">Contact Details</h4>
         {practice.enrichment_status === "pending" ? (
-          <p className="text-xs text-gray-400 dark:text-gray-500">Enriching owner info…</p>
+          <p className="text-xs text-gray-400 dark:text-gray-500">Enriching Contact info…</p>
         ) : practice.owner_name || practice.owner_email || practice.owner_phone ? (
           <OwnerMiniCard practice={practice} />
         ) : (
