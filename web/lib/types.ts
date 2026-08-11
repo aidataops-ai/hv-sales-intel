@@ -65,6 +65,9 @@ export interface Practice {
   // Website-extracted doctor info
   website_doctor_name: string | null
   website_doctor_phone: string | null
+
+  // Computed read-time: newest linked posting already exported to Talent-DB.
+  exported?: boolean
 }
 
 export interface EmailMessage {
