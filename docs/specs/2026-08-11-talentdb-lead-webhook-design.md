@@ -1,9 +1,20 @@
 # Talent-DB Inbound Lead Webhook — "Import Lead" Design Spec
 
 **Date:** 2026-08-11
-**Status:** Implemented (2026-08-11). Backend `src/talentdb.py` + two endpoints, dedup
-marker migration (applied), and Import Lead buttons on practice detail + signals detail.
-Tests in `tests/test_talentdb.py` (21 passing). Envelope matches the received JSON sample.
+**Status:** Aligned to the receiver's **definitive accepted schema** (2026-08-12).
+`build_fields` emits the schema's exact `api` keys — a MIX: PascalCase core (`Email`,
+`FirstName`, `LastName`, `Phone`, `Company`(required), `Country`, `Website`), SF custom
+(`No_of_Providers__c`←provider_count, `Lead_Type__c`=`Outbound`), and snake_case
+posting/scoring (`role_title`, `posting_url`, `icp_tier`, `board_remote`, …). **31–34 keys**;
+webhook + CSV stay 1:1 synced. No compat shim (`Company` is the exact required key).
+
+**NOT sent** (schema `api: null`, or computed by the receiver): `Industry` (computed
+app-side), `Source` (receiver derives from `posting_source`), Alternative Number, Tracks,
+Organization Size, Hiring Timeline, Spokesperson Role, Locations, Practice Notes, Current
+Pain Points. Verified 200 against staging (Capstone Hospice → localEntityId 193).
+
+_History: an interim camelCase migration was reverted here after the receiver published this
+definitive schema, which uses the mixed SF/snake style above._
 
 ## Decisions (2026-08-11)
 

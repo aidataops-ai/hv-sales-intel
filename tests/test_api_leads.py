@@ -70,18 +70,22 @@ def test_the_feed_and_the_export_build_filters_the_same_way():
 
 
 def test_export_columns_are_the_talentdb_field_mapping():
-    """The CSV columns are the Talent-DB `fields` keys, so an exported CSV
-    round-trips into a Talent-DB CSV import. The envelope-only ids are NOT
-    columns."""
+    """The CSV columns are the Talent-DB `fields` keys (the receiver's schema),
+    so an exported CSV round-trips into a Talent-DB CSV import."""
     from src import talentdb
 
     cols = talentdb.CSV_COLUMNS
-    assert cols[0] == "Company"
-    assert "salesforceId" not in cols
-    assert "salesforceUpdatedAt" not in cols
-    for key in ("Company", "LastName", "Email", "Lead_Type__c",
-                "posting_source", "posting_url", "role_title",
-                "icp_tier", "summary", "sales_angles"):
+    assert cols[0] == "source_practice_id"
+    # No-source / envelope-only fields are NOT columns.
+    for absent in ("salesforceId", "salesforceUpdatedAt",
+                   "hiring_timeline", "locations_count"):
+        assert absent not in cols
+    assert "Industry" not in cols               # not sent / not evaluated
+    for key in ("source_practice_id", "Company", "LastName", "Email", "Lead_Type__c",
+                "No_of_Providers__c", "source", "interested_tracks",
+                "organization_size", "alternate_phone", "practice_notes", "pain_points",
+                "lead_role", "posting_source", "posting_url", "role_title", "icp_tier",
+                "summary", "sales_angles"):
         assert key in cols
     assert len(cols) == len(set(cols))          # no duplicate columns
 
@@ -104,26 +108,29 @@ def test_posting_from_lead_maps_flattened_keys_back():
 
 
 def test_export_row_maps_practice_and_posting_to_talentdb_keys():
-    """A full practice + reconstructed posting produce the same keys the webhook
-    sends — owner email, company name, the source slug and raw source. No
-    envelope ids in the row."""
+    """A full practice + reconstructed posting + lead produce the camelCase keys
+    the webhook sends — owner email, company name, source slug, providers."""
     from api.index import _posting_from_lead
     from src import talentdb
 
     lead = {"posting_id": 5567, "source": "linkedin", "title": "RN",
-            "employer_name": "Fallback Co"}
+            "employer_name": "Fallback Co", "provider_count": 6,
+            "service_line": "Virtual Dental Assistant"}
     practice = {"id": 1024, "place_id": "ChIJx", "name": "Bright Smile Dental",
                 "owner_name": "Jane Doe", "owner_email": "jane@brightsmile.com",
                 "phone": "305-555-0100"}
-    row = talentdb.build_fields(practice, _posting_from_lead(lead))
+    row = talentdb.build_fields(practice, _posting_from_lead(lead), lead)
     assert row["Company"] == "Bright Smile Dental"
     assert row["FirstName"] == "Jane"
     assert row["LastName"] == "Doe"                      # from owner_name, not company
     assert row["Email"] == "jane@brightsmile.com"
-    assert row["Lead_Type__c"] == "hv-sales-intel-linkedin"
-    assert row["posting_source"] == "linkedin"
+    assert row["source"] == "hv-sales-intel-linkedin"    # slug
+    assert row["posting_source"] == "linkedin"           # raw
+    assert row["source_practice_id"] == "1024"
+    assert row["No_of_Providers__c"] == 6
+    assert "Industry" not in row                         # not sent
+    assert row["interested_tracks"] == ["88bcb836-c0aa-11f0-a242-325255367c63"]  # UUID
     assert "salesforceId" not in row
-    assert "salesforceUpdatedAt" not in row
 
 
 def test_export_row_uses_employer_name_when_no_practice():
@@ -133,7 +140,7 @@ def test_export_row_uses_employer_name_when_no_practice():
     from src import talentdb
 
     lead = {"posting_id": 1, "source": "indeed", "employer_name": "Board Only Co"}
-    row = talentdb.build_fields(None, _posting_from_lead(lead))
+    row = talentdb.build_fields(None, _posting_from_lead(lead), lead)
     assert row["Company"] == "Board Only Co"
     assert row["LastName"] == "Board Only Co"
     assert "FirstName" not in row

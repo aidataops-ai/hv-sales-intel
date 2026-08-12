@@ -31,39 +31,79 @@ def is_configured() -> bool:
     return bool(settings.talentdb_webhook_url and settings.talentdb_webhook_secret)
 
 
-# Job-board source -> Lead_Type__c slug. Anything else (including no linked
-# posting) falls back to the generic slug.
+# Job-board source -> `source` slug. Anything else (incl. no linked posting)
+# falls back to the generic slug.
 _SOURCE_SLUGS = {
     "indeed": "hv-sales-intel-indeed",
     "linkedin": "hv-sales-intel-linkedin",
 }
 
 
-def _lead_type_slug(source: str | None) -> str:
+def _source_slug(source: str | None) -> str:
     return _SOURCE_SLUGS.get(source or "", "hv-sales-intel")
 
 
-# Industry is derived from the posting's track (service_line_hint). One track,
-# "Virtual Wellness and Hospitality Assistant", serves two industries (Spas and
-# Hospitality & Hotels) — the track alone can't disambiguate, so it maps to
-# "Spas" for now (flagged for review). Insurance / Nursing Home have no active
-# track, so nothing maps to them.
-_INDUSTRY_BY_TRACK = {
-    "Virtual Medical Assistant": "Medical",
-    "Virtual Medical Scheduler": "Medical",
-    "Virtual Medical Scribe": "Medical",
-    "Virtual Dental Assistant": "Dental",
-    "Virtual Chiropractic Assistant": "Chiropractor",
-    "Virtual Home Health Operations Coordinator": "Home Health",
-    "Virtual Assisted Living Coordinator": "Assisted Living",
-    "Virtual Legal Assistant": "Legal",
-    "Virtual Wellness and Hospitality Assistant": "Spas",
+# Our track name → the receiver's Tracks UUID code. `interested_tracks` sends
+# the CODE (a label/made-up string stores but won't render as a tag). These are
+# prod's current codes — if L&D re-creates a track its code changes, so pull
+# fresh from the Tracks admin if a tag stops rendering.
+_TRACK_CODES = {
+    "Virtual Medical Scheduler": "45c76242-e585-11f0-831c-2eb420401434",
+    "Virtual Medical Assistant": "dc6dec2a-e58f-11f0-a406-32c63f1d4ac3",
+    "Virtual Medical Scribe": "c20ec098-2e91-11f1-bc1e-1adb42af3a6e",
+    "Virtual Dental Assistant": "88bcb836-c0aa-11f0-a242-325255367c63",
+    "Virtual Chiropractic Assistant": "01b24202-7fa4-11f1-be03-7e3910071e94",
+    "Virtual Wellness and Hospitality Assistant": "4bb21e9c-e592-11f0-8817-32c63f1d4ac3",
+    "Virtual Assisted Living Coordinator": "d7acd1ee-699f-11f1-b509-5e9236066227",
+    "Virtual Legal Assistant": "21364a0a-4e31-11f1-a825-9e198b55c155",
+    "Virtual Home Health Operations Coordinator": "7d69fef4-8395-11f1-ab36-7ed30a98e1a8",
 }
 
 
-def _industry(service_line_hint: str | None) -> str | None:
-    """Map the posting's track to an industry; None (omitted) if unmapped."""
-    return _INDUSTRY_BY_TRACK.get((service_line_hint or "").strip())
+def _track_code(track: str | None) -> str | None:
+    """Our track name → the receiver's Tracks UUID; None if unmapped (omitted)."""
+    return _TRACK_CODES.get((track or "").strip())
+
+
+def _org_size_bucket(value) -> str | None:
+    """Integer headcount → the receiver's organization_size picklist bucket."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    n = int(value)
+    if n <= 0:
+        return None
+    if n <= 10:
+        return "2_10"
+    if n <= 25:
+        return "11_25"
+    if n <= 50:
+        return "25_50"
+    if n <= 250:
+        return "50_250"
+    if n <= 500:
+        return "250_500"
+    return "500_plus"
+
+
+def _phones(p: dict) -> tuple[str | None, str | None]:
+    """(primary, alternate) phone — owner line, then office, then website line,
+    deduped so the same number is never sent twice."""
+    seen: list[str] = []
+    for candidate in (p.get("owner_phone"), p.get("phone"), p.get("website_doctor_phone")):
+        val = str(candidate).strip() if candidate is not None else ""
+        if val and val not in seen:
+            seen.append(val)
+    return (seen[0] if seen else None), (seen[1] if len(seen) > 1 else None)
+
+
+def _painpoints_text(value) -> str | None:
+    """pain_points JSON array string → newline-joined textarea text."""
+    parsed = _coerce_json(value)
+    if isinstance(parsed, list):
+        return "\n".join(str(x) for x in parsed if x) or None
+    if isinstance(value, str):
+        return value.strip() or None
+    return None
 
 
 def _coerce_json(value):
@@ -99,8 +139,8 @@ def _split_owner_name(owner_name: str | None) -> tuple[str | None, str | None]:
 
 
 def _omit_missing(fields: dict) -> dict:
-    """Drop keys with no value. None and "" are "no value"; 0 / False / [] / {}
-    are real values we keep (they carry meaning in the sample)."""
+    """Drop keys with no value. None and "" are "no value"; 0 / False / {}
+    are real values we keep."""
     out = {}
     for k, v in fields.items():
         if v is None or v == "":
@@ -109,42 +149,64 @@ def _omit_missing(fields: dict) -> dict:
     return out
 
 
-def build_fields(practice: dict | None, posting: dict | None) -> dict:
-    """Map a practice (+ its linked posting) onto the Talent-DB `fields` object.
+def build_fields(
+    practice: dict | None,
+    posting: dict | None,
+    lead: dict | None = None,
+) -> dict:
+    """Map a practice (+ its linked posting + lead) onto the Talent-DB `fields`.
 
-    Either argument may be None: signals leads without a bank practice fall back
-    to the posting's employer; practices with no linked posting send no
-    `posting_*`. Missing values are omitted.
+    Keys are the receiver's exact accepted field API names (its schema: a mix of
+    PascalCase core fields and snake_case posting/scoring fields). NOT sent:
+    `Industry` (not evaluated on our side), `hiring_timeline` / `locations_count`
+    (no source in our system). Any of the three args may be None; missing values
+    are omitted.
     """
     p = practice or {}
     pg = posting or {}
+    ld = lead or {}
     source = pg.get("source")
     company = p.get("name") or pg.get("employer_name")
-    pid = p.get("id")
     first_name, last_name = _split_owner_name(p.get("owner_name"))
+    phone_primary, phone_alt = _phones(p)
+    # The lead's qualified track is authoritative; the posting hint is the fallback.
+    track = ld.get("service_line") or pg.get("service_line_hint")
+    track_code = _track_code(track)
+    pid = p.get("id")
 
     fields = {
-        # Core (Salesforce-aliased)
-        "Company": company,
-        "FirstName": first_name,          # from owner_name; omitted when none
-        # LastName is required by the receiver, so it falls back to the company
-        # name when there is no enriched owner_name.
-        "LastName": last_name or company,
+        # Our practice id — the receiver's stable link back to our record.
+        "source_practice_id": str(pid) if pid is not None else None,
+
+        # --- Contact + company (PascalCase) ---
+        "Company": company,                         # required
+        "LastName": last_name or company,           # falls back to company
+        "FirstName": first_name,                    # from owner_name; omit if none
+        "Title": p.get("owner_title"),              # contact's role (Clay enrichment)
         "Email": p.get("owner_email") or p.get("email"),
-        "Phone": p.get("owner_phone") or p.get("phone"),
-        "Website": p.get("website"),
+        "Phone": phone_primary,
+        "alternate_phone": phone_alt,
+        "Country": "USA",                           # ISO alpha-3, hardcoded for now
         "City": p.get("city") or pg.get("city"),
         "State": p.get("state") or pg.get("state"),
-        "Rating": p.get("rating"),
-        "Status": "New",
-        "Lead_Type__c": _lead_type_slug(source),   # slug; always present
-        "industry": _industry(pg.get("service_line_hint")),   # from track
-        "country": "USA",                          # ISO alpha-3, hardcoded for now
+        "Website": p.get("website"),
 
-        # Linked job posting (raw DB values)
-        "posting_source": source,
-        "posting_url": pg.get("url"),
+        # --- Classification ---
+        # Industry: NOT sent (not evaluated on our side).
+        "interested_tracks": [track_code] if track_code else None,   # Tracks UUID(s)
+        "organization_size": _org_size_bucket(p.get("organization_size")),  # bucket
+        # hiring_timeline / locations_count: no source in our system → omitted.
+        "No_of_Providers__c": ld.get("provider_count"),
+        "Lead_Type__c": "Outbound",                 # picklist Inbound | Outbound
+        "source": _source_slug(source),             # hv-sales-intel-{indeed|linkedin}
+        "lead_role": ld.get("lead_role"),           # Company Spokesperson's Role picklist
+        "practice_notes": p.get("notes"),
+        "pain_points": _painpoints_text(p.get("pain_points")),
+
+        # --- Posting (snake_case) ---
         "role_title": pg.get("title"),
+        "posting_source": source,                   # raw indeed | linkedin
+        "posting_url": pg.get("url"),
         "posted_at": pg.get("posted_at"),
         "board_remote": pg.get("board_remote_flag"),
         "posting_description": pg.get("description"),
@@ -152,68 +214,53 @@ def build_fields(practice: dict | None, posting: dict | None) -> dict:
         "search_location": pg.get("search_location"),
         "first_seen_at": pg.get("first_seen_at"),
         "last_seen_at": pg.get("last_seen_at"),
-        "source_practice_id": str(pid) if pid is not None else None,
         "match_confidence": pg.get("match_confidence"),
         "match_status": pg.get("match_status"),
-        "matched_at": pg.get("matched_at"),
 
-        # Practice scoring / meta / CRM
+        # --- Scoring / analysis (snake_case) ---
         "urgency_score": p.get("urgency_score"),
         "hiring_signal_score": p.get("hiring_signal_score"),
         "icp_tier": p.get("icp_tier"),
         "icp_breakdown": _coerce_json(p.get("icp_breakdown")),
-        "enrichment_status": p.get("enrichment_status"),
-        "lat": p.get("lat"),
-        "lng": p.get("lng"),
-        "opening_hours": p.get("opening_hours"),
         "category": p.get("category"),
         "review_count": p.get("review_count"),
-        "organization_size": p.get("organization_size"),
-        "call_script": _coerce_json(p.get("call_script")),
-        "email_draft": p.get("email_draft"),
-        "email_draft_updated_at": p.get("email_draft_updated_at"),
-        "tags": p.get("tags"),
-        "source_assigned_at": p.get("assigned_at"),
-        "source_assigned_by": p.get("assigned_by"),
-        "last_touched_by": p.get("last_touched_by"),
-        "last_touched_at": p.get("last_touched_at"),
-        "export_count": p.get("export_count"),
-        "last_exported_at": p.get("last_exported_at"),
-        "last_exported_by": p.get("last_exported_by"),
-        "salesforce_owner_id": p.get("salesforce_owner_id"),
-        "salesforce_owner_name": p.get("salesforce_owner_name"),
-        "salesforce_lead_url": p.get("salesforce_lead_url"),
+        "opening_hours": p.get("opening_hours"),
         "summary": p.get("summary"),
         "sales_angles": _coerce_json(p.get("sales_angles")),
-        "website_contacts": _coerce_json(p.get("website_contacts")),
+        # call_script + email_draft go as raw strings (the receiver's target
+        # shows them escaped, unlike icp_breakdown / sales_angles which are JSON).
+        "call_script": p.get("call_script"),
+        "email_draft": p.get("email_draft"),
     }
     return _omit_missing(fields)
 
 
-# Canonical column order for the signals CSV export — the `fields` keys the
-# webhook sends (envelope ids are NOT included in the CSV), in build_fields order.
+# Canonical column order for the signals CSV export — the exact `fields` keys the
+# webhook sends, so an exported CSV round-trips into a Talent-DB CSV import.
 CSV_COLUMNS = [
-    # Core (Salesforce-aliased)
-    "Company", "LastName", "Email", "FirstName", "Phone", "Website",
-    "City", "State", "Rating", "Status", "Lead_Type__c", "industry", "country",
-    # Linked job posting
-    "posting_source", "posting_url", "role_title", "posted_at", "board_remote",
-    "posting_description", "search_term", "search_location", "first_seen_at",
-    "last_seen_at", "source_practice_id", "match_confidence", "match_status",
-    "matched_at",
-    # Practice scoring / meta / CRM
+    "source_practice_id",
+    # Contact + company
+    "Company", "LastName", "FirstName", "Title", "Email", "Phone",
+    "alternate_phone", "Country", "City", "State", "Website",
+    # Classification
+    "interested_tracks", "organization_size", "No_of_Providers__c",
+    "Lead_Type__c", "source", "lead_role", "practice_notes", "pain_points",
+    # Posting
+    "role_title", "posting_source", "posting_url", "posted_at",
+    "board_remote", "posting_description", "search_term", "search_location",
+    "first_seen_at", "last_seen_at", "match_confidence", "match_status",
+    # Scoring / analysis
     "urgency_score", "hiring_signal_score", "icp_tier", "icp_breakdown",
-    "enrichment_status", "lat", "lng", "opening_hours", "category",
-    "review_count", "organization_size", "call_script", "email_draft",
-    "email_draft_updated_at",
-    "tags", "source_assigned_at", "source_assigned_by", "last_touched_by",
-    "last_touched_at", "export_count", "last_exported_at", "last_exported_by",
-    "salesforce_owner_id", "salesforce_owner_name", "salesforce_lead_url",
-    "summary", "sales_angles", "website_contacts",
+    "category", "review_count", "opening_hours", "summary", "sales_angles",
+    "call_script", "email_draft",
 ]
 
 
-def build_envelope(practice: dict | None, posting: dict | None) -> dict:
+def build_envelope(
+    practice: dict | None,
+    posting: dict | None,
+    lead: dict | None = None,
+) -> dict:
     """The full request body: `objectType` + `operation` + `fields`.
 
     The app-origin webhook (`/api/sales-intel/webhook`) mints its own record, so
@@ -223,7 +270,7 @@ def build_envelope(practice: dict | None, posting: dict | None) -> dict:
     return {
         "objectType": "Lead",
         "operation": "upsert",
-        "fields": build_fields(practice, posting),
+        "fields": build_fields(practice, posting, lead),
     }
 
 
@@ -240,7 +287,11 @@ def _sign(raw: bytes) -> str:
     return f"sha256={digest}"
 
 
-async def import_lead(practice: dict | None, posting: dict | None) -> dict:
+async def import_lead(
+    practice: dict | None,
+    posting: dict | None,
+    lead: dict | None = None,
+) -> dict:
     """POST one signed Lead to Talent-DB. Fail-soft: never raises.
 
     Returns a normalized dict: {ok, status, message, local_entity_id,
@@ -254,7 +305,7 @@ async def import_lead(practice: dict | None, posting: dict | None) -> dict:
         return {"ok": False, "status": "not_configured",
                 "message": "Talent-DB webhook is not configured."}
 
-    envelope = build_envelope(practice, posting)
+    envelope = build_envelope(practice, posting, lead)
     raw = _serialize(envelope)
     headers = {
         "Content-Type": "application/json",

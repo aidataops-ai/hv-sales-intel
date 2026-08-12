@@ -543,13 +543,18 @@ def newest_posting_for_practice(practice_id: int) -> dict | None:
 
 
 def find_lead_by_posting(company_id: str, posting_id: int) -> dict | None:
-    """The (company, posting) lead row's id + export marker, if one exists."""
+    """The (company, posting) lead row for a posting, if one exists.
+
+    Carries the export marker (dedup) plus the qualifier fields the Talent-DB
+    payload needs (`provider_count`, `service_line`) so the practice-initiated
+    import matches the signals path."""
     client = _client()
     if not client or not company_id or not posting_id:
         return None
     try:
         result = (
-            client.table("company_job_leads").select("id, talentdb_exported_at")
+            client.table("company_job_leads")
+            .select("id, talentdb_exported_at, provider_count, service_line")
             .eq("company_id", company_id).eq("posting_id", posting_id)
             .maybe_single().execute()
         )

@@ -2008,7 +2008,7 @@ async def import_lead_practice_endpoint(
 
     log.info("[api.import_lead] place_id=%s user=%s posting=%s",
              place_id, user.get("email"), posting["id"] if posting else None)
-    result = await talentdb.import_lead(practice, posting)
+    result = await talentdb.import_lead(practice, posting, lead_row)
     if result.get("ok") and lead_row:
         lead_store.mark_lead_exported(company_id, lead_row["id"])
     log.info("[api.import_lead.response] place_id=%s ok=%s status=%s",
@@ -2571,7 +2571,7 @@ def export_leads_csv(
         for row in rows:
             embedded = row.get("practice") or {}
             full = practices_by_place.get(embedded.get("place_id")) or embedded or None
-            fields = talentdb.build_fields(full, _posting_from_lead(row))
+            fields = talentdb.build_fields(full, _posting_from_lead(row), row)
             writer.writerow([_serialize(fields.get(col)) for col in talentdb.CSV_COLUMNS])
             yield buf.getvalue()
             buf.seek(0); buf.truncate(0)
@@ -2701,7 +2701,7 @@ async def import_lead_signal_endpoint(
 
     log.info("[api.lead_import] lead_id=%s user=%s place_id=%s",
              lead_id, user.get("email"), place_id)
-    result = await talentdb.import_lead(practice, posting)
+    result = await talentdb.import_lead(practice, posting, lead)
     if result.get("ok"):
         lead_store.mark_lead_exported(company_id, lead_id)
     log.info("[api.lead_import.response] lead_id=%s ok=%s status=%s",

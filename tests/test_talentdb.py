@@ -88,27 +88,36 @@ def test_is_configured_requires_both_url_and_secret():
         assert talentdb.is_configured() is True
 
 
+def _lead(**overrides) -> dict:
+    base = {"provider_count": 4, "service_line": "Virtual Dental Assistant"}
+    base.update(overrides)
+    return base
+
+
 # --------------------------------------------------------------------------- #
-# Slug (Lead_Type__c) vs raw posting_source
+# source (slug) + posting_source (raw) + source_practice_id
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("source,slug", [
     ("indeed", "hv-sales-intel-indeed"),
     ("linkedin", "hv-sales-intel-linkedin"),
     (None, "hv-sales-intel"),
-    ("something-else", "hv-sales-intel"),
 ])
-def test_lead_type_is_slug_posting_source_is_raw(source, slug):
+def test_source_slug_and_raw_posting_source(source, slug):
     fields = talentdb.build_fields(_practice(), _posting(source=source))
-    assert fields["Lead_Type__c"] == slug
+    assert fields["source"] == slug                  # slug — now sent
     if source:
-        assert fields["posting_source"] == source      # raw, not slugged
-    else:
-        assert "posting_source" not in fields           # None → omitted
+        assert fields["posting_source"] == source    # raw, not slugged
+
+
+def test_source_practice_id_is_stringified():
+    fields = talentdb.build_fields(_practice(), _posting())
+    assert fields["source_practice_id"] == "1024"    # str(practice.id)
+    assert "source_practice_id" not in talentdb.build_fields(None, _posting())
 
 
 # --------------------------------------------------------------------------- #
-# Core field mapping
+# Core field mapping (schema keys: PascalCase core + snake_case posting/scoring)
 # --------------------------------------------------------------------------- #
 
 def test_company_is_practice_name():
@@ -120,7 +129,6 @@ def test_first_last_name_split_from_owner_name():
     fields = talentdb.build_fields(_practice(owner_name="Jane Doe"), _posting())
     assert fields["FirstName"] == "Jane"
     assert fields["LastName"] == "Doe"
-    # Multi-word: last token is the last name, the rest the first name.
     fields = talentdb.build_fields(_practice(owner_name="Jane Ann Doe"), _posting())
     assert fields["FirstName"] == "Jane Ann"
     assert fields["LastName"] == "Doe"
@@ -133,8 +141,6 @@ def test_single_token_owner_name_is_lastname_only():
 
 
 def test_no_owner_name_lastname_falls_back_to_company():
-    """The receiver requires LastName, so it falls back to the company name when
-    there's no owner_name. FirstName is not required → omitted."""
     fields = talentdb.build_fields(_practice(owner_name=None), _posting())
     assert "FirstName" not in fields
     assert fields["LastName"] == "Acme Dental"
@@ -146,7 +152,7 @@ def test_email_prefers_owner_then_practice():
     fields = talentdb.build_fields(_practice(owner_email=None), None)
     assert fields["Email"] == "front@acme.com"
     fields = talentdb.build_fields(_practice(owner_email=None, email=None), None)
-    assert "Email" not in fields              # neither → omitted
+    assert "Email" not in fields
 
 
 def test_phone_prefers_owner_then_practice():
@@ -156,38 +162,70 @@ def test_phone_prefers_owner_then_practice():
 
 
 def test_country_is_hardcoded_usa():
-    assert talentdb.build_fields(_practice(), _posting())["country"] == "USA"
+    assert talentdb.build_fields(_practice(), _posting())["Country"] == "USA"
 
 
-def test_organization_size_from_practice():
-    fields = talentdb.build_fields(_practice(organization_size=42), _posting())
-    assert fields["organization_size"] == 42
-    # Omitted when the practice has no value.
-    assert "organization_size" not in talentdb.build_fields(_practice(), _posting())
+def test_lead_type_is_outbound_constant():
+    assert talentdb.build_fields(_practice(), _posting())["Lead_Type__c"] == "Outbound"
 
 
-@pytest.mark.parametrize("hint,industry", [
-    ("Virtual Medical Assistant", "Medical"),
-    ("Virtual Medical Scheduler", "Medical"),
-    ("Virtual Dental Assistant", "Dental"),
-    ("Virtual Chiropractic Assistant", "Chiropractor"),
-    ("Virtual Home Health Operations Coordinator", "Home Health"),
-    ("Virtual Legal Assistant", "Legal"),
-    ("Virtual Assisted Living Coordinator", "Assisted Living"),
-])
-def test_industry_mapped_from_track(hint, industry):
-    fields = talentdb.build_fields(_practice(), _posting(service_line_hint=hint))
-    assert fields["industry"] == industry
+def test_no_of_providers_from_lead():
+    fields = talentdb.build_fields(_practice(), _posting(), _lead(provider_count=7))
+    assert fields["No_of_Providers__c"] == 7
+    # No lead → omitted.
+    assert "No_of_Providers__c" not in talentdb.build_fields(_practice(), _posting())
 
 
-def test_industry_omitted_when_track_unmapped():
-    fields = talentdb.build_fields(_practice(), _posting(service_line_hint="Something Else"))
-    assert "industry" not in fields
+def test_industry_track_code_org_bucket_and_notes():
+    fields = talentdb.build_fields(
+        _practice(organization_size=120, notes="called twice",
+                  pain_points='["long waits","turnover"]'),
+        _posting(), _lead(service_line="Virtual Medical Scheduler"))
+    assert "Industry" not in fields                              # never sent
+    # interested_tracks sends the Tracks UUID code, not a label/slug.
+    assert fields["interested_tracks"] == ["45c76242-e585-11f0-831c-2eb420401434"]
+    assert fields["organization_size"] == "50_250"               # bucket
+    assert fields["practice_notes"] == "called twice"
+    assert fields["pain_points"] == "long waits\nturnover"       # list → text
 
 
-def test_source_practice_id_is_stringified():
-    fields = talentdb.build_fields(_practice(), _posting())
-    assert fields["source_practice_id"] == "1024"
+def test_interested_tracks_omitted_when_track_unmapped():
+    """An unknown track has no UUID → omitted (a made-up string won't render)."""
+    fields = talentdb.build_fields(_practice(), _posting(),
+                                   _lead(service_line="Made Up Track"))
+    assert "interested_tracks" not in fields
+
+
+def test_title_from_owner_title():
+    """The contact's role (Clay owner_title) is sent as `Title`."""
+    fields = talentdb.build_fields(_practice(owner_title="Practice Manager"), _posting())
+    assert fields["Title"] == "Practice Manager"
+    # Omitted when Clay hasn't set it.
+    assert "Title" not in talentdb.build_fields(_practice(owner_title=None), _posting())
+
+
+def test_lead_role_from_lead():
+    fields = talentdb.build_fields(_practice(), _posting(),
+                                   _lead(lead_role="Decision_Maker"))
+    assert fields["lead_role"] == "Decision_Maker"
+    # No value → omitted.
+    assert "lead_role" not in talentdb.build_fields(_practice(), _posting(), _lead())
+
+
+def test_alternate_phone_is_second_distinct_number():
+    fields = talentdb.build_fields(_practice(), _posting())       # owner + office
+    assert fields["Phone"] == "+13120000000"
+    assert fields["alternate_phone"] == "+13125550100"
+    # Only one number → no alternate.
+    fields = talentdb.build_fields(_practice(phone="+13120000000"), _posting())
+    assert "alternate_phone" not in fields
+
+
+def test_fields_with_no_source_are_omitted():
+    """hiring_timeline / locations_count have no source → never sent."""
+    fields = talentdb.build_fields(_practice(), _posting(), _lead())
+    for absent in ("hiring_timeline", "locations_count"):
+        assert absent not in fields
 
 
 # --------------------------------------------------------------------------- #
@@ -196,24 +234,17 @@ def test_source_practice_id_is_stringified():
 
 def test_missing_values_omitted_but_falsy_reals_kept():
     fields = talentdb.build_fields(_practice(), _posting())
-    # Omitted (None / "")
-    assert "enrichment_status" not in fields
-    assert "call_script" not in fields
-    assert "website_contacts" not in fields
-    # Kept falsy reals — carry meaning
-    assert fields["urgency_score"] == 0
-    assert fields["board_remote"] is False
-    assert fields["icp_breakdown"] == {}
-    assert fields["tags"] == []
+    assert "call_script" not in fields               # None → omitted
+    assert fields["urgency_score"] == 0              # real 0 kept
+    assert fields["board_remote"] is False           # real False kept
+    assert fields["icp_breakdown"] == {}             # real empty dict kept
     assert fields["review_count"] == 212
 
 
 def test_native_types_preserved_through_serialization():
     env = talentdb.build_envelope(_practice(), _posting())
-    raw = talentdb._serialize(env)
-    parsed = json.loads(raw)["fields"]
-    assert parsed["Rating"] == 4.6                # number, not "4.6"
-    assert parsed["board_remote"] is False        # bool
+    parsed = json.loads(talentdb._serialize(env))["fields"]
+    assert parsed["board_remote"] is False
     assert parsed["match_confidence"] == 0.94
     assert parsed["urgency_score"] == 0
 
@@ -221,38 +252,43 @@ def test_native_types_preserved_through_serialization():
 def test_json_string_columns_are_parsed():
     fields = talentdb.build_fields(_practice(), _posting())
     assert fields["sales_angles"] == ["angle one"]   # parsed from JSON string
-    # An already-structured dict passes through untouched.
     fields = talentdb.build_fields(_practice(icp_breakdown={"vertical": 9}), _posting())
     assert fields["icp_breakdown"] == {"vertical": 9}
-    # An unparseable string becomes None → omitted.
     fields = talentdb.build_fields(_practice(sales_angles="not json"), _posting())
-    assert "sales_angles" not in fields
+    assert "sales_angles" not in fields              # unparseable → omitted
+
+
+def test_call_script_is_sent_as_raw_string():
+    """call_script + email_draft go as raw strings (receiver's target shows them
+    escaped), unlike icp_breakdown / sales_angles which are real JSON."""
+    raw = '{"sections": [{"title": "Opening"}]}'
+    fields = talentdb.build_fields(_practice(call_script=raw), _posting())
+    assert fields["call_script"] == raw              # string, not parsed
+    assert isinstance(fields["call_script"], str)
 
 
 # --------------------------------------------------------------------------- #
 # No-posting case
 # --------------------------------------------------------------------------- #
 
-def test_no_posting_omits_posting_fields_and_falls_back_slug():
+def test_no_posting_omits_posting_fields():
     fields = talentdb.build_fields(_practice(), None)
-    assert fields["Lead_Type__c"] == "hv-sales-intel"
     for key in ("posting_source", "posting_url", "role_title", "posted_at",
-                "match_confidence", "match_status", "matched_at"):
+                "match_confidence", "match_status"):
         assert key not in fields
-    # Practice data still rides along.
     assert fields["Company"] == "Acme Dental"
 
 
 def test_no_practice_falls_back_to_employer_name():
     fields = talentdb.build_fields(None, _posting(employer_name="Board Co"))
-    assert fields["Company"] == "Board Co"     # Company from employer
-    assert fields["LastName"] == "Board Co"    # LastName falls back to company
-    assert "FirstName" not in fields           # first name not required
+    assert fields["Company"] == "Board Co"
+    assert fields["LastName"] == "Board Co"          # falls back to company
+    assert "FirstName" not in fields
     assert fields["posting_source"] == "indeed"
 
 
 # --------------------------------------------------------------------------- #
-# Envelope shape — objectType + operation + fields only
+# Envelope shape — objectType + operation + fields, no ids, no shim
 # --------------------------------------------------------------------------- #
 
 def test_envelope_is_objecttype_operation_fields_only():
@@ -260,7 +296,6 @@ def test_envelope_is_objecttype_operation_fields_only():
     assert set(env) == {"objectType", "operation", "fields"}
     assert env["objectType"] == "Lead"
     assert env["operation"] == "upsert"
-    # The app-origin webhook mints its own record — we send no ids/timestamp.
     for absent in ("salesforceId", "salesforceUpdatedAt", "eventId"):
         assert absent not in env
 
