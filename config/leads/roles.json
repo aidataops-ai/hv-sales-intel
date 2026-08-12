@@ -1,7 +1,7 @@
 {
   "_comment": "Search terms for the job-posting lead collector. These are what practices ACTUALLY POST, not what we sell — searching a service name ('Virtual Dental Assistant') returns near-zero results, or competitor VA agencies. See ADR-03.",
 
-  "_tracks_note": "Five service lines are in scope. The other H&V lines are parked in `_parked_terms` rather than deleted, so re-enabling a track is a copy-paste rather than a rebuild.",
+  "_tracks_note": "Six service lines are in scope. The other H&V lines are parked in `_parked_terms` rather than deleted, so re-enabling a track is a copy-paste rather than a rebuild.",
 
   "terms": [
     { "term": "medical assistant",                  "service_line": "Virtual Medical Assistant" },
@@ -28,7 +28,11 @@
     { "term": "chiropractic assistant",             "service_line": "Virtual Chiropractic Assistant" },
     { "term": "chiropractic receptionist",          "service_line": "Virtual Chiropractic Assistant" },
     { "term": "chiropractic front desk",            "service_line": "Virtual Chiropractic Assistant" },
-    { "term": "chiropractic office coordinator",    "service_line": "Virtual Chiropractic Assistant" }
+    { "term": "chiropractic office coordinator",    "service_line": "Virtual Chiropractic Assistant" },
+
+    { "term": "medical scribe",                     "service_line": "Virtual Medical Scribe" },
+    { "term": "clinical scribe",                    "service_line": "Virtual Medical Scribe" },
+    { "term": "physician scribe",                   "service_line": "Virtual Medical Scribe" }
   ],
 
   "_term_note": "Narrow ambiguous terms rather than deleting them. 'staffing coordinator' returns recruiting agencies — an explicit DISCARD category and pure token waste; 'home health staffing coordinator' does not.",
