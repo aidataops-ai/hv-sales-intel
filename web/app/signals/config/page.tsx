@@ -37,8 +37,11 @@ export default function SignalsConfigPage() {
   const [config, setConfig] = useState<SignalsConfig | null>(null)
   const [loading, setLoading] = useState(true)
 
+  // Silent after the first load: `loading` gates the whole body behind a
+  // spinner, so setting it on every chip toggle reads as a full page reload.
+  // Each control already shows its own busy state while its PATCH is in
+  // flight — the ~176-row refetch just lands in place when it arrives.
   const refresh = useCallback(async () => {
-    setLoading(true)
     setConfig(await getSignalsConfig())
     setLoading(false)
   }, [])
