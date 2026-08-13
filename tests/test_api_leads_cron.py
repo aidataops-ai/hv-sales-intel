@@ -348,21 +348,3 @@ def test_the_scheduled_paths_exist_on_the_app():
     registered = {route.path for route in app.routes if hasattr(route, "path")}
     for job in config.get("crons", []):
         assert job["path"] in registered, job["path"]
-
-
-def test_the_retired_admin_matrix_routes_answer_501_not_a_crash(monkeypatch):
-    """`lead_targets.list_targets`/`add_targets`/`set_target_enabled` are
-    deleted (Phase 1). The routes that called them are stubbed to 501 rather
-    than left to 500 with an AttributeError — Phase 3 replaces them with the
-    dimension-shaped routes from docs/refactor/instant-signals-targets.md §4."""
-    from src.auth import require_admin
-
-    app.dependency_overrides[require_admin] = lambda: {"company_id": "c1", "id": "u1"}
-    try:
-        assert client.get("/api/admin/leads/config").status_code == 501
-        assert client.post("/api/admin/leads/targets", json={"rows": []}).status_code == 501
-        assert client.patch(
-            "/api/admin/leads/targets/1", json={"enabled": True}
-        ).status_code == 501
-    finally:
-        app.dependency_overrides.pop(require_admin, None)

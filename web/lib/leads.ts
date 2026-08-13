@@ -282,22 +282,53 @@ export async function getLeadAnalytics(days = 30): Promise<LeadAnalytics | null>
 }
 
 // --------------------------------------------------------------------------
-// Config page — editable search targets (admin)
+// Config page — editable search dimensions (admin)
+//
+// Instant Signals refactor Phase 3: the collector's search space is two
+// dimensions — terms and locations — crossed at claim time rather than a
+// stored `(term x location)` matrix. Editing a dimension row (one PATCH)
+// now flips a whole track or city at once, instead of one PATCH per cell.
+// See docs/refactor/instant-signals-targets.md §4-5.
 // --------------------------------------------------------------------------
 
-/** One `(term x location)` search the collector runs, from
- *  `company_search_targets`. This is the live, editable row — not the config
- *  file. */
-export interface SearchTarget {
+/** One search keyword the collector crosses with every enabled location, from
+ *  `search_terms`. The live, editable row — not the config file. */
+export interface SearchTerm {
   id: number
   term: string
   service_line: string
+  enabled: boolean
+}
+
+/** One place the collector searches, from `search_locations`. Per-source
+ *  rotation cursors live here — `null` means that source has never swept
+ *  this location. */
+export interface SearchLocation {
+  id: number
   location: string
   state: string
   granularity: "state" | "city"
   enabled: boolean
-  last_run_at: string | null
-  last_row_count: number | null
+  last_indeed_at: string | null
+  last_linkedin_at: string | null
+}
+
+/** A rare hand-pinned `(term, location)` cell — disables (or force-enables)
+ *  one cell independent of its term's and location's own `enabled`. */
+export interface TargetOverride {
+  term_id: number
+  location_id: number
+  enabled: boolean
+}
+
+/** Per-source sweep freshness, from `sweep_status` — how much of the
+ *  enabled geography is within its staleness threshold right now. */
+export interface SweepSourceStatus {
+  enabled_locations: number
+  fresh_within_threshold: number
+  coverage_pct: number
+  never_swept: number
+  oldest_cursor_age_hours: number | null
 }
 
 /** A state as it appears in the checked-in config catalog (suggestions for the
@@ -321,18 +352,21 @@ export interface SignalsConfig {
     search: { hours_old: number; results_wanted: number; distance_miles: number }
     sources: string[]
   }
-  targets: {
-    total: number
-    enabled: number
-    rows: SearchTarget[]
-  }
+  terms: SearchTerm[]
+  locations: SearchLocation[]
+  overrides: TargetOverride[]
+  sweep: Record<string, SweepSourceStatus>
 }
 
-/** The shape POSTed to add targets — the frontend expands a state or track into
- *  these before sending. */
-export interface NewTargetRow {
+/** The shape POSTed to add terms. */
+export interface NewTermRow {
   term: string
   service_line: string
+  enabled?: boolean
+}
+
+/** The shape POSTed to add locations. */
+export interface NewLocationRow {
   location: string
   state: string
   granularity: "state" | "city"
@@ -347,17 +381,15 @@ export async function getSignalsConfig(): Promise<SignalsConfig | null> {
   }
 }
 
-export type AddTargetsResult =
-  | { ok: true; requested: number; inserted: number; skipped: number }
+export type AddDimensionResult =
+  | { ok: true; requested: number; inserted: number }
   | { ok: false; error: string }
 
-/** Add search targets (admin). Returns a discriminated result so the UI can
+/** Add search terms (admin). Returns a discriminated result so the UI can
  *  show the server's validation message rather than a bare failure. */
-export async function addTargets(
-  rows: NewTargetRow[],
-): Promise<AddTargetsResult> {
+export async function addTerms(rows: NewTermRow[]): Promise<AddDimensionResult> {
   try {
-    const res = await fetch(`${API_URL}/api/admin/leads/targets`, {
+    const res = await fetch(`${API_URL}/api/admin/leads/terms`, {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -373,17 +405,76 @@ export async function addTargets(
   }
 }
 
-/** Enable or disable one target (admin). Returns the updated row, or null. */
-export async function setTargetEnabled(
+/** Add search locations (admin). Same discriminated-result shape as `addTerms`. */
+export async function addLocations(
+  rows: NewLocationRow[],
+): Promise<AddDimensionResult> {
+  try {
+    const res = await fetch(`${API_URL}/api/admin/leads/locations`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows }),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      return { ok: false, error: body.detail || `Failed (${res.status})` }
+    }
+    return { ok: true, ...(await res.json()) }
+  } catch {
+    return { ok: false, error: "Could not reach the server." }
+  }
+}
+
+/** Enable or disable one term (admin). Returns the updated row, or null. */
+export async function setTermEnabled(
   id: number,
   enabled: boolean,
-): Promise<SearchTarget | null> {
+): Promise<SearchTerm | null> {
   try {
-    return await leadFetch<SearchTarget>(`/api/admin/leads/targets/${id}`, {
+    return await leadFetch<SearchTerm>(`/api/admin/leads/terms/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled }),
     })
+  } catch {
+    return null
+  }
+}
+
+/** Enable or disable one location (admin). Returns the updated row, or null. */
+export async function setLocationEnabled(
+  id: number,
+  enabled: boolean,
+): Promise<SearchLocation | null> {
+  try {
+    return await leadFetch<SearchLocation>(`/api/admin/leads/locations/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    })
+  } catch {
+    return null
+  }
+}
+
+/** Pin or unpin one `(term, location)` cell (admin). `enabled: null` deletes
+ *  the pin, returning the cell to `term.enabled AND location.enabled`. */
+export async function setOverride(
+  termId: number,
+  locationId: number,
+  enabled: boolean | null,
+): Promise<TargetOverride | null> {
+  try {
+    const data = await leadFetch<{ override: TargetOverride | null }>(
+      "/api/admin/leads/overrides",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ term_id: termId, location_id: locationId, enabled }),
+      },
+    )
+    return data.override
   } catch {
     return null
   }

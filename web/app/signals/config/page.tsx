@@ -1,25 +1,35 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Loader2, Plus, MapPin, Tags } from "lucide-react"
+import { Loader2, Plus, MapPin, Tags, Pin } from "lucide-react"
 
 import SignalsTopBar from "@/components/signals-top-bar"
 import { useAuth } from "@/lib/auth"
 import {
-  addTargets, getSignalsConfig, setTargetEnabled,
-  type NewTargetRow, type SearchTarget, type SignalsConfig,
+  addLocations, addTerms, getSignalsConfig, setLocationEnabled, setOverride, setTermEnabled,
+  type AddDimensionResult, type NewLocationRow,
+  type SearchLocation, type SearchTerm, type SignalsConfig, type SweepSourceStatus,
+  type TargetOverride,
 } from "@/lib/leads"
 
 /**
  * Instant Signals — collector config.
  *
- * Edits the live `company_search_targets` table (what the collector actually
- * searches), not the checked-in `config/leads/*.json`. The JSON files are the
- * catalog surfaced in the "Add …" forms; the table is the source of truth the
- * collect stage reads (ADR-03). Admin only — the whole page is behind writes
- * that require admin, so a non-admin sees an explicit notice, not a blank.
+ * Edits the live `search_terms` / `search_locations` dimension tables (what
+ * the collector actually crosses at claim time), not the checked-in
+ * `config/leads/*.json`. The JSON files are the catalog surfaced in the
+ * "Add …" forms; the tables are the source of truth the collect stage reads
+ * (ADR-03). Admin only — the whole page is behind writes that require admin,
+ * so a non-admin sees an explicit notice, not a blank.
  *
- * See `docs/specs/2026-08-10-instant-signals-config-page-design.md`.
+ * Two dimensions, not a stored product (instant-signals refactor, Phase 3):
+ * a term and a location are edited independently, and the collector computes
+ * the cross at claim time. That means "Add state" and "Add track" no longer
+ * expand into a batch of `(term x location)` rows here — they just insert
+ * dimension rows, and enabling/disabling one term or one location is a
+ * single request instead of one per cell.
+ *
+ * See docs/refactor/instant-signals-targets.md §4-5.
  */
 export default function SignalsConfigPage() {
   const { user, loading: authLoading } = useAuth()
@@ -75,42 +85,58 @@ function ConfigBody({
   config: SignalsConfig
   onChanged: () => Promise<void>
 }) {
-  const rows = config.targets.rows
-
-  // The tenant's current terms and locations drive expansion: adding a state
-  // crosses its locations with every term already in play, adding a track
-  // crosses its keywords with every location. On a fresh tenant with no rows
-  // yet, fall back to the config catalog so the first add still expands.
-  const terms = useMemo(() => {
-    const seen = new Map<string, { term: string; service_line: string }>()
-    for (const r of rows) if (!seen.has(r.term)) {
-      seen.set(r.term, { term: r.term, service_line: r.service_line })
-    }
-    if (seen.size) return Array.from(seen.values())
-    return config.catalog.tracks.flatMap((t) =>
-      t.terms.map((term) => ({ term, service_line: t.service_line })),
-    )
-  }, [rows, config.catalog.tracks])
-
-  const locations = useMemo(() => {
-    const seen = new Map<string, { location: string; state: string; granularity: "state" | "city" }>()
-    for (const r of rows) if (!seen.has(r.location)) {
-      seen.set(r.location, { location: r.location, state: r.state, granularity: r.granularity })
-    }
-    if (seen.size) return Array.from(seen.values())
-    return config.catalog.states.flatMap((s) => [
-      ...(s.statewide_query
-        ? [{ location: s.statewide_query, state: s.code, granularity: "state" as const }]
-        : []),
-      ...s.cities.map((c) => ({ location: c, state: s.code, granularity: "city" as const })),
-    ])
-  }, [rows, config.catalog.states])
-
   return (
     <>
-      <GeographyPanel rows={rows} terms={terms} onChanged={onChanged} catalog={config.catalog} />
-      <TracksPanel rows={rows} locations={locations} onChanged={onChanged} catalog={config.catalog} />
+      <SweepStatusStrip sweep={config.sweep} />
+      <GeographyPanel
+        locations={config.locations}
+        catalog={config.catalog}
+        onChanged={onChanged}
+      />
+      <TracksPanel terms={config.terms} catalog={config.catalog} onChanged={onChanged} />
+      <OverridesPanel
+        overrides={config.overrides}
+        terms={config.terms}
+        locations={config.locations}
+        onChanged={onChanged}
+      />
     </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Sweep status — read-only freshness strip (plan §5)
+// ---------------------------------------------------------------------------
+
+/** A compact one-line-per-source strip, not the big analytics StatTile cards
+ *  — this is a glance while editing, not a dashboard. Makes the freshness
+ *  cost of adding a state visible before an operator does it. */
+function SweepStatusStrip({ sweep }: { sweep: Record<string, SweepSourceStatus> }) {
+  const sources = Object.entries(sweep)
+  if (sources.length === 0) return null
+  return (
+    <div className="rounded-xl border border-gray-200 dark:border-white/10 bg-gray-50/40 dark:bg-white/5 px-4 py-2 flex flex-wrap items-center gap-x-6 gap-y-1">
+      {sources.map(([source, s]) => (
+        <span
+          key={source}
+          className="inline-flex items-center gap-1.5 text-[11px] text-gray-500 dark:text-gray-400"
+        >
+          <span className="font-semibold text-gray-700 dark:text-[#d9d9d9]">
+            {source === "linkedin" ? "LinkedIn" : "Indeed"}
+          </span>
+          <span>{s.coverage_pct.toFixed(0)}% coverage</span>
+          <span aria-hidden>·</span>
+          <span>{s.never_swept} never swept</span>
+          <span aria-hidden>·</span>
+          <span>
+            oldest{" "}
+            {s.oldest_cursor_age_hours != null
+              ? `${Math.round(s.oldest_cursor_age_hours)}h`
+              : "—"}
+          </span>
+        </span>
+      ))}
+    </div>
   )
 }
 
@@ -119,39 +145,16 @@ function ConfigBody({
 // ---------------------------------------------------------------------------
 
 function GeographyPanel({
-  rows,
-  terms,
+  locations,
   onChanged,
   catalog,
 }: {
-  rows: SearchTarget[]
-  terms: { term: string; service_line: string }[]
+  locations: SearchLocation[]
   onChanged: () => Promise<void>
   catalog: SignalsConfig["catalog"]
 }) {
   const [adding, setAdding] = useState(false)
-
-  const byState = useMemo(() => groupBy(rows, (r) => r.state), [rows])
-
-  async function addState(code: string, statewide: string, cities: string[]) {
-    const st = code.trim().toUpperCase()
-    const locs = [
-      ...(statewide.trim()
-        ? [{ location: statewide.trim(), granularity: "state" as const }]
-        : []),
-      ...cities.map((c) => ({ location: c, granularity: "city" as const })),
-    ]
-    const newRows: NewTargetRow[] = locs.flatMap((l) =>
-      terms.map((t) => ({
-        term: t.term,
-        service_line: t.service_line,
-        location: l.location,
-        state: st,
-        granularity: l.granularity,
-      })),
-    )
-    return newRows
-  }
+  const byState = useMemo(() => groupBy(locations, (l) => l.state), [locations])
 
   return (
     <Panel
@@ -165,10 +168,14 @@ function GeographyPanel({
       {adding && (
         <AddStateForm
           catalog={catalog}
-          disabled={terms.length === 0}
           onSubmit={async (code, statewide, cities) => {
-            const newRows = await addState(code, statewide, cities)
-            const res = await addTargets(newRows)
+            const rows: NewLocationRow[] = [
+              ...(statewide.trim()
+                ? [{ location: statewide.trim(), state: code, granularity: "state" as const }]
+                : []),
+              ...cities.map((c) => ({ location: c, state: code, granularity: "city" as const })),
+            ]
+            const res = await addLocations(rows)
             if (res.ok) {
               await onChanged()
               setAdding(false)
@@ -179,12 +186,11 @@ function GeographyPanel({
       )}
 
       <div className="space-y-3">
-        {Object.entries(byState).map(([state, stateRows]) => (
+        {Object.entries(byState).map(([state, stateLocations]) => (
           <StateRow
             key={state}
             state={state}
-            rows={stateRows}
-            terms={terms}
+            locations={stateLocations}
             catalogCities={
               catalog.states.find((s) => s.code === state)?.cities ?? []
             }
@@ -199,64 +205,54 @@ function GeographyPanel({
   )
 }
 
-/** One state as a bulk-scan-style box: a scrollable grid of city chips you
- *  toggle on/off, mirroring the Bulk Scan modal's city picker. A chip is a
- *  whole `(term x city)` group — teal when any keyword is on, grey when the
- *  city is fully off. Cities in the config catalog that aren't targets yet
- *  appear as dashed "+ city" chips you can add in one click; anything not in
- *  the catalog goes in via the free-text field. */
+/** One state as a bulk-scan-style box: a scrollable grid of location chips
+ *  you toggle on/off, mirroring the Bulk Scan modal's city picker. A chip is
+ *  now exactly ONE `search_locations` row — no term crossing — so a click is
+ *  one request, not a Promise.all over a cell group. Cities in the config
+ *  catalog that aren't locations yet appear as dashed "+ city" chips you can
+ *  add in one click; anything not in the catalog goes in via the free-text
+ *  field. */
 function StateRow({
   state,
-  rows,
-  terms,
+  locations,
   catalogCities,
   onChanged,
 }: {
   state: string
-  rows: SearchTarget[]
-  terms: { term: string; service_line: string }[]
+  locations: SearchLocation[]
   catalogCities: string[]
   onChanged: () => Promise<void>
 }) {
   const [addingCity, setAddingCity] = useState(false)
   const [bulkBusy, setBulkBusy] = useState(false)
 
-  const byLocation = useMemo(() => groupBy(rows, (r) => r.location), [rows])
   // Statewide first, then cities alphabetically.
-  const locations = useMemo(
+  const sorted = useMemo(
     () =>
-      Object.entries(byLocation).sort(([, a], [, b]) => {
-        const ga = a[0].granularity === "state" ? 0 : 1
-        const gb = b[0].granularity === "state" ? 0 : 1
-        return ga - gb || a[0].location.localeCompare(b[0].location)
+      [...locations].sort((a, b) => {
+        const ga = a.granularity === "state" ? 0 : 1
+        const gb = b.granularity === "state" ? 0 : 1
+        return ga - gb || a.location.localeCompare(b.location)
       }),
-    [byLocation],
+    [locations],
   )
 
-  const cityLocations = locations.filter(([, r]) => r[0].granularity === "city")
-  const cityNames = new Set(cityLocations.map(([loc]) => loc))
+  const cityLocations = sorted.filter((l) => l.granularity === "city")
+  const cityNames = new Set(cityLocations.map((l) => l.location))
   const addable = catalogCities.filter((c) => !cityNames.has(c))
-  const enabledCities = cityLocations.filter(([, r]) => r.some((x) => x.enabled)).length
+  const enabledCities = cityLocations.filter((l) => l.enabled).length
 
   async function setAll(next: boolean) {
     setBulkBusy(true)
     await Promise.all(
-      rows.filter((r) => r.enabled !== next).map((r) => setTargetEnabled(r.id, next)),
+      locations.filter((l) => l.enabled !== next).map((l) => setLocationEnabled(l.id, next)),
     )
     await onChanged()
     setBulkBusy(false)
   }
 
   async function addCity(city: string) {
-    const res = await addTargets(
-      terms.map((t) => ({
-        term: t.term,
-        service_line: t.service_line,
-        location: city,
-        state,
-        granularity: "city" as const,
-      })),
-    )
+    const res = await addLocations([{ location: city, state, granularity: "city" }])
     if (res.ok) await onChanged()
     return res
   }
@@ -289,13 +285,8 @@ function StateRow({
 
       <div className="max-h-44 overflow-y-auto">
         <div className="flex flex-wrap gap-1">
-          {locations.map(([location, locRows]) => (
-            <CityChip
-              key={location}
-              label={locRows[0].granularity === "state" ? "Statewide" : location}
-              rows={locRows}
-              onChanged={onChanged}
-            />
+          {sorted.map((loc) => (
+            <LocationChip key={loc.id} location={loc} onChanged={onChanged} />
           ))}
           {addable.map((city) => (
             <AddCityChip key={city} label={city} onAdd={() => addCity(city)} />
@@ -325,28 +316,21 @@ function StateRow({
   )
 }
 
-/** A city (or the statewide query) as a toggleable pill — teal when any of its
- *  keywords is enabled, grey when the city is fully off. Clicking flips the
- *  whole group, matching the Bulk Scan modal's chip interaction. */
-function CityChip({
-  label,
-  rows,
+/** One `search_locations` row (a city or the statewide query) as a toggleable
+ *  pill — teal when enabled, grey when off. Clicking flips exactly this row. */
+function LocationChip({
+  location,
   onChanged,
 }: {
-  label: string
-  rows: SearchTarget[]
+  location: SearchLocation
   onChanged: () => Promise<void>
 }) {
   const [busy, setBusy] = useState(false)
-  const enabled = rows.some((r) => r.enabled)
-  const onCount = rows.filter((r) => r.enabled).length
+  const label = location.granularity === "state" ? "Statewide" : location.location
 
   async function toggle() {
     setBusy(true)
-    const next = !enabled
-    await Promise.all(
-      rows.filter((r) => r.enabled !== next).map((r) => setTargetEnabled(r.id, next)),
-    )
+    await setLocationEnabled(location.id, !location.enabled)
     await onChanged()
     setBusy(false)
   }
@@ -355,11 +339,9 @@ function CityChip({
     <button
       onClick={toggle}
       disabled={busy}
-      title={`${label} — ${onCount}/${rows.length} keywords on · click to ${
-        enabled ? "disable" : "enable"
-      }`}
+      title={`${label} — click to ${location.enabled ? "disable" : "enable"}`}
       className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border transition disabled:opacity-50 ${
-        enabled
+        location.enabled
           ? "bg-teal-50 dark:bg-[#284b63]/40 border-teal-500 text-teal-700 dark:text-teal-400"
           : "bg-white dark:bg-night-800 border-gray-200 dark:border-white/10 text-gray-500 dark:text-gray-400 hover:border-gray-400 line-through decoration-gray-300"
       }`}
@@ -370,7 +352,7 @@ function CityChip({
   )
 }
 
-/** A catalog city not yet a target — a dashed "+ city" pill that adds it. */
+/** A catalog city not yet a location — a dashed "+ city" pill that adds it. */
 function AddCityChip({ label, onAdd }: { label: string; onAdd: () => Promise<unknown> }) {
   const [busy, setBusy] = useState(false)
   async function add() {
@@ -394,7 +376,7 @@ function AddCityChip({ label, onAdd }: { label: string; onAdd: () => Promise<unk
 function AddCityForm({
   onSubmit,
 }: {
-  onSubmit: (city: string) => Promise<{ ok: boolean; error?: string; inserted?: number }>
+  onSubmit: (city: string) => Promise<AddDimensionResult>
 }) {
   const [city, setCity] = useState("")
   const [busy, setBusy] = useState(false)
@@ -405,8 +387,11 @@ function AddCityForm({
     setMsg(null)
     const res = await onSubmit(city.trim())
     setBusy(false)
-    if (res.ok) setMsg({ ok: true, text: `Added ${res.inserted ?? 0} targets.` })
-    else setMsg({ ok: false, text: res.error ?? "Failed." })
+    setMsg(
+      res.ok
+        ? { ok: true, text: `Added ${res.inserted} location${res.inserted === 1 ? "" : "s"}.` }
+        : { ok: false, text: res.error },
+    )
   }
 
   return (
@@ -426,16 +411,14 @@ function AddCityForm({
 
 function AddStateForm({
   catalog,
-  disabled,
   onSubmit,
 }: {
   catalog: SignalsConfig["catalog"]
-  disabled: boolean
   onSubmit: (
     code: string,
     statewide: string,
     cities: string[],
-  ) => Promise<{ ok: boolean; error?: string; inserted?: number }>
+  ) => Promise<AddDimensionResult>
 }) {
   const [code, setCode] = useState("")
   const [statewide, setStatewide] = useState("")
@@ -447,19 +430,17 @@ function AddStateForm({
     setBusy(true)
     setMsg(null)
     const cities = citiesText.split("\n").map((c) => c.trim()).filter(Boolean)
-    const res = await onSubmit(code, statewide, cities)
+    const res = await onSubmit(code.trim().toUpperCase(), statewide, cities)
     setBusy(false)
-    if (res.ok) setMsg({ ok: true, text: `Added ${res.inserted ?? 0} targets.` })
-    else setMsg({ ok: false, text: res.error ?? "Failed." })
+    setMsg(
+      res.ok
+        ? { ok: true, text: `Added ${res.inserted} location${res.inserted === 1 ? "" : "s"}.` }
+        : { ok: false, text: res.error },
+    )
   }
 
   return (
     <FormShell>
-      {disabled && (
-        <p className="text-[11px] text-amber-600 dark:text-amber-400">
-          Add a track first — a state is searched against your existing keywords.
-        </p>
-      )}
       <div className="grid sm:grid-cols-3 gap-2">
         <TextInput label="State code" placeholder="TX" value={code} onChange={setCode} maxLength={2} />
         <div className="sm:col-span-2">
@@ -480,7 +461,7 @@ function AddStateForm({
       <p className="text-[11px] text-gray-400 dark:text-gray-500">
         Suggestions from config: {catalog.states.map((s) => s.code).join(", ")}.
       </p>
-      <FormActions busy={busy} disabled={disabled || !code.trim()} onSubmit={submit} msg={msg} />
+      <FormActions busy={busy} disabled={!code.trim()} onSubmit={submit} msg={msg} />
     </FormShell>
   )
 }
@@ -490,30 +471,16 @@ function AddStateForm({
 // ---------------------------------------------------------------------------
 
 function TracksPanel({
-  rows,
-  locations,
+  terms,
   onChanged,
   catalog,
 }: {
-  rows: SearchTarget[]
-  locations: { location: string; state: string; granularity: "state" | "city" }[]
+  terms: SearchTerm[]
   onChanged: () => Promise<void>
   catalog: SignalsConfig["catalog"]
 }) {
   const [adding, setAdding] = useState(false)
-  const byTrack = useMemo(() => groupBy(rows, (r) => r.service_line), [rows])
-
-  function expand(serviceLine: string, keywords: string[]): NewTargetRow[] {
-    return keywords.flatMap((term) =>
-      locations.map((l) => ({
-        term,
-        service_line: serviceLine,
-        location: l.location,
-        state: l.state,
-        granularity: l.granularity,
-      })),
-    )
-  }
+  const byTrack = useMemo(() => groupBy(terms, (t) => t.service_line), [terms])
 
   return (
     <Panel
@@ -527,9 +494,8 @@ function TracksPanel({
       {adding && (
         <AddTrackForm
           catalog={catalog}
-          disabled={locations.length === 0}
           onSubmit={async (sl, keywords) => {
-            const res = await addTargets(expand(sl, keywords))
+            const res = await addTerms(keywords.map((term) => ({ term, service_line: sl })))
             if (res.ok) {
               await onChanged()
               setAdding(false)
@@ -540,14 +506,8 @@ function TracksPanel({
       )}
 
       <div className="divide-y divide-gray-100 dark:divide-white/5">
-        {Object.entries(byTrack).map(([track, trackRows]) => (
-          <TrackRow
-            key={track}
-            track={track}
-            rows={trackRows}
-            locations={locations}
-            onChanged={onChanged}
-          />
+        {Object.entries(byTrack).map(([track, trackTerms]) => (
+          <TrackRow key={track} track={track} terms={trackTerms} onChanged={onChanged} />
         ))}
         {Object.keys(byTrack).length === 0 && (
           <EmptyRow>No tracks yet.</EmptyRow>
@@ -559,18 +519,15 @@ function TracksPanel({
 
 function TrackRow({
   track,
-  rows,
-  locations,
+  terms,
   onChanged,
 }: {
   track: string
-  rows: SearchTarget[]
-  locations: { location: string; state: string; granularity: "state" | "city" }[]
+  terms: SearchTerm[]
   onChanged: () => Promise<void>
 }) {
   const [addingKw, setAddingKw] = useState(false)
-  const keywords = useMemo(() => Array.from(new Set(rows.map((r) => r.term))), [rows])
-  const enabled = rows.some((r) => r.enabled)
+  const enabled = terms.some((t) => t.enabled)
 
   return (
     <div className="py-3">
@@ -578,13 +535,8 @@ function TrackRow({
         <div className="min-w-0">
           <div className="text-sm font-medium text-gray-900 dark:text-white">{track}</div>
           <div className="flex flex-wrap gap-1.5 mt-1.5">
-            {keywords.map((k) => (
-              <span
-                key={k}
-                className="text-[11px] px-2 py-0.5 rounded-full bg-gray-100 dark:bg-white/5 text-gray-600 dark:text-gray-300"
-              >
-                {k}
-              </span>
+            {terms.map((t) => (
+              <TermPill key={t.id} term={t} onChanged={onChanged} />
             ))}
           </div>
         </div>
@@ -595,22 +547,14 @@ function TrackRow({
           >
             + keyword
           </button>
-          <GroupToggle rows={rows} enabled={enabled} onChanged={onChanged} />
+          <TrackToggle terms={terms} enabled={enabled} onChanged={onChanged} />
         </div>
       </div>
 
       {addingKw && (
         <AddKeywordForm
           onSubmit={async (term) => {
-            const res = await addTargets(
-              locations.map((l) => ({
-                term,
-                service_line: track,
-                location: l.location,
-                state: l.state,
-                granularity: l.granularity,
-              })),
-            )
+            const res = await addTerms([{ term, service_line: track }])
             if (res.ok) {
               await onChanged()
               setAddingKw(false)
@@ -623,17 +567,51 @@ function TrackRow({
   )
 }
 
+/** One `search_terms` row as a clickable pill — teal/on, grey-strikethrough
+ *  off, styled to match the geography panel's location chips. Replaces the
+ *  old static keyword span now that a term carries its own `enabled`. */
+function TermPill({
+  term,
+  onChanged,
+}: {
+  term: SearchTerm
+  onChanged: () => Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+
+  async function toggle() {
+    setBusy(true)
+    await setTermEnabled(term.id, !term.enabled)
+    await onChanged()
+    setBusy(false)
+  }
+
+  return (
+    <button
+      onClick={toggle}
+      disabled={busy}
+      title={`${term.term} — click to ${term.enabled ? "disable" : "enable"}`}
+      className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border transition disabled:opacity-50 ${
+        term.enabled
+          ? "bg-teal-50 dark:bg-[#284b63]/40 border-teal-500 text-teal-700 dark:text-teal-400"
+          : "bg-white dark:bg-night-800 border-gray-200 dark:border-white/10 text-gray-500 dark:text-gray-400 hover:border-gray-400 line-through decoration-gray-300"
+      }`}
+    >
+      {busy && <Loader2 className="w-3 h-3 animate-spin" />}
+      {term.term}
+    </button>
+  )
+}
+
 function AddTrackForm({
   catalog,
-  disabled,
   onSubmit,
 }: {
   catalog: SignalsConfig["catalog"]
-  disabled: boolean
   onSubmit: (
     serviceLine: string,
     keywords: string[],
-  ) => Promise<{ ok: boolean; error?: string; inserted?: number }>
+  ) => Promise<AddDimensionResult>
 }) {
   const [name, setName] = useState("")
   const [kwText, setKwText] = useState("")
@@ -646,17 +624,15 @@ function AddTrackForm({
     const keywords = kwText.split("\n").map((k) => k.trim()).filter(Boolean)
     const res = await onSubmit(name.trim(), keywords)
     setBusy(false)
-    if (res.ok) setMsg({ ok: true, text: `Added ${res.inserted ?? 0} targets.` })
-    else setMsg({ ok: false, text: res.error ?? "Failed." })
+    setMsg(
+      res.ok
+        ? { ok: true, text: `Added ${res.inserted} keyword${res.inserted === 1 ? "" : "s"}.` }
+        : { ok: false, text: res.error },
+    )
   }
 
   return (
     <FormShell>
-      {disabled && (
-        <p className="text-[11px] text-amber-600 dark:text-amber-400">
-          Add a state first — a track is searched across your existing locations.
-        </p>
-      )}
       <TextInput
         label="Track (service line)"
         placeholder="Virtual Medical Assistant"
@@ -681,7 +657,7 @@ function AddTrackForm({
       </p>
       <FormActions
         busy={busy}
-        disabled={disabled || !name.trim() || !kwText.trim()}
+        disabled={!name.trim() || !kwText.trim()}
         onSubmit={submit}
         msg={msg}
       />
@@ -692,7 +668,7 @@ function AddTrackForm({
 function AddKeywordForm({
   onSubmit,
 }: {
-  onSubmit: (term: string) => Promise<{ ok: boolean; error?: string; inserted?: number }>
+  onSubmit: (term: string) => Promise<AddDimensionResult>
 }) {
   const [term, setTerm] = useState("")
   const [busy, setBusy] = useState(false)
@@ -703,8 +679,11 @@ function AddKeywordForm({
     setMsg(null)
     const res = await onSubmit(term.trim())
     setBusy(false)
-    if (res.ok) setMsg({ ok: true, text: `Added ${res.inserted ?? 0} targets.` })
-    else setMsg({ ok: false, text: res.error ?? "Failed." })
+    setMsg(
+      res.ok
+        ? { ok: true, text: `Added ${res.inserted} keyword${res.inserted === 1 ? "" : "s"}.` }
+        : { ok: false, text: res.error },
+    )
   }
 
   return (
@@ -717,18 +696,15 @@ function AddKeywordForm({
   )
 }
 
-// ---------------------------------------------------------------------------
-// Shared bits
-// ---------------------------------------------------------------------------
-
-/** Enable/disable every row in a group. Fires one PATCH per row — chatty for a
- *  big state, and design doc §6.1 flags a bulk endpoint as the follow-up. */
-function GroupToggle({
-  rows,
+/** Enable/disable every term in a track. Fires one PATCH per term — a track
+ *  has a handful of keywords (not the old per-cell fan-out), so this stays a
+ *  Promise.all rather than needing a bulk endpoint. */
+function TrackToggle({
+  terms,
   enabled,
   onChanged,
 }: {
-  rows: SearchTarget[]
+  terms: SearchTerm[]
   enabled: boolean
   onChanged: () => Promise<void>
 }) {
@@ -736,15 +712,110 @@ function GroupToggle({
   async function toggle() {
     setBusy(true)
     const next = !enabled
-    // Only flip rows that actually differ, to keep the request count down.
     await Promise.all(
-      rows.filter((r) => r.enabled !== next).map((r) => setTargetEnabled(r.id, next)),
+      terms.filter((t) => t.enabled !== next).map((t) => setTermEnabled(t.id, next)),
     )
     await onChanged()
     setBusy(false)
   }
   return <Toggle on={enabled} busy={busy} onClick={toggle} />
 }
+
+// ---------------------------------------------------------------------------
+// Pinned cells (overrides) — display + unpin only. Pins are created elsewhere
+// (per-cell pinning UI is a later increment; this page only lists and removes
+// existing ones).
+// ---------------------------------------------------------------------------
+
+function OverridesPanel({
+  overrides,
+  terms,
+  locations,
+  onChanged,
+}: {
+  overrides: TargetOverride[]
+  terms: SearchTerm[]
+  locations: SearchLocation[]
+  onChanged: () => Promise<void>
+}) {
+  // Hooks run before the early return (Rules of Hooks) — cheap even when
+  // there is nothing to render, since `overrides` is a handful of rows.
+  const termById = useMemoMap(terms, (t) => t.id)
+  const locationById = useMemoMap(locations, (l) => l.id)
+
+  if (overrides.length === 0) return null
+
+  return (
+    <Panel
+      icon={<Pin className="w-4 h-4" />}
+      title="Pinned cells"
+      subtitle="Hand-pinned exceptions to a term's or location's own on/off state"
+    >
+      <ul className="divide-y divide-gray-100 dark:divide-white/5">
+        {overrides.map((o) => (
+          <OverrideRow
+            key={`${o.term_id}-${o.location_id}`}
+            override={o}
+            term={termById.get(o.term_id)}
+            location={locationById.get(o.location_id)}
+            onChanged={onChanged}
+          />
+        ))}
+      </ul>
+    </Panel>
+  )
+}
+
+function OverrideRow({
+  override,
+  term,
+  location,
+  onChanged,
+}: {
+  override: TargetOverride
+  term?: SearchTerm
+  location?: SearchLocation
+  onChanged: () => Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+
+  async function unpin() {
+    setBusy(true)
+    await setOverride(override.term_id, override.location_id, null)
+    await onChanged()
+    setBusy(false)
+  }
+
+  return (
+    <li className="py-2 flex items-center justify-between gap-3 text-xs">
+      <span className="text-gray-700 dark:text-[#d9d9d9] truncate">
+        {term?.term ?? `term #${override.term_id}`}
+        <span className="text-gray-400 dark:text-gray-500 mx-1">×</span>
+        {location?.location ?? `location #${override.location_id}`}
+        <span
+          className={`ml-2 text-[10px] uppercase tracking-wide ${
+            override.enabled
+              ? "text-teal-700 dark:text-teal-400"
+              : "text-gray-400 dark:text-gray-500"
+          }`}
+        >
+          forced {override.enabled ? "on" : "off"}
+        </span>
+      </span>
+      <button
+        onClick={unpin}
+        disabled={busy}
+        className="text-[11px] text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition disabled:opacity-50 shrink-0"
+      >
+        {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : "Unpin"}
+      </button>
+    </li>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Shared bits
+// ---------------------------------------------------------------------------
 
 function Toggle({ on, busy, onClick }: { on: boolean; busy: boolean; onClick: () => void }) {
   return (
@@ -944,4 +1015,10 @@ function groupBy<T>(items: T[], key: (t: T) => string): Record<string, T[]> {
     ;(out[k] ??= []).push(item)
   }
   return out
+}
+
+/** A `Map` keyed by `key(item)`, recomputed only when `items` changes —
+ *  avoids an O(n) `.find()` per row when rendering the overrides list. */
+function useMemoMap<T, K>(items: T[], key: (t: T) => K): Map<K, T> {
+  return useMemo(() => new Map(items.map((item) => [key(item), item])), [items, key])
 }

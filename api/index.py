@@ -2362,62 +2362,142 @@ async def retrigger_lead_pipeline(admin: dict = Depends(require_admin)):
 
 # ---------------------------------------------------------------------------
 # Instant Signals — config page. Reads the config catalog and edits the live
-# `company_search_targets` table by hand (admin only). The collector reads only
-# the table (ADR-03), so this is the supported way to tune what gets searched
-# without a config-file change and deploy. See
-# `docs/specs/2026-08-10-instant-signals-config-page-design.md`.
+# `search_terms` / `search_locations` / `target_overrides` dimension tables by
+# hand (admin only). The collector reads only these tables (ADR-03), so this
+# is the supported way to tune what gets searched without a config-file
+# change and deploy. See docs/refactor/instant-signals-targets.md §4.
 # ---------------------------------------------------------------------------
 
 
-class AddTargetRow(BaseModel):
+class AddTermRow(BaseModel):
     term: str
     service_line: str
+    enabled: bool = True
+
+
+class AddTermsRequest(BaseModel):
+    rows: list[AddTermRow]
+
+
+class AddLocationRow(BaseModel):
     location: str
     state: str
     granularity: str
     enabled: bool = True
 
 
-class AddTargetsRequest(BaseModel):
-    rows: list[AddTargetRow]
+class AddLocationsRequest(BaseModel):
+    rows: list[AddLocationRow]
 
 
-class ToggleTargetRequest(BaseModel):
+class ToggleEnabledRequest(BaseModel):
     enabled: bool
+
+
+class SetOverrideRequest(BaseModel):
+    term_id: int
+    location_id: int
+    # None unpins the cell, returning it to term.enabled AND location.enabled.
+    enabled: bool | None = None
 
 
 @app.get("/api/admin/leads/config")
 def get_leads_config(admin: dict = Depends(require_admin)):
-    """SUPERSEDED — the matrix table (`company_search_targets`) this route read
-    is retired (instant-signals refactor, Phase 1). `list_targets`/`add_targets`/
-    `set_target_enabled` no longer exist on `lead_targets`; Phase 3 replaces
-    this route with dimension-shaped ones (`{catalog, terms, locations,
-    overrides, sweep}` per docs/refactor/instant-signals-targets.md §4) rather
-    than resurrecting the old matrix response here. Stubbed rather than left
-    to throw an AttributeError so the module still imports cleanly and the
-    config page fails loudly instead of 500ing on a missing attribute.
+    """The search-dimension config for the current tenant.
+
+    `catalog` is the checked-in lead config surfaced as suggestions for the
+    "Add …" forms; `terms`/`locations`/`overrides` are the live, editable
+    dimensions the collector actually reads (ADR-03) — the two can drift on
+    purpose, since editing the tables without touching the file is the whole
+    point of the page. `sweep` is the per-source coverage/freshness numbers
+    from `sweep_status`, so the page can show the freshness cost of adding a
+    state before an operator does it.
     """
-    raise HTTPException(501, "Leads config page is being migrated — superseded, Phase 3")
+    try:
+        cat = lead_targets.catalog()
+    except lead_config.LeadConfigError as e:
+        raise HTTPException(500, f"Lead config is invalid: {e}")
+    dims = lead_targets.list_config(admin["company_id"])
+    return {
+        "catalog": cat,
+        "terms": dims["terms"],
+        "locations": dims["locations"],
+        "overrides": dims["overrides"],
+        "sweep": lead_targets.sweep_status(admin["company_id"]),
+    }
 
 
-@app.post("/api/admin/leads/targets")
-def add_leads_targets(
-    body: AddTargetsRequest, admin: dict = Depends(require_admin)
+@app.post("/api/admin/leads/terms")
+def add_leads_terms(body: AddTermsRequest, admin: dict = Depends(require_admin)):
+    """Add hand-built search terms (a track's keywords). Idempotent: existing
+    `(company_id, term)` pairs are skipped, never reset, so an add never
+    re-enables a term an operator switched off."""
+    if not body.rows:
+        raise HTTPException(400, "No term rows supplied")
+    try:
+        result = lead_targets.add_terms(
+            admin["company_id"], [r.model_dump() for r in body.rows]
+        )
+    except lead_targets.TargetValidationError as e:
+        raise HTTPException(400, str(e))
+    return result
+
+
+@app.post("/api/admin/leads/locations")
+def add_leads_locations(body: AddLocationsRequest, admin: dict = Depends(require_admin)):
+    """Add hand-built search locations (a state's statewide row plus cities,
+    or a single custom city). Idempotent, same shape as `add_leads_terms`."""
+    if not body.rows:
+        raise HTTPException(400, "No location rows supplied")
+    try:
+        result = lead_targets.add_locations(
+            admin["company_id"], [r.model_dump() for r in body.rows]
+        )
+    except lead_targets.TargetValidationError as e:
+        raise HTTPException(400, str(e))
+    return result
+
+
+@app.patch("/api/admin/leads/terms/{term_id}")
+def toggle_leads_term(
+    term_id: int, body: ToggleEnabledRequest, admin: dict = Depends(require_admin),
 ):
-    """SUPERSEDED — see `get_leads_config`. Phase 3 replaces this with
-    `POST /api/admin/leads/terms` and `POST /api/admin/leads/locations`."""
-    raise HTTPException(501, "Leads config page is being migrated — superseded, Phase 3")
+    """Enable or disable one term. One PATCH flips a whole keyword across
+    every location it crosses at claim time — no per-cell PATCH storm."""
+    updated = lead_targets.set_term_enabled(admin["company_id"], term_id, body.enabled)
+    if not updated:
+        raise HTTPException(404, "Term not found")
+    return updated
 
 
-@app.patch("/api/admin/leads/targets/{target_id}")
-def toggle_leads_target(
-    target_id: int,
-    body: ToggleTargetRequest,
-    admin: dict = Depends(require_admin),
+@app.patch("/api/admin/leads/locations/{location_id}")
+def toggle_leads_location(
+    location_id: int, body: ToggleEnabledRequest, admin: dict = Depends(require_admin),
 ):
-    """SUPERSEDED — see `get_leads_config`. Phase 3 replaces this with
-    `PATCH /api/admin/leads/terms/{id}` and `PATCH /api/admin/leads/locations/{id}`."""
-    raise HTTPException(501, "Leads config page is being migrated — superseded, Phase 3")
+    """Enable or disable one location (a city or a statewide row). Disable is
+    the off switch — we never delete, because the rotation cursors are the
+    sweep history and dropping a row would lose them."""
+    updated = lead_targets.set_location_enabled(admin["company_id"], location_id, body.enabled)
+    if not updated:
+        raise HTTPException(404, "Location not found")
+    return updated
+
+
+@app.put("/api/admin/leads/overrides")
+def set_leads_override(body: SetOverrideRequest, admin: dict = Depends(require_admin)):
+    """Pin or unpin one `(term, location)` cell. `enabled: null` deletes the
+    pin, returning the cell to the default (`term.enabled AND
+    location.enabled`); `true`/`false` upserts an explicit override.
+    """
+    result = lead_targets.set_override(
+        admin["company_id"], body.term_id, body.location_id, body.enabled
+    )
+    # A `None` result is ambiguous by itself: it's the expected return for an
+    # unpin (enabled=None) but also what a scope miss (term/location not this
+    # tenant's) returns. Only the latter is a 404.
+    if result is None and body.enabled is not None:
+        raise HTTPException(404, "Term or location not found for this tenant")
+    return {"override": result}
 
 
 # ---------------------------------------------------------------------------
