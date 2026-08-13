@@ -245,6 +245,71 @@ def test_add_terms_makes_one_upsert_call_for_a_valid_batch(monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# delete_term / delete_location — hard delete for hand-added rows, refused
+# for catalog rows (Phase 5). ensure_targets diff-seeds unconditionally now
+# (Phase 4), so a deleted catalog row would just be resurrected next run —
+# CatalogProtectedError is the guard against that trap.
+# --------------------------------------------------------------------------
+
+
+def test_delete_term_removes_a_hand_added_term(monkeypatch):
+    row = {"id": 5, "company_id": "co", "term": "made-up keyword", "service_line": "X"}
+    client = _FakeDeleteClient([row])
+    monkeypatch.setattr("src.storage._get_client", lambda: client)
+    result = lead_targets.delete_term("co", 5)
+    assert result == row
+    assert client.deleted is True
+
+
+def test_delete_term_returns_none_for_a_missing_row(monkeypatch):
+    client = _FakeDeleteClient([])
+    monkeypatch.setattr("src.storage._get_client", lambda: client)
+    assert lead_targets.delete_term("co", 999) is None
+    assert client.deleted is False
+
+
+def test_delete_term_refuses_a_catalog_term(monkeypatch):
+    """'medical assistant' is a real roles.json term — deleting it would be
+    silently resurrected by the next collect run's diff-seed (ensure_targets
+    no longer gates on "zero rows", Phase 4)."""
+    row = {"id": 1, "company_id": "co", "term": "medical assistant", "service_line": "X"}
+    client = _FakeDeleteClient([row])
+    monkeypatch.setattr("src.storage._get_client", lambda: client)
+    with pytest.raises(lead_targets.CatalogProtectedError, match="medical assistant"):
+        lead_targets.delete_term("co", 1)
+    assert client.deleted is False
+
+
+def test_delete_location_removes_a_hand_added_location(monkeypatch):
+    row = {"id": 7, "company_id": "co", "location": "Ocala, FL", "state": "FL",
+           "granularity": "city"}
+    client = _FakeDeleteClient([row])
+    monkeypatch.setattr("src.storage._get_client", lambda: client)
+    result = lead_targets.delete_location("co", 7)
+    assert result == row
+    assert client.deleted is True
+
+
+def test_delete_location_returns_none_for_a_missing_row(monkeypatch):
+    client = _FakeDeleteClient([])
+    monkeypatch.setattr("src.storage._get_client", lambda: client)
+    assert lead_targets.delete_location("co", 999) is None
+    assert client.deleted is False
+
+
+def test_delete_location_refuses_a_catalog_location(monkeypatch):
+    """'Tampa, FL' is a real geography.json city — same resurrection risk as
+    the catalog-term case above."""
+    row = {"id": 2, "company_id": "co", "location": "Tampa, FL", "state": "FL",
+           "granularity": "city"}
+    client = _FakeDeleteClient([row])
+    monkeypatch.setattr("src.storage._get_client", lambda: client)
+    with pytest.raises(lead_targets.CatalogProtectedError, match="Tampa, FL"):
+        lead_targets.delete_location("co", 2)
+    assert client.deleted is False
+
+
+# --------------------------------------------------------------------------
 # claim_locations — nulls-first ordering, threshold filter, streak decay.
 # --------------------------------------------------------------------------
 
@@ -504,6 +569,42 @@ class _FakeUpsertClient:
 
     def execute(self):
         return type("R", (), {"data": None})()
+
+
+class _FakeDeleteClient:
+    """Fakes the read-then-delete pair `delete_term`/`delete_location` use:
+    `.select().eq().eq().limit().execute()` fetches the row, and — only if
+    the caller gets past the catalog check — `.delete().eq().eq().execute()`
+    removes it. `rows` is what the select returns; `deleted` records whether
+    a delete call actually happened, so a catalog-protected test can assert
+    the row was never touched."""
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.deleted = False
+        self._deleting = False
+
+    def table(self, name):
+        return self
+
+    def select(self, *a, **k):
+        self._deleting = False
+        return self
+
+    def delete(self):
+        self._deleting = True
+        return self
+
+    def eq(self, *a, **k):
+        return self
+
+    def limit(self, *a, **k):
+        return self
+
+    def execute(self):
+        if self._deleting:
+            self.deleted = True
+        return type("R", (), {"data": self.rows})()
 
 
 class _FakeSelectClient:

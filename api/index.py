@@ -2505,6 +2505,21 @@ def toggle_leads_term(
     return updated
 
 
+@app.delete("/api/admin/leads/terms/{term_id}")
+def delete_leads_term(term_id: int, admin: dict = Depends(require_admin)):
+    """Hard-delete one hand-added term. A term still in the checked-in
+    catalog (`roles.json`) refuses with 409 rather than deleting — it would
+    just be silently resurrected by the next collect run's re-seed; see
+    `lead_targets.CatalogProtectedError`. Disable it instead."""
+    try:
+        deleted = lead_targets.delete_term(admin["company_id"], term_id)
+    except lead_targets.CatalogProtectedError as e:
+        raise HTTPException(409, str(e))
+    if not deleted:
+        raise HTTPException(404, "Term not found")
+    return deleted
+
+
 @app.patch("/api/admin/leads/locations/{location_id}")
 def toggle_leads_location(
     location_id: int, body: ToggleEnabledRequest, admin: dict = Depends(require_admin),
@@ -2516,6 +2531,20 @@ def toggle_leads_location(
     if not updated:
         raise HTTPException(404, "Location not found")
     return updated
+
+
+@app.delete("/api/admin/leads/locations/{location_id}")
+def delete_leads_location(location_id: int, admin: dict = Depends(require_admin)):
+    """Hard-delete one hand-added location. A location still in the
+    checked-in catalog (`geography.json`) refuses with 409 — same reasoning
+    as `delete_leads_term`. Disable it instead."""
+    try:
+        deleted = lead_targets.delete_location(admin["company_id"], location_id)
+    except lead_targets.CatalogProtectedError as e:
+        raise HTTPException(409, str(e))
+    if not deleted:
+        raise HTTPException(404, "Location not found")
+    return deleted
 
 
 @app.put("/api/admin/leads/overrides")

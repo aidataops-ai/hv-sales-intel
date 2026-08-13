@@ -442,6 +442,28 @@ export async function setTermEnabled(
   }
 }
 
+export type DeleteDimensionResult = { ok: true } | { ok: false; error: string }
+
+/** Hard-delete one hand-added term (admin). A term still in the checked-in
+ *  catalog answers 409 — the server's message says to disable it instead of
+ *  deleting it (a deleted catalog row is undone by the next collect run's
+ *  re-seed), surfaced here the same way `addTerms` surfaces a 400. */
+export async function deleteTerm(id: number): Promise<DeleteDimensionResult> {
+  try {
+    const res = await fetch(`${API_URL}/api/admin/leads/terms/${id}`, {
+      method: "DELETE",
+      credentials: "include",
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      return { ok: false, error: body.detail || `Failed (${res.status})` }
+    }
+    return { ok: true }
+  } catch {
+    return { ok: false, error: "Could not reach the server." }
+  }
+}
+
 /** Enable or disable one location (admin). Returns the updated row, or null. */
 export async function setLocationEnabled(
   id: number,
@@ -455,6 +477,24 @@ export async function setLocationEnabled(
     })
   } catch {
     return null
+  }
+}
+
+/** Hard-delete one hand-added location (admin). Same catalog-protection 409
+ *  as `deleteTerm`. */
+export async function deleteLocation(id: number): Promise<DeleteDimensionResult> {
+  try {
+    const res = await fetch(`${API_URL}/api/admin/leads/locations/${id}`, {
+      method: "DELETE",
+      credentials: "include",
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      return { ok: false, error: body.detail || `Failed (${res.status})` }
+    }
+    return { ok: true }
+  } catch {
+    return { ok: false, error: "Could not reach the server." }
   }
 }
 

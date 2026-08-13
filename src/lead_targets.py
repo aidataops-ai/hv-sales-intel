@@ -38,6 +38,20 @@ class TargetValidationError(ValueError):
     """A row handed to `add_terms` / `add_locations` is missing or malformed."""
 
 
+class CatalogProtectedError(ValueError):
+    """A delete targeted a row that is still in the checked-in catalog.
+
+    `ensure_targets` diff-seeds from `lead_config` unconditionally on every
+    collect run (Phase 4) — a catalog term/location that got DELETEd would
+    just be silently re-inserted on the very next run, which makes "delete"
+    look like it worked right up until the next hourly sweep undoes it.
+    `set_term_enabled(..., False)` / `set_location_enabled(..., False)` is
+    the durable off switch for anything in the catalog: the collector honors
+    `enabled` forever, catalog membership notwithstanding, and re-seeding
+    never flips it back on. Only a hand-added row (not in the catalog at
+    all) can actually be removed."""
+
+
 def resolve_company_id() -> str:
     """The single tenant collection runs for.
 
@@ -333,6 +347,56 @@ def set_term_enabled(company_id: str, term_id: int, enabled: bool) -> dict | Non
     return rows[0] if rows else None
 
 
+def delete_term(company_id: str, term_id: int) -> dict | None:
+    """Hard-delete one hand-added term, scoped to the tenant. Returns the
+    deleted row, or `None` if it didn't exist (a stray id / another tenant's).
+
+    Raises `CatalogProtectedError` — see its docstring for why — if the term
+    string is still in `role_terms()`; the caller (the admin route) maps that
+    to a 409 telling the operator to disable instead. `target_runs` and
+    `target_overrides` rows referencing this term cascade on the FK, so a
+    hand-added term with sweep history or a pin cleans up in one DELETE.
+    """
+    from src.storage import _get_client
+
+    client = _get_client()
+    if not client or not company_id or not term_id:
+        return None
+    try:
+        rows = (
+            client.table("search_terms")
+            .select("*")
+            .eq("company_id", company_id)
+            .eq("id", term_id)
+            .limit(1)
+            .execute()
+        ).data or []
+    except Exception as e:
+        log.warning("[leads.delete_term.read_error] %s: %s", type(e).__name__, str(e)[:200])
+        return None
+    if not rows:
+        return None
+    row = rows[0]
+
+    catalog_terms = {t["term"] for t in lead_config.role_terms()}
+    if row["term"] in catalog_terms:
+        raise CatalogProtectedError(
+            f"{row['term']!r} is in the checked-in catalog — disable it instead of "
+            "deleting it; deleting it would be undone by the next run's re-seed."
+        )
+
+    try:
+        client.table("search_terms").delete().eq("company_id", company_id).eq(
+            "id", term_id
+        ).execute()
+    except Exception as e:
+        log.warning("[leads.delete_term.write_error] %s: %s", type(e).__name__, str(e)[:200])
+        return None
+    log.info("[leads.delete_term] company=%s term_id=%s term=%s",
+             company_id, term_id, row["term"])
+    return row
+
+
 def set_location_enabled(company_id: str, location_id: int, enabled: bool) -> dict | None:
     """Flip one location's `enabled`, scoped to the tenant. Returns the row.
 
@@ -358,6 +422,54 @@ def set_location_enabled(company_id: str, location_id: int, enabled: bool) -> di
         return None
     rows = result.data or []
     return rows[0] if rows else None
+
+
+def delete_location(company_id: str, location_id: int) -> dict | None:
+    """Hard-delete one hand-added location, scoped to the tenant. Returns the
+    deleted row, or `None` if it didn't exist. Same catalog-protection rule
+    as `delete_term` — see `CatalogProtectedError` for why — checked against
+    `locations()`'s `query` strings.
+    """
+    from src.storage import _get_client
+
+    client = _get_client()
+    if not client or not company_id or not location_id:
+        return None
+    try:
+        rows = (
+            client.table("search_locations")
+            .select("*")
+            .eq("company_id", company_id)
+            .eq("id", location_id)
+            .limit(1)
+            .execute()
+        ).data or []
+    except Exception as e:
+        log.warning("[leads.delete_location.read_error] %s: %s", type(e).__name__, str(e)[:200])
+        return None
+    if not rows:
+        return None
+    row = rows[0]
+
+    catalog_locations = {l["query"] for l in lead_config.locations()}
+    if row["location"] in catalog_locations:
+        raise CatalogProtectedError(
+            f"{row['location']!r} is in the checked-in catalog — disable it instead of "
+            "deleting it; deleting it would be undone by the next run's re-seed."
+        )
+
+    try:
+        client.table("search_locations").delete().eq("company_id", company_id).eq(
+            "id", location_id
+        ).execute()
+    except Exception as e:
+        log.warning(
+            "[leads.delete_location.write_error] %s: %s", type(e).__name__, str(e)[:200]
+        )
+        return None
+    log.info("[leads.delete_location] company=%s location_id=%s location=%s",
+             company_id, location_id, row["location"])
+    return row
 
 
 def set_override(

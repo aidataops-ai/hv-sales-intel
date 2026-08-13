@@ -51,10 +51,18 @@ def test_toggle_term_requires_admin():
     ).status_code == 401
 
 
+def test_delete_term_requires_admin():
+    assert client.delete("/api/admin/leads/terms/1").status_code == 401
+
+
 def test_toggle_location_requires_admin():
     assert client.patch(
         "/api/admin/leads/locations/1", json={"enabled": True}
     ).status_code == 401
+
+
+def test_delete_location_requires_admin():
+    assert client.delete("/api/admin/leads/locations/1").status_code == 401
 
 
 def test_set_override_requires_admin():
@@ -230,6 +238,80 @@ def test_toggle_location_returns_the_updated_row(monkeypatch):
     resp = client.patch("/api/admin/leads/locations/2", json={"enabled": True})
     assert resp.status_code == 200
     assert resp.json()["enabled"] is True
+
+
+# --------------------------------------------------------------------------
+# DELETE /api/admin/leads/terms/{id} and /locations/{id} (Phase 5)
+#
+# `ensure_targets` now diff-seeds from the checked-in catalog on every
+# collect run, so a DELETEd catalog row would just be resurrected next run.
+# The server refuses those with 409 rather than silently no-op-ing or
+# building a tombstone — see `lead_targets.CatalogProtectedError`.
+# --------------------------------------------------------------------------
+
+
+def test_delete_term_returns_409_for_a_catalog_row(monkeypatch):
+    _override_admin("c1")
+
+    def boom(company_id, term_id):
+        raise lead_targets.CatalogProtectedError(
+            "'medical assistant' is in the checked-in catalog — disable it instead"
+        )
+
+    monkeypatch.setattr(lead_targets, "delete_term", boom)
+    resp = client.delete("/api/admin/leads/terms/1")
+    assert resp.status_code == 409
+    assert "disable it instead" in resp.json()["detail"]
+
+
+def test_delete_term_404s_when_not_found(monkeypatch):
+    _override_admin("c1")
+    monkeypatch.setattr(lead_targets, "delete_term", lambda c, i: None)
+    resp = client.delete("/api/admin/leads/terms/99")
+    assert resp.status_code == 404
+
+
+def test_delete_term_removes_a_hand_added_row(monkeypatch):
+    _override_admin("c1")
+    monkeypatch.setattr(
+        lead_targets, "delete_term",
+        lambda c, i: {"id": i, "term": "made-up keyword", "service_line": "X"},
+    )
+    resp = client.delete("/api/admin/leads/terms/5")
+    assert resp.status_code == 200
+    assert resp.json()["term"] == "made-up keyword"
+
+
+def test_delete_location_returns_409_for_a_catalog_row(monkeypatch):
+    _override_admin("c1")
+
+    def boom(company_id, location_id):
+        raise lead_targets.CatalogProtectedError(
+            "'Tampa, FL' is in the checked-in catalog — disable it instead"
+        )
+
+    monkeypatch.setattr(lead_targets, "delete_location", boom)
+    resp = client.delete("/api/admin/leads/locations/1")
+    assert resp.status_code == 409
+    assert "disable it instead" in resp.json()["detail"]
+
+
+def test_delete_location_404s_when_not_found(monkeypatch):
+    _override_admin("c1")
+    monkeypatch.setattr(lead_targets, "delete_location", lambda c, i: None)
+    resp = client.delete("/api/admin/leads/locations/99")
+    assert resp.status_code == 404
+
+
+def test_delete_location_removes_a_hand_added_row(monkeypatch):
+    _override_admin("c1")
+    monkeypatch.setattr(
+        lead_targets, "delete_location",
+        lambda c, i: {"id": i, "location": "Ocala, FL", "state": "FL"},
+    )
+    resp = client.delete("/api/admin/leads/locations/7")
+    assert resp.status_code == 200
+    assert resp.json()["location"] == "Ocala, FL"
 
 
 # --------------------------------------------------------------------------

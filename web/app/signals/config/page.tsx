@@ -1,12 +1,13 @@
 "use client"
 
 import { useCallback, useEffect, useMemo, useState } from "react"
-import { Loader2, Plus, MapPin, Tags, Pin } from "lucide-react"
+import { Loader2, Plus, MapPin, Tags, Pin, X } from "lucide-react"
 
 import SignalsTopBar from "@/components/signals-top-bar"
 import { useAuth } from "@/lib/auth"
 import {
-  addLocations, addTerms, getSignalsConfig, setLocationEnabled, setOverride, setTermEnabled,
+  addLocations, addTerms, deleteLocation, deleteTerm, getSignalsConfig,
+  setLocationEnabled, setOverride, setTermEnabled,
   type AddDimensionResult, type CatalogState, type NewLocationRow,
   type SearchLocation, type SearchTerm, type SignalsConfig, type SweepSourceStatus,
   type TargetOverride,
@@ -85,15 +86,41 @@ function ConfigBody({
   config: SignalsConfig
   onChanged: () => Promise<void>
 }) {
+  // Catalog membership, computed once here rather than per-chip: a row is
+  // "in the catalog" if its term/location string still appears in the
+  // checked-in config, which is exactly the condition delete refuses on
+  // server-side (CatalogProtectedError) — the client-side check exists so
+  // the × affordance never shows on a row delete would 409 anyway.
+  const catalogTermSet = useMemo(
+    () => new Set(config.catalog.tracks.flatMap((t) => t.terms)),
+    [config.catalog.tracks],
+  )
+  const catalogLocationSet = useMemo(
+    () =>
+      new Set(
+        config.catalog.states.flatMap((s) => [
+          ...(s.statewide_query ? [s.statewide_query] : []),
+          ...s.cities,
+        ]),
+      ),
+    [config.catalog.states],
+  )
+
   return (
     <>
       <SweepStatusStrip sweep={config.sweep} />
       <GeographyPanel
         locations={config.locations}
         catalog={config.catalog}
+        catalogLocationSet={catalogLocationSet}
         onChanged={onChanged}
       />
-      <TracksPanel terms={config.terms} catalog={config.catalog} onChanged={onChanged} />
+      <TracksPanel
+        terms={config.terms}
+        catalog={config.catalog}
+        catalogTermSet={catalogTermSet}
+        onChanged={onChanged}
+      />
       <OverridesPanel
         overrides={config.overrides}
         terms={config.terms}
@@ -148,10 +175,12 @@ function GeographyPanel({
   locations,
   onChanged,
   catalog,
+  catalogLocationSet,
 }: {
   locations: SearchLocation[]
   onChanged: () => Promise<void>
   catalog: SignalsConfig["catalog"]
+  catalogLocationSet: Set<string>
 }) {
   const [adding, setAdding] = useState(false)
   const byState = useMemo(() => groupBy(locations, (l) => l.state), [locations])
@@ -202,6 +231,7 @@ function GeographyPanel({
             catalogCities={
               catalog.states.find((s) => s.code === state)?.cities ?? []
             }
+            catalogLocationSet={catalogLocationSet}
             onChanged={onChanged}
           />
         ))}
@@ -278,11 +308,13 @@ function StateRow({
   state,
   locations,
   catalogCities,
+  catalogLocationSet,
   onChanged,
 }: {
   state: string
   locations: SearchLocation[]
   catalogCities: string[]
+  catalogLocationSet: Set<string>
   onChanged: () => Promise<void>
 }) {
   const [addingCity, setAddingCity] = useState(false)
@@ -348,7 +380,12 @@ function StateRow({
       <div className="max-h-44 overflow-y-auto">
         <div className="flex flex-wrap gap-1">
           {sorted.map((loc) => (
-            <LocationChip key={loc.id} location={loc} onChanged={onChanged} />
+            <LocationChip
+              key={loc.id}
+              location={loc}
+              isCatalog={catalogLocationSet.has(loc.location)}
+              onChanged={onChanged}
+            />
           ))}
           {addable.map((city) => (
             <AddCityChip key={city} label={city} onAdd={() => addCity(city)} />
@@ -379,15 +416,23 @@ function StateRow({
 }
 
 /** One `search_locations` row (a city or the statewide query) as a toggleable
- *  pill — teal when enabled, grey when off. Clicking flips exactly this row. */
+ *  pill — teal when enabled, grey when off. Clicking the label flips exactly
+ *  this row. A hand-added (non-catalog) row also gets a small × — visible on
+ *  hover, kept subtle — that hard-deletes it. A catalog row shows no ×: the
+ *  server would 409 it anyway (`CatalogProtectedError` — deleting it would
+ *  just be undone by the next collect run's re-seed), so the affordance
+ *  would only be a promise the page can't keep. */
 function LocationChip({
   location,
+  isCatalog,
   onChanged,
 }: {
   location: SearchLocation
+  isCatalog: boolean
   onChanged: () => Promise<void>
 }) {
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const label = location.granularity === "state" ? "Statewide" : location.location
 
   async function toggle() {
@@ -397,20 +442,55 @@ function LocationChip({
     setBusy(false)
   }
 
+  async function remove() {
+    setBusy(true)
+    setError(null)
+    const res = await deleteLocation(location.id)
+    if (res.ok) {
+      await onChanged()
+    } else {
+      setError(res.error)
+      setBusy(false)
+    }
+  }
+
   return (
-    <button
-      onClick={toggle}
-      disabled={busy}
-      title={`${label} — click to ${location.enabled ? "disable" : "enable"}`}
-      className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border transition disabled:opacity-50 ${
+    <span
+      className={`group relative inline-flex items-center gap-0.5 text-[11px] pl-2 pr-1 py-0.5 rounded-full border transition ${
         location.enabled
           ? "bg-teal-50 dark:bg-[#284b63]/40 border-teal-500 text-teal-700 dark:text-teal-400"
-          : "bg-white dark:bg-night-800 border-gray-200 dark:border-white/10 text-gray-500 dark:text-gray-400 hover:border-gray-400 line-through decoration-gray-300"
+          : "bg-white dark:bg-night-800 border-gray-200 dark:border-white/10 text-gray-500 dark:text-gray-400 hover:border-gray-400"
       }`}
     >
-      {busy && <Loader2 className="w-3 h-3 animate-spin" />}
-      {label}
-    </button>
+      <button
+        onClick={toggle}
+        disabled={busy}
+        title={
+          isCatalog
+            ? `${label} — from the checked-in catalog; disable instead of removing`
+            : `${label} — click to ${location.enabled ? "disable" : "enable"}`
+        }
+        className={`disabled:opacity-50 ${!location.enabled ? "line-through decoration-gray-300" : ""}`}
+      >
+        {busy && <Loader2 className="w-3 h-3 animate-spin inline-block mr-1 align-[-1px]" />}
+        {label}
+      </button>
+      {!isCatalog && (
+        <button
+          onClick={remove}
+          disabled={busy}
+          title="Remove — not in the config catalog"
+          className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition disabled:opacity-50"
+        >
+          <X className="w-3 h-3" />
+        </button>
+      )}
+      {error && (
+        <span className="absolute top-full left-0 mt-1 z-10 text-[10px] text-red-600 dark:text-red-400 bg-white dark:bg-night-900 border border-red-200 dark:border-red-500/30 rounded px-1.5 py-0.5 whitespace-nowrap shadow-sm">
+          {error}
+        </span>
+      )}
+    </span>
   )
 }
 
@@ -536,10 +616,12 @@ function TracksPanel({
   terms,
   onChanged,
   catalog,
+  catalogTermSet,
 }: {
   terms: SearchTerm[]
   onChanged: () => Promise<void>
   catalog: SignalsConfig["catalog"]
+  catalogTermSet: Set<string>
 }) {
   const [adding, setAdding] = useState(false)
   const byTrack = useMemo(() => groupBy(terms, (t) => t.service_line), [terms])
@@ -569,7 +651,13 @@ function TracksPanel({
 
       <div className="divide-y divide-gray-100 dark:divide-white/5">
         {Object.entries(byTrack).map(([track, trackTerms]) => (
-          <TrackRow key={track} track={track} terms={trackTerms} onChanged={onChanged} />
+          <TrackRow
+            key={track}
+            track={track}
+            terms={trackTerms}
+            catalogTermSet={catalogTermSet}
+            onChanged={onChanged}
+          />
         ))}
         {Object.keys(byTrack).length === 0 && (
           <EmptyRow>No tracks yet.</EmptyRow>
@@ -582,10 +670,12 @@ function TracksPanel({
 function TrackRow({
   track,
   terms,
+  catalogTermSet,
   onChanged,
 }: {
   track: string
   terms: SearchTerm[]
+  catalogTermSet: Set<string>
   onChanged: () => Promise<void>
 }) {
   const [addingKw, setAddingKw] = useState(false)
@@ -598,7 +688,12 @@ function TrackRow({
           <div className="text-sm font-medium text-gray-900 dark:text-white">{track}</div>
           <div className="flex flex-wrap gap-1.5 mt-1.5">
             {terms.map((t) => (
-              <TermPill key={t.id} term={t} onChanged={onChanged} />
+              <TermPill
+                key={t.id}
+                term={t}
+                isCatalog={catalogTermSet.has(t.term)}
+                onChanged={onChanged}
+              />
             ))}
           </div>
         </div>
@@ -630,16 +725,21 @@ function TrackRow({
 }
 
 /** One `search_terms` row as a clickable pill — teal/on, grey-strikethrough
- *  off, styled to match the geography panel's location chips. Replaces the
- *  old static keyword span now that a term carries its own `enabled`. */
+ *  off, styled to match the geography panel's location chips. Clicking the
+ *  label flips `enabled`; a hand-added (non-catalog) term also gets a
+ *  hover-visible × that hard-deletes it — see `LocationChip` for why
+ *  catalog rows show no ×. */
 function TermPill({
   term,
+  isCatalog,
   onChanged,
 }: {
   term: SearchTerm
+  isCatalog: boolean
   onChanged: () => Promise<void>
 }) {
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   async function toggle() {
     setBusy(true)
@@ -648,20 +748,55 @@ function TermPill({
     setBusy(false)
   }
 
+  async function remove() {
+    setBusy(true)
+    setError(null)
+    const res = await deleteTerm(term.id)
+    if (res.ok) {
+      await onChanged()
+    } else {
+      setError(res.error)
+      setBusy(false)
+    }
+  }
+
   return (
-    <button
-      onClick={toggle}
-      disabled={busy}
-      title={`${term.term} — click to ${term.enabled ? "disable" : "enable"}`}
-      className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full border transition disabled:opacity-50 ${
+    <span
+      className={`group relative inline-flex items-center gap-0.5 text-[11px] pl-2 pr-1 py-0.5 rounded-full border transition ${
         term.enabled
           ? "bg-teal-50 dark:bg-[#284b63]/40 border-teal-500 text-teal-700 dark:text-teal-400"
-          : "bg-white dark:bg-night-800 border-gray-200 dark:border-white/10 text-gray-500 dark:text-gray-400 hover:border-gray-400 line-through decoration-gray-300"
+          : "bg-white dark:bg-night-800 border-gray-200 dark:border-white/10 text-gray-500 dark:text-gray-400 hover:border-gray-400"
       }`}
     >
-      {busy && <Loader2 className="w-3 h-3 animate-spin" />}
-      {term.term}
-    </button>
+      <button
+        onClick={toggle}
+        disabled={busy}
+        title={
+          isCatalog
+            ? `${term.term} — from the checked-in catalog; disable instead of removing`
+            : `${term.term} — click to ${term.enabled ? "disable" : "enable"}`
+        }
+        className={`disabled:opacity-50 ${!term.enabled ? "line-through decoration-gray-300" : ""}`}
+      >
+        {busy && <Loader2 className="w-3 h-3 animate-spin inline-block mr-1 align-[-1px]" />}
+        {term.term}
+      </button>
+      {!isCatalog && (
+        <button
+          onClick={remove}
+          disabled={busy}
+          title="Remove — not in the config catalog"
+          className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition disabled:opacity-50"
+        >
+          <X className="w-3 h-3" />
+        </button>
+      )}
+      {error && (
+        <span className="absolute top-full left-0 mt-1 z-10 text-[10px] text-red-600 dark:text-red-400 bg-white dark:bg-night-900 border border-red-200 dark:border-red-500/30 rounded px-1.5 py-0.5 whitespace-nowrap shadow-sm">
+          {error}
+        </span>
+      )}
+    </span>
   )
 }
 
