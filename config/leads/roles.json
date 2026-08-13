@@ -28,7 +28,11 @@
     { "term": "chiropractic assistant",             "service_line": "Virtual Chiropractic Assistant" },
     { "term": "chiropractic receptionist",          "service_line": "Virtual Chiropractic Assistant" },
     { "term": "chiropractic front desk",            "service_line": "Virtual Chiropractic Assistant" },
-    { "term": "chiropractic office coordinator",    "service_line": "Virtual Chiropractic Assistant" }
+    { "term": "chiropractic office coordinator",    "service_line": "Virtual Chiropractic Assistant" },
+
+    { "term": "medical scribe",                     "service_line": "Virtual Medical Scribe" },
+    { "term": "clinical scribe",                    "service_line": "Virtual Medical Scribe" },
+    { "term": "physician scribe",                   "service_line": "Virtual Medical Scribe" }
   ],
 
   "_term_note": "Narrow ambiguous terms rather than deleting them. 'staffing coordinator' returns recruiting agencies — an explicit DISCARD category and pure token waste; 'home health staffing coordinator' does not.",
