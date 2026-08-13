@@ -230,6 +230,7 @@ def search_jobs(
 
     for source in sources:
         started = time.time()
+        started_mono = time.monotonic()
         try:
             df = scrape_jobs(
                 site_name=[source],
@@ -242,9 +243,11 @@ def search_jobs(
                 verbose=0,
             )
         except Exception as e:
+            elapsed_s = time.monotonic() - started_mono
             stats[source] = {
                 "rows": 0, "dropped": 0,
                 "ms": int((time.time() - started) * 1000),
+                "elapsed_s": elapsed_s,
                 "error": f"{type(e).__name__}: {str(e)[:160]}",
             }
             log.warning("[leads.board.error] source=%s term=%s location=%s %s",
@@ -252,6 +255,7 @@ def search_jobs(
             continue
 
         ms = int((time.time() - started) * 1000)
+        elapsed_s = time.monotonic() - started_mono
         records = [] if df is None or df.empty else df.to_dict("records")
 
         kept = 0
@@ -264,7 +268,10 @@ def search_jobs(
             found.append(row)
             kept += 1
 
-        stats[source] = {"rows": kept, "dropped": dropped, "ms": ms, "error": None}
+        stats[source] = {
+            "rows": kept, "dropped": dropped, "ms": ms,
+            "elapsed_s": elapsed_s, "error": None,
+        }
         log.info("[leads.board] source=%s term=%r location=%r kept=%d dropped=%d ms=%d",
                  source, term, location, kept, dropped, ms)
 

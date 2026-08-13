@@ -3,6 +3,12 @@ name: Lead Pipeline
 # Runs the collect -> qualify sweep that used to live in Vercel Cron. A GitHub
 # runner has no serverless wall-clock ceiling, so the full sweep runs in one
 # shot via scripts/run_leads.py instead of two bounded hourly HTTP stages.
+#
+# Collect is a wall-clock budget, not a target count (instant-signals refactor,
+# Phase 2): it claims the stalest due location per source one at a time, cross-
+# es it with every enabled term, and stamps only once the location's sweep
+# finishes — Indeed first, LinkedIn on whatever budget is left. See
+# docs/refactor/instant-signals-targets.md §3.
 on:
   schedule:
     - cron: '0 * * * *'   # hourly, on the hour (UTC)
@@ -13,8 +19,8 @@ on:
         type: choice
         default: both
         options: [both, collect, qualify]
-      targets:
-        description: 'Search targets to claim (collect)'
+      budget-minutes:
+        description: 'Collect wall-clock budget (minutes)'
         default: '40'
 
 concurrency:
@@ -49,5 +55,5 @@ jobs:
         run: |
           python scripts/run_leads.py \
             --stage "${{ github.event.inputs.stage || 'both' }}" \
-            --targets "${{ github.event.inputs.targets || '40' }}" \
+            --budget-minutes "${{ github.event.inputs.budget-minutes || '40' }}" \
             --verbose

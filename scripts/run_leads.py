@@ -11,8 +11,8 @@ or a debugging pass can be as large as it needs to be.
 It is not a second implementation: `lead_targets`, `job_boards`, `lead_store`
 and `lead_qualifier` are the same code the cron drives. Only the wrapper differs.
 
-    python scripts/run_leads.py --stage both --targets 40
-    python scripts/run_leads.py --stage collect --sources indeed --targets 10
+    python scripts/run_leads.py --stage both --budget-minutes 40
+    python scripts/run_leads.py --stage collect --sources indeed --budget-minutes 10
     python scripts/run_leads.py --stage qualify --limit 200
     python scripts/run_leads.py --preflight        # one cheap model call
 
@@ -120,57 +120,165 @@ def preflight(company_id: str) -> bool:
     return ok
 
 
-def collect(company_id: str, targets: int, sources: list[str]) -> dict:
-    _rule(f"COLLECT — {targets} targets, sources={','.join(sources)}")
-    seeded = lead_targets.ensure_targets(company_id)
-    if seeded["inserted"]:
-        print(f"  seeded {seeded['inserted']} targets from config/leads/")
+_SOURCE_ORDER = ("indeed", "linkedin")
 
-    claimed = lead_targets.claim_targets(company_id, targets)
-    print(f"  claimed {len(claimed)} targets\n")
+
+def collect(company_id: str, budget_minutes: float, sources: list[str]) -> dict:
+    """The two-phase budget loop (plan §3): claim the stalest due location for
+    one source at a time, cross it with every enabled term, search, upsert,
+    then stamp — only once every term for that location has actually run.
+
+    Indeed sweeps first and LinkedIn gets whatever budget is left, because
+    Indeed answers in ~1.5s against LinkedIn's ~22s; sharing one deadline
+    across both phases (rather than a budget each) is what makes that
+    trade-off automatic instead of a config knob.
+    """
+    ordered_sources = [s for s in _SOURCE_ORDER if s in sources]
+    _rule(f"COLLECT — budget={budget_minutes:g} min, sources={','.join(ordered_sources)}")
+
+    seeded = lead_targets.ensure_targets(company_id)
+    if seeded["terms"] or seeded["locations"]:
+        print(f"  seeded {seeded['terms']} terms, {seeded['locations']} locations from config")
+
+    # Fetched ONCE per run, not per claimed location — neither the enabled
+    # term list nor the override pins change mid-sweep, and re-querying them
+    # per location would be two extra round trips for every claim.
+    terms = lead_targets.enabled_terms(company_id)
+    config = lead_targets.list_config(company_id)
+    overrides = {(o["term_id"], o["location_id"]): o["enabled"] for o in config["overrides"]}
+    print(f"  terms={len(terms)}  locations={len(config['locations'])}  "
+          f"overrides={len(overrides)}\n")
+
+    if not terms:
+        print("  no enabled terms — nothing to search")
+        return {}
 
     # Imported here rather than at module scope: it pulls in jobspy and pandas,
     # which a qualify-only or preflight-only run has no reason to load.
     from src.job_boards import search_jobs
 
     totals = Counter()
+    per_source = {s: Counter() for s in ordered_sources}
     started = time.time()
-    for i, target in enumerate(claimed, 1):
-        t0 = time.time()
-        try:
-            rows, stats = search_jobs(
-                target["term"], target["location"], sources=sources, target=target,
+    deadline = time.monotonic() + budget_minutes * 60
+    loc_index = 0
+
+    for source in ordered_sources:
+        cursor_col = f"last_{source}_at"
+        print(f"  -- {source} --")
+        while time.monotonic() < deadline:
+            claimed = lead_targets.claim_locations(company_id, source, limit=1)
+            if not claimed:
+                print(f"  {source}: nothing due — sweep is caught up")
+                break
+            location = claimed[0]
+            loc_index += 1
+
+            window = lead_targets.adaptive_window_hours(
+                location.get(cursor_col), settings.lead_window_buffer_hours
             )
-        except Exception as e:
-            print(f"  [{i:>3}/{len(claimed)}] {target['term'][:28]:30s} "
-                  f"{target['location'][:18]:20s} ERROR {type(e).__name__}")
-            totals["errors"] += 1
-            continue
+            rows_for_loc = lead_targets.build_claim_rows(location, terms, overrides)
 
-        written = lead_store.upsert_postings(rows) if rows else 0
-        lead_targets.record_target_result(target["id"], len(rows))
-        totals["rows"] += len(rows)
-        totals["written"] += written
-        if not rows:
-            totals["zero"] += 1
+            t0 = time.time()
+            loc_rows = 0
+            loc_new = 0
+            completed = True
+            for row in rows_for_loc:
+                if time.monotonic() >= deadline:
+                    completed = False  # deadline hit mid-location — the
+                    break              # unfinished terms are redone next run
 
-        per_source = " ".join(
-            f"{s}={st['rows']}" + (f"!{st['error'][:20]}" if st.get("error") else "")
-            for s, st in stats.items()
-        )
-        print(f"  [{i:>3}/{len(claimed)}] {target['term'][:28]:30s} "
-              f"{target['location'][:18]:20s} {len(rows):>3} kept  "
-              f"{per_source:28s} {time.time() - t0:5.1f}s")
+                try:
+                    found, stats = search_jobs(
+                        row["term"], row["location"],
+                        sources=[source], target=row, hours_old=window,
+                    )
+                except Exception as e:
+                    print(f"      ERROR {row['term'][:28]:30s} {type(e).__name__}: "
+                          f"{str(e)[:80]}")
+                    totals["errors"] += 1
+                    continue
+
+                stat = stats.get(source, {})
+                if stat.get("error"):
+                    totals["errors"] += 1
+                row_count = stat.get("rows", 0)
+                if found:
+                    existing = lead_store.existing_external_ids(
+                        source, [r["external_id"] for r in found if r.get("external_id")]
+                    )
+                    new_count = sum(
+                        1 for r in found if r.get("external_id") not in existing
+                    )
+                    totals["written"] += lead_store.upsert_postings(found)
+                else:
+                    new_count = 0
+                lead_targets.record_target_result(
+                    row["term_id"], row["location_id"], source, row_count, new_count,
+                )
+                loc_rows += row_count
+                loc_new += new_count
+                totals["rows"] += row_count
+                totals["new"] += new_count
+
+            if completed:
+                # Only stamp + record the sweep once EVERY term ran. Stamping
+                # an incomplete location would tell the next run it is fresh
+                # when part of it was never actually searched — crash-safe
+                # semantics require the whole location to finish first.
+                lead_targets.stamp_location(company_id, location["id"], source)
+                lead_targets.record_location_sweep(company_id, location["id"], source, loc_rows)
+            else:
+                totals["incomplete"] += 1
+
+            per_source[source]["locations"] += 1
+            per_source[source]["rows"] += loc_rows
+            per_source[source]["new"] += loc_new
+
+            status = "" if completed else "  INCOMPLETE (budget)"
+            print(f"  [{loc_index:>3}] {source:8s} {location['location'][:26]:28s} "
+                  f"{loc_rows:>3} kept ({loc_new} new)  window={window:>3}h  "
+                  f"{time.time() - t0:5.1f}s{status}")
+
+            if not completed:
+                break  # budget exhausted mid-location; stop this source's phase
+        print()
 
     elapsed = time.time() - started
-    print(f"\n  {totals['rows']} rows kept, {totals['written']} upserted, "
-          f"{totals['zero']} zero-row targets, {totals['errors']} errors "
-          f"in {elapsed / 60:.1f} min")
+    print(f"  budget used: {elapsed / 60:.1f} / {budget_minutes:g} min\n")
 
-    if claimed and totals["zero"] == len(claimed):
-        print("\n  ALERT: every target returned zero rows. This is the Indeed "
-              "API-key\n         rotation failure mode — check the "
-              "python-jobspy pin (ADR-02).")
+    for source in ordered_sources:
+        s = per_source[source]
+        novelty = (s["new"] / s["rows"] * 100) if s["rows"] else 0.0
+        print(f"  {source:10s}: {s['locations']} locations swept, {s['rows']} rows "
+              f"({s['new']} new, {novelty:.0f}% novelty)")
+
+    status = lead_targets.sweep_status(company_id)
+    for source, st in status.items():
+        oldest = (
+            f"{st['oldest_cursor_age_hours']}h"
+            if st["oldest_cursor_age_hours"] is not None else "never"
+        )
+        print(f"  {source:10s} sweep: {st['coverage_pct']}% coverage, "
+              f"{st['never_swept']} never swept, oldest cursor {oldest}")
+
+    print(f"\n  {totals['rows']} rows kept, {totals['written']} written, "
+          f"{totals['new']} new, {totals['incomplete']} incomplete locations, "
+          f"{totals['errors']} errors")
+
+    # The Indeed failure mode is silence, not an error (ADR-02): the library
+    # reaches an undocumented mobile API whose key can rotate upstream, after
+    # which every query returns zero rows and nothing raises. A source that
+    # swept at least one location and kept nothing across all of them is the
+    # tripwire.
+    alert_sources = [
+        s for s in ordered_sources
+        if per_source[s]["locations"] and per_source[s]["rows"] == 0
+    ]
+    if alert_sources:
+        print(f"\n  ALERT: {', '.join(alert_sources)} swept locations but returned "
+              "zero rows. This is the Indeed API-key\n         rotation failure "
+              "mode — check the python-jobspy pin (ADR-02).")
     return dict(totals)
 
 
@@ -253,8 +361,8 @@ def summarise(company_id: str) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", choices=("collect", "qualify", "both"), default="both")
-    parser.add_argument("--targets", type=int, default=settings.lead_collect_batch,
-                        help="search targets to claim (collect)")
+    parser.add_argument("--budget-minutes", type=float, default=settings.lead_budget_minutes,
+                        help="wall-clock ceiling for the collect phase")
     parser.add_argument("--limit", type=int, default=None,
                         help="postings to qualify; default = everything unqualified")
     parser.add_argument("--sources", default=None,
@@ -296,7 +404,7 @@ def main() -> int:
             return 1
 
     if args.stage in ("collect", "both"):
-        collect(company_id, args.targets, sources)
+        collect(company_id, args.budget_minutes, sources)
 
     if args.stage in ("qualify", "both"):
         # Default to draining everything collected rather than one cron-sized

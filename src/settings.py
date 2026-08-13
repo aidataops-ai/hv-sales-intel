@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     lead_linkedin_stale_hours: int = 24
     lead_window_buffer_hours: int = 12
     lead_zero_streak_cap: int = 4
+    # The HTTP cron route's own budget — much smaller than
+    # `lead_budget_minutes`, which is the GitHub Actions runner's ceiling.
+    # This route still runs inside a serverless invocation with its own
+    # wall-clock limit, so its default has to leave headroom for the qualify
+    # stage and function overhead rather than spending the whole invocation
+    # on collect.
+    lead_cron_budget_minutes: int = 10
     # Shared secret for the cron stages, matching the existing webhook
     # pattern. Empty disables the cron routes outright rather than leaving
     # them open.

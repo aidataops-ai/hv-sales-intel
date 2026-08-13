@@ -2077,27 +2077,31 @@ def _require_cron_secret(
 # GET is registered alongside POST on both stages because Vercel's scheduler
 # only ever issues a GET. The stages are idempotent and claim a bounded slice,
 # so neither is a meaningful mutation of anything a GET shouldn't touch.
+_SOURCE_ORDER = ("indeed", "linkedin")
+
+
 @app.post("/api/cron/leads/collect")
 @app.get("/api/cron/leads/collect")
 def cron_collect_leads(
     company_id: str | None = Query(None, description="Scope to one tenant"),
-    limit: int | None = Query(None, ge=1, le=200),
+    budget_minutes: float | None = Query(None, gt=0, le=45),
     x_cron_secret: str | None = Header(default=None, alias="X-Cron-Secret"),
     authorization: str | None = Header(default=None),
 ):
-    """Claim the least-recently-run targets, search the boards, upsert postings.
+    """Two-phase budget sweep (plan §3): claim the stalest due location for one
+    source at a time, cross it with every enabled term, search, upsert, and
+    stamp only once every term for that location has run.
 
-    Boards rotate on wall clock rather than a stored cursor: consecutive
-    firings advance without any state to lose, and a crashed run costs at most
-    one slice of freshness.
+    A much smaller default budget than the GitHub Actions path
+    (`lead_cron_budget_minutes`, default 10 min): this route still runs
+    inside a serverless invocation with its own wall-clock ceiling, unlike
+    `scripts/run_leads.py` on the Actions runner, which is the steady-state
+    path this route now shadows for a manual/quick trigger.
     """
     _require_cron_secret(x_cron_secret, authorization)
     from src.job_boards import search_jobs
 
-    batch = limit or app_settings.lead_collect_batch
-    # 30-minute buckets, so the LinkedIn cycle advances at a human-legible rate.
-    run_index = int(_time.time() // 1800)
-    sources = lead_targets.sources_for_run(run_index)
+    budget = budget_minutes or app_settings.lead_cron_budget_minutes
 
     try:
         tenant = company_id or lead_targets.resolve_company_id()
@@ -2105,50 +2109,106 @@ def cron_collect_leads(
         raise HTTPException(503, f"No lead tenant resolved: {e}")
 
     # Seeds on the very first run so collection works without a separate admin
-    # step. A no-op once the tenant has targets.
+    # step. A no-op once the tenant has locations.
     seeded = lead_targets.ensure_targets(tenant)
 
-    summary = {
-        "run_index": run_index, "sources": sources,
-        "company_id": tenant, "seeded": seeded["inserted"], "targets": 0,
-        "rows": 0, "written": 0, "zero_row_targets": 0, "errors": [],
-    }
+    # Fetched ONCE for the whole sweep — neither changes mid-run, and
+    # re-querying them per claimed location would double the DB round trips.
+    terms = lead_targets.enabled_terms(tenant)
+    config = lead_targets.list_config(tenant)
+    overrides = {(o["term_id"], o["location_id"]): o["enabled"] for o in config["overrides"]}
+    sources = [s for s in _SOURCE_ORDER if s in lead_config.enabled_sources()]
 
-    for target in lead_targets.claim_targets(tenant, batch):
-        summary["targets"] += 1
-        try:
-            rows, stats = search_jobs(
-                target["term"], target["location"],
-                sources=sources, target=target,
+    summary = {
+        "company_id": tenant, "sources": sources,
+        "seeded": seeded["terms"] + seeded["locations"],
+        "locations": 0, "rows": 0, "written": 0, "new": 0,
+        "incomplete": 0, "errors": [],
+    }
+    # Per-source zero-row tripwire bookkeeping: swept count + total rows.
+    per_source = {s: {"locations": 0, "rows": 0} for s in sources}
+
+    deadline = _time.monotonic() + budget * 60
+    for source in sources:
+        cursor_col = f"last_{source}_at"
+        while _time.monotonic() < deadline:
+            claimed = lead_targets.claim_locations(tenant, source, limit=1)
+            if not claimed:
+                break
+            location = claimed[0]
+            summary["locations"] += 1
+
+            window = lead_targets.adaptive_window_hours(
+                location.get(cursor_col), app_settings.lead_window_buffer_hours
             )
-        except Exception as e:
-            summary["errors"].append(f"{target['term']}@{target['location']}: {e}")
-            continue
-        for source, stat in stats.items():
-            if stat.get("error"):
-                summary["errors"].append(f"{source}: {stat['error']}")
-        summary["rows"] += len(rows)
-        if rows:
-            summary["written"] += lead_store.upsert_postings(rows)
-        else:
-            summary["zero_row_targets"] += 1
-        lead_targets.record_target_result(target["id"], len(rows))
+            rows_for_loc = lead_targets.build_claim_rows(location, terms, overrides)
+
+            loc_rows = 0
+            completed = True
+            for row in rows_for_loc:
+                if _time.monotonic() >= deadline:
+                    completed = False
+                    break
+                try:
+                    found, stats = search_jobs(
+                        row["term"], row["location"],
+                        sources=[source], target=row, hours_old=window,
+                    )
+                except Exception as e:
+                    summary["errors"].append(f"{row['term']}@{row['location']}: {e}")
+                    continue
+                stat = stats.get(source, {})
+                if stat.get("error"):
+                    summary["errors"].append(f"{source}: {stat['error']}")
+                row_count = stat.get("rows", 0)
+                if found:
+                    existing = lead_store.existing_external_ids(
+                        source, [r["external_id"] for r in found if r.get("external_id")]
+                    )
+                    new_count = sum(
+                        1 for r in found if r.get("external_id") not in existing
+                    )
+                    summary["written"] += lead_store.upsert_postings(found)
+                else:
+                    new_count = 0
+                lead_targets.record_target_result(
+                    row["term_id"], row["location_id"], source, row_count, new_count,
+                )
+                loc_rows += row_count
+                summary["rows"] += row_count
+                summary["new"] += new_count
+
+            if completed:
+                # Only stamp + record the sweep once every term ran — an
+                # incomplete location (deadline hit mid-loop) is redone next
+                # run instead of being marked fresh (crash-safe, plan §3).
+                lead_targets.stamp_location(tenant, location["id"], source)
+                lead_targets.record_location_sweep(tenant, location["id"], source, loc_rows)
+                per_source[source]["locations"] += 1
+                per_source[source]["rows"] += loc_rows
+            else:
+                summary["incomplete"] += 1
+                break  # budget exhausted mid-location; stop this source's phase
 
     # The Indeed failure mode is silence, not an error (ADR-02): the library
     # reaches an undocumented mobile API whose key can rotate upstream, after
-    # which every query returns zero rows and nothing raises. Log it loudly —
-    # this line is what an alert should watch.
-    if summary["targets"] and summary["zero_row_targets"] == summary["targets"]:
+    # which every query returns zero rows and nothing raises. A source that
+    # swept at least one location and kept nothing across all of them is the
+    # tripwire.
+    alert_sources = [
+        s for s, v in per_source.items() if v["locations"] and v["rows"] == 0
+    ]
+    if alert_sources:
         summary["alert"] = (
-            "Every target returned zero rows. Check the python-jobspy pin — "
-            "this is the Indeed API-key rotation failure mode."
+            f"{', '.join(alert_sources)} swept locations but returned zero rows. "
+            "Check the python-jobspy pin — this is the Indeed API-key rotation "
+            "failure mode."
         )
-        log.error("[leads.collect.zero_rows] targets=%d sources=%s",
-                  summary["targets"], sources)
+        log.error("[leads.collect.zero_rows] sources=%s", alert_sources)
     else:
-        log.info("[leads.collect] targets=%d rows=%d written=%d zero=%d",
-                 summary["targets"], summary["rows"], summary["written"],
-                 summary["zero_row_targets"])
+        log.info("[leads.collect] locations=%d rows=%d written=%d new=%d",
+                 summary["locations"], summary["rows"], summary["written"],
+                 summary["new"])
     return summary
 
 
@@ -2328,47 +2388,25 @@ class ToggleTargetRequest(BaseModel):
 
 @app.get("/api/admin/leads/config")
 def get_leads_config(admin: dict = Depends(require_admin)):
-    """The search-target config for the current tenant.
-
-    `catalog` is the checked-in lead config surfaced as suggestions;
-    `targets` is the live, editable table the collector actually reads. The two
-    can drift on purpose — the whole point of the page is editing the table
-    without touching the file.
+    """SUPERSEDED — the matrix table (`company_search_targets`) this route read
+    is retired (instant-signals refactor, Phase 1). `list_targets`/`add_targets`/
+    `set_target_enabled` no longer exist on `lead_targets`; Phase 3 replaces
+    this route with dimension-shaped ones (`{catalog, terms, locations,
+    overrides, sweep}` per docs/refactor/instant-signals-targets.md §4) rather
+    than resurrecting the old matrix response here. Stubbed rather than left
+    to throw an AttributeError so the module still imports cleanly and the
+    config page fails loudly instead of 500ing on a missing attribute.
     """
-    try:
-        cat = lead_targets.catalog()
-    except lead_config.LeadConfigError as e:
-        raise HTTPException(500, f"Lead config is invalid: {e}")
-    rows = lead_targets.list_targets(admin["company_id"])
-    return {
-        "catalog": cat,
-        "targets": {
-            "total": len(rows),
-            "enabled": sum(1 for r in rows if r.get("enabled")),
-            "rows": rows,
-        },
-    }
+    raise HTTPException(501, "Leads config page is being migrated — superseded, Phase 3")
 
 
 @app.post("/api/admin/leads/targets")
 def add_leads_targets(
     body: AddTargetsRequest, admin: dict = Depends(require_admin)
 ):
-    """Add hand-built target rows (a state, some cities, or a track's keywords).
-
-    The frontend does the `location x term` expansion and posts the rows; this
-    validates and dedupe-inserts them. Idempotent: existing rows are skipped,
-    never reset, so an add never re-enables a target an operator switched off.
-    """
-    if not body.rows:
-        raise HTTPException(400, "No target rows supplied")
-    try:
-        result = lead_targets.add_targets(
-            admin["company_id"], [r.model_dump() for r in body.rows]
-        )
-    except lead_targets.TargetValidationError as e:
-        raise HTTPException(400, str(e))
-    return result
+    """SUPERSEDED — see `get_leads_config`. Phase 3 replaces this with
+    `POST /api/admin/leads/terms` and `POST /api/admin/leads/locations`."""
+    raise HTTPException(501, "Leads config page is being migrated — superseded, Phase 3")
 
 
 @app.patch("/api/admin/leads/targets/{target_id}")
@@ -2377,15 +2415,9 @@ def toggle_leads_target(
     body: ToggleTargetRequest,
     admin: dict = Depends(require_admin),
 ):
-    """Enable or disable a single target. Disable is the off switch — we never
-    delete, because `last_run_at` is the rotation history and dropping a row
-    would lose it (design doc §Not in scope)."""
-    updated = lead_targets.set_target_enabled(
-        admin["company_id"], target_id, body.enabled
-    )
-    if not updated:
-        raise HTTPException(404, "Target not found")
-    return updated
+    """SUPERSEDED — see `get_leads_config`. Phase 3 replaces this with
+    `PATCH /api/admin/leads/terms/{id}` and `PATCH /api/admin/leads/locations/{id}`."""
+    raise HTTPException(501, "Leads config page is being migrated — superseded, Phase 3")
 
 
 # ---------------------------------------------------------------------------

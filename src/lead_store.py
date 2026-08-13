@@ -175,6 +175,35 @@ def upsert_postings(rows: list[dict]) -> int:
     return written
 
 
+def existing_external_ids(source: str, external_ids: list[str]) -> set[str]:
+    """Which of these `(source, external_id)` pairs are already in `job_postings`.
+
+    The novelty metric instant-signals is built around (plan §3's whole point
+    is killing redundant re-fetches) needs a NEW-vs-seen split that
+    `upsert_postings` cannot provide on its own: PostgREST's upsert returns
+    every affected row, inserted or updated alike, so its return count is
+    "rows written", not "rows that were new". The collector calls this once
+    per search — before the upsert — and treats anything not in the returned
+    set as new.
+    """
+    client = _client()
+    if not client or not external_ids:
+        return set()
+    try:
+        result = (
+            client.table("job_postings")
+            .select("external_id")
+            .eq("source", source)
+            .in_("external_id", external_ids)
+            .execute()
+        )
+    except Exception as e:
+        log.warning("[leads.postings.novelty_error] %s: %s",
+                    type(e).__name__, str(e)[:200])
+        return set()
+    return {r["external_id"] for r in (result.data or []) if r.get("external_id")}
+
+
 # ---------------------------------------------------------------------------
 # Qualification
 # ---------------------------------------------------------------------------
@@ -727,8 +756,8 @@ def _empty_analytics() -> dict:
     return {
         "total": 0, "keep_rate": 0.0, "per_day": [], "bands": {},
         "dispositions": {}, "tracks": {}, "reject_reasons": [],
-        "collector": {"targets": 0, "swept": 0, "unfinished": 0,
-                      "zero_row_targets": 0, "last_run_at": None,
+        "collector": {"locations": 0, "swept": 0, "unfinished": 0,
+                      "zero_row_locations": 0, "last_run_at": None,
                       "last_posting_at": None, "alert": None},
     }
 
@@ -738,32 +767,72 @@ def collector_health(company_id: str) -> dict:
 
     The Indeed failure mode is silence, not an error: the library reaches an
     undocumented mobile API whose embedded key can be rotated upstream without
-    notice, after which every query returns zero rows and nothing raises. A run
-    that swept targets and kept nothing is the tripwire (ADR-02).
+    notice, after which every query returns zero rows and nothing raises. A
+    sweep that swept locations and kept nothing is the tripwire (ADR-02).
+
+    Rewritten for the dimension model (instant-signals refactor, Phase 2):
+    `company_search_targets.last_run_at` (stamped at claim) no longer exists.
+    `search_locations` has a per-source cursor stamped only once a location's
+    FULL sweep finishes (`stamp_location`), so a cursor is proof of a
+    completed sweep, not a claim — "unfinished" now has to come from
+    `target_runs` instead: a location with at least one recorded cell but no
+    cursor on either source is a sweep that was interrupted mid-flight.
     """
     client = _client()
     if not client or not company_id:
-        return {"targets": 0, "swept": 0, "unfinished": 0, "zero_row_targets": 0,
-                "last_run_at": None, "last_posting_at": None, "alert": None}
+        return {"locations": 0, "swept": 0, "unfinished": 0,
+                "zero_row_locations": 0, "last_run_at": None,
+                "last_posting_at": None, "alert": None}
     try:
-        targets = (
-            client.table("company_search_targets")
-            .select("last_run_at,last_row_count,enabled")
+        locations = (
+            client.table("search_locations")
+            .select("id,last_indeed_at,last_linkedin_at,"
+                    "indeed_zero_streak,linkedin_zero_streak")
             .eq("company_id", company_id).eq("enabled", True)
             .limit(5000).execute()
         ).data or []
     except Exception:
-        targets = []
+        locations = []
 
-    # `last_run_at` is stamped when a target is CLAIMED, not when it finishes —
-    # that is what makes a crashed run safe to retry. So completion has to be
-    # read from `last_row_count`, which only `record_target_result` writes.
-    # Treating a claimed-but-unfinished target as a zero-row one would fire the
-    # Indeed alert every time a run was interrupted.
-    claimed = [t for t in targets if t.get("last_run_at")]
-    swept = [t for t in claimed if t.get("last_row_count") is not None]
-    zero_rows = [t for t in swept if t["last_row_count"] == 0]
-    last_run = max((t["last_run_at"] for t in claimed), default=None)
+    swept = [l for l in locations if l.get("last_indeed_at") or l.get("last_linkedin_at")]
+    swept_ids = {l.get("id") for l in swept}
+
+    location_ids = [l.get("id") for l in locations if l.get("id") is not None]
+    started_ids: set = set()
+    if location_ids:
+        try:
+            runs = (
+                client.table("target_runs")
+                .select("location_id")
+                .in_("location_id", location_ids)
+                .limit(10000).execute()
+            ).data or []
+            started_ids = {r["location_id"] for r in runs if r.get("location_id")}
+        except Exception:
+            started_ids = set()
+    # Claimed (has a recorded cell) but never finished (no cursor on either
+    # source) — a run that was interrupted. Not an error on its own; a
+    # persistently high number means runs are being killed mid-sweep,
+    # probably by a function timeout.
+    unfinished = len(started_ids - swept_ids)
+
+    # Zero-row tripwire: the zero-streak columns already ARE "did the last
+    # full sweep on this source return nothing" (record_location_sweep), so
+    # no per-cell scan of target_runs is needed here — a location counts as
+    # zero-row if every source it has swept currently carries a nonzero
+    # streak.
+    def _is_zero_row(loc: dict) -> bool:
+        swept_sources = [s for s in ("indeed", "linkedin") if loc.get(f"last_{s}_at")]
+        return bool(swept_sources) and all(
+            (loc.get(f"{s}_zero_streak") or 0) > 0 for s in swept_sources
+        )
+
+    zero_rows = [l for l in swept if _is_zero_row(l)]
+    last_run = max(
+        (t for l in locations
+         for t in (l.get("last_indeed_at"), l.get("last_linkedin_at")) if t),
+        default=None,
+    )
 
     try:
         newest = (
@@ -777,20 +846,17 @@ def collector_health(company_id: str) -> dict:
     alert = None
     if swept and len(zero_rows) == len(swept):
         alert = (
-            "Every swept target returned zero rows. This is the Indeed "
+            "Every swept location returned zero rows. This is the Indeed "
             "API-key rotation failure mode — check the python-jobspy pin."
         )
     elif swept and len(zero_rows) > len(swept) * 0.8:
-        alert = f"{len(zero_rows)} of {len(swept)} swept targets returned zero rows."
+        alert = f"{len(zero_rows)} of {len(swept)} swept locations returned zero rows."
 
     return {
-        "targets": len(targets),
+        "locations": len(locations),
         "swept": len(swept),
-        # Claimed but never finished — a run that was interrupted. Not an
-        # error on its own; a persistently high number means runs are being
-        # killed mid-sweep, probably by a function timeout.
-        "unfinished": len(claimed) - len(swept),
-        "zero_row_targets": len(zero_rows),
+        "unfinished": unfinished,
+        "zero_row_locations": len(zero_rows),
         "last_run_at": last_run,
         "last_posting_at": last_posting,
         "alert": alert,

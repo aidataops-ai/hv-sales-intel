@@ -59,12 +59,18 @@ class FakeQuery:
 
 
 class FakeClient:
-    def __init__(self, rows=None):
+    """`rows` answers every `.table()` call the same way — fine while a test
+    only touches one table. `by_table` overrides that per table name, for
+    tests (like collector_health's) that query more than one table and need
+    each to answer differently."""
+
+    def __init__(self, rows=None, by_table=None):
         self.log = []
         self.rows = rows if rows is not None else []
+        self.by_table = by_table or {}
 
     def table(self, name):
-        return FakeQuery(name, self.log, self.rows)
+        return FakeQuery(name, self.log, self.by_table.get(name, self.rows))
 
 
 @pytest.fixture
@@ -247,37 +253,66 @@ def test_upsert_postings_is_not_company_scoped(fake):
     assert "company_id" not in _written(fake, "upsert")[0][0]
 
 
+def test_existing_external_ids_returns_what_the_fake_table_has(monkeypatch):
+    """`upsert_postings`'s own return count can't answer "how many were new"
+    — PostgREST's upsert returns every affected row, inserted or updated
+    alike. `existing_external_ids` is the pre-check the collector uses
+    instead, so novelty is a real not-already-in-job_postings diff."""
+    client = FakeClient(rows=[{"external_id": "abc"}, {"external_id": "def"}])
+    monkeypatch.setattr(lead_store, "_client", lambda: client)
+    assert lead_store.existing_external_ids("indeed", ["abc", "def", "xyz"]) == {"abc", "def"}
+
+
+def test_existing_external_ids_is_empty_for_an_empty_batch(monkeypatch):
+    monkeypatch.setattr(lead_store, "_client", lambda: FakeClient())
+    assert lead_store.existing_external_ids("indeed", []) == set()
+
+
 # --------------------------------------------------------------------------
 # Collector health — the zero-row tripwire
+#
+# Rewritten for the dimension model (instant-signals refactor, Phase 2):
+# `collector_health` now reads `search_locations` (per-source cursors +
+# zero-streaks) and `target_runs` (crash-mid-sweep detection) instead of the
+# retired `company_search_targets` matrix. `FakeClient(by_table=...)` answers
+# each table separately since this function queries three of them.
 # --------------------------------------------------------------------------
 
 
-def test_all_targets_returning_zero_rows_raises_the_indeed_alert(monkeypatch):
-    client = FakeClient(rows=[
-        {"last_run_at": "2026-08-05T10:00:00Z", "last_row_count": 0, "enabled": True},
-        {"last_run_at": "2026-08-05T10:01:00Z", "last_row_count": 0, "enabled": True},
-    ])
+def test_all_swept_locations_returning_zero_rows_raises_the_indeed_alert(monkeypatch):
+    locations = [
+        {"id": 1, "last_indeed_at": "2026-08-05T10:00:00Z", "last_linkedin_at": None,
+         "indeed_zero_streak": 1, "linkedin_zero_streak": 0},
+        {"id": 2, "last_indeed_at": "2026-08-05T10:01:00Z", "last_linkedin_at": None,
+         "indeed_zero_streak": 2, "linkedin_zero_streak": 0},
+    ]
+    client = FakeClient(by_table={"search_locations": locations, "target_runs": []})
     monkeypatch.setattr(lead_store, "_client", lambda: client)
     health = lead_store.collector_health("company-1")
-    assert health["zero_row_targets"] == 2
+    assert health["zero_row_locations"] == 2
     assert "Indeed" in health["alert"]
 
 
 def test_a_healthy_sweep_raises_nothing(monkeypatch):
-    client = FakeClient(rows=[
-        {"last_run_at": "2026-08-05T10:00:00Z", "last_row_count": 12, "enabled": True},
-        {"last_run_at": "2026-08-05T10:01:00Z", "last_row_count": 4, "enabled": True},
-    ])
+    locations = [
+        {"id": 1, "last_indeed_at": "2026-08-05T10:00:00Z", "last_linkedin_at": None,
+         "indeed_zero_streak": 0, "linkedin_zero_streak": 0},
+        {"id": 2, "last_indeed_at": "2026-08-05T10:01:00Z", "last_linkedin_at": None,
+         "indeed_zero_streak": 0, "linkedin_zero_streak": 0},
+    ]
+    client = FakeClient(by_table={"search_locations": locations, "target_runs": []})
     monkeypatch.setattr(lead_store, "_client", lambda: client)
     assert lead_store.collector_health("company-1")["alert"] is None
 
 
-def test_an_unswept_target_set_is_not_an_alert(monkeypatch):
-    """Before the first collect run every target has last_run_at = null. That
-    is a cold start, not a board outage."""
-    client = FakeClient(rows=[
-        {"last_run_at": None, "last_row_count": None, "enabled": True},
-    ])
+def test_an_unswept_location_set_is_not_an_alert(monkeypatch):
+    """Before the first collect run every location has both cursors null.
+    That is a cold start, not a board outage."""
+    locations = [
+        {"id": 1, "last_indeed_at": None, "last_linkedin_at": None,
+         "indeed_zero_streak": 0, "linkedin_zero_streak": 0},
+    ]
+    client = FakeClient(by_table={"search_locations": locations, "target_runs": []})
     monkeypatch.setattr(lead_store, "_client", lambda: client)
     assert lead_store.collector_health("company-1")["alert"] is None
 
@@ -296,22 +331,27 @@ def test_a_bulk_verdict_write_has_uniform_keys(fake):
     assert rows[1]["draft"] is None
 
 
-def test_a_claimed_but_unfinished_target_is_not_a_zero_row_target(monkeypatch):
-    """`last_run_at` is stamped at CLAIM time so a crashed run doesn't replay
-    its slice — which means an interrupted run leaves targets stamped but
-    never searched. Counting those as zero-row would fire the Indeed alert
-    every time a sweep was killed mid-flight."""
-    client = FakeClient(rows=[
-        # completed, found rows
-        {"last_run_at": "2026-08-05T10:00:00Z", "last_row_count": 12, "enabled": True},
-        # claimed, never finished — the run was killed
-        {"last_run_at": "2026-08-05T10:01:00Z", "last_row_count": None, "enabled": True},
-    ])
+def test_a_started_but_unstamped_location_is_unfinished_not_zero_row(monkeypatch):
+    """`stamp_location` only fires once a location's FULL sweep finishes, so
+    an interrupted run leaves individual `target_runs` cells recorded but no
+    cursor stamped on the location. Counting that as zero-row would fire the
+    Indeed alert every time a sweep was killed mid-flight."""
+    locations = [
+        # completed sweep, found rows
+        {"id": 1, "last_indeed_at": "2026-08-05T10:00:00Z", "last_linkedin_at": None,
+         "indeed_zero_streak": 0, "linkedin_zero_streak": 0},
+        # some cells recorded, but the run was killed before the location as
+        # a whole was stamped
+        {"id": 2, "last_indeed_at": None, "last_linkedin_at": None,
+         "indeed_zero_streak": 0, "linkedin_zero_streak": 0},
+    ]
+    runs = [{"location_id": 2}]
+    client = FakeClient(by_table={"search_locations": locations, "target_runs": runs})
     monkeypatch.setattr(lead_store, "_client", lambda: client)
     health = lead_store.collector_health("company-1")
     assert health["swept"] == 1
     assert health["unfinished"] == 1
-    assert health["zero_row_targets"] == 0
+    assert health["zero_row_locations"] == 0
     assert health["alert"] is None
 
 

@@ -4,6 +4,8 @@ The stages spend model credits unattended, so the interesting cases are the
 ones where they should refuse to run at all.
 """
 
+import time as real_time
+
 from fastapi.testclient import TestClient
 
 from api.index import app
@@ -13,7 +15,30 @@ from src.settings import settings
 client = TestClient(app)
 
 # ensure_targets is a no-op in these tests — seeding is covered separately.
-_NO_SEED = {"config": 0, "existing": 1, "inserted": 0}
+_NO_SEED = {"terms": 0, "locations": 0}
+
+
+def _stub_empty_sweep(monkeypatch):
+    """Wire the collect loop so every source finds nothing due — the no-op
+    baseline most tests build on. `enabled_terms`/`list_config` still need a
+    value even when nothing is claimed, since collect() fetches them once up
+    front before the claim loop starts."""
+    monkeypatch.setattr("src.lead_targets.enabled_terms", lambda c: [
+        {"id": 10, "term": "dental receptionist", "service_line": "Virtual Dental Assistant"},
+    ])
+    monkeypatch.setattr(
+        "src.lead_targets.list_config",
+        lambda c: {"terms": [], "locations": [], "overrides": []},
+    )
+    monkeypatch.setattr("src.lead_targets.claim_locations", lambda c, s, limit: [])
+
+
+def _one_location() -> dict:
+    return {
+        "id": 1, "location": "Tampa, FL", "state": "FL", "granularity": "city",
+        "last_indeed_at": None, "last_linkedin_at": None,
+        "indeed_zero_streak": 0, "linkedin_zero_streak": 0,
+    }
 
 
 def test_collect_is_disabled_when_no_secret_is_configured(monkeypatch):
@@ -54,61 +79,171 @@ def test_collect_with_a_valid_secret_runs_and_reports(monkeypatch):
     monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
     monkeypatch.setattr("src.lead_targets.resolve_company_id", lambda: "c1")
     monkeypatch.setattr("src.lead_targets.ensure_targets", lambda c: _NO_SEED)
-    monkeypatch.setattr("src.lead_targets.claim_targets", lambda c, n: [])
+    _stub_empty_sweep(monkeypatch)
     resp = client.post("/api/cron/leads/collect",
                        headers={"X-Cron-Secret": "s3cret"})
     assert resp.status_code == 200
     body = resp.json()
     assert body["company_id"] == "c1"
-    assert body["targets"] == 0
+    assert body["locations"] == 0
     assert body["sources"]
 
 
-def test_collect_flags_a_sweep_where_every_target_returned_nothing(monkeypatch):
+def test_collect_stops_claiming_once_a_source_has_nothing_due(monkeypatch):
+    """`claim_locations` returning [] must end that source's phase — not loop
+    forever, and not be re-polled after the empty result."""
+    monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
+    monkeypatch.setattr("src.lead_targets.resolve_company_id", lambda: "c1")
+    monkeypatch.setattr("src.lead_targets.ensure_targets", lambda c: _NO_SEED)
+    monkeypatch.setattr("src.lead_targets.enabled_terms", lambda c: [
+        {"id": 10, "term": "dental receptionist", "service_line": "Virtual Dental Assistant"},
+    ])
+    monkeypatch.setattr(
+        "src.lead_targets.list_config",
+        lambda c: {"terms": [], "locations": [], "overrides": []},
+    )
+    calls = []
+
+    def fake_claim(company_id, source, limit):
+        calls.append(source)
+        return []
+
+    monkeypatch.setattr("src.lead_targets.claim_locations", fake_claim)
+
+    resp = client.post("/api/cron/leads/collect", headers={"X-Cron-Secret": "s3cret"})
+    assert resp.status_code == 200
+    assert resp.json()["locations"] == 0
+    # One claim attempt per enabled source (indeed, linkedin), each once —
+    # an empty result must end that source's phase, not be retried.
+    assert len(calls) == len(set(calls))
+
+
+def test_collect_flags_a_sweep_where_every_swept_location_returned_nothing(monkeypatch):
     """The Indeed key-rotation tripwire: zero rows everywhere, no exception."""
     monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
     monkeypatch.setattr("src.lead_targets.resolve_company_id", lambda: "c1")
     monkeypatch.setattr("src.lead_targets.ensure_targets", lambda c: _NO_SEED)
+    monkeypatch.setattr("src.lead_targets.enabled_terms", lambda c: [
+        {"id": 10, "term": "dental receptionist", "service_line": "Virtual Dental Assistant"},
+    ])
     monkeypatch.setattr(
-        "src.lead_targets.claim_targets",
-        lambda company_id, limit: [
-            {"id": 1, "term": "dental receptionist", "location": "Tampa, FL",
-             "state": "FL", "service_line": "Virtual Dental Assistant"},
-        ],
+        "src.lead_targets.list_config",
+        lambda c: {"terms": [], "locations": [], "overrides": []},
     )
+
+    location = _one_location()
+    calls = {"n": 0}
+
+    def fake_claim(company_id, source, limit):
+        calls["n"] += 1
+        return [location] if calls["n"] == 1 else []
+
+    monkeypatch.setattr("src.lead_targets.claim_locations", fake_claim)
+    monkeypatch.setattr("src.lead_targets.stamp_location", lambda *a: None)
     monkeypatch.setattr("src.lead_targets.record_target_result", lambda *a: None)
+    monkeypatch.setattr("src.lead_targets.record_location_sweep", lambda *a: None)
     monkeypatch.setattr("src.job_boards.search_jobs",
                         lambda *a, **k: ([], {"indeed": {"rows": 0, "error": None}}))
 
     body = client.post("/api/cron/leads/collect",
                        headers={"X-Cron-Secret": "s3cret"}).json()
-    assert body["zero_row_targets"] == 1
-    assert "Indeed" in body["alert"]
+    assert body["locations"] == 1
+    assert "zero rows" in body["alert"]
 
 
 def test_a_productive_sweep_raises_no_alert(monkeypatch):
     monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
     monkeypatch.setattr("src.lead_targets.resolve_company_id", lambda: "c1")
     monkeypatch.setattr("src.lead_targets.ensure_targets", lambda c: _NO_SEED)
+    monkeypatch.setattr("src.lead_targets.enabled_terms", lambda c: [
+        {"id": 10, "term": "dental receptionist", "service_line": "Virtual Dental Assistant"},
+    ])
     monkeypatch.setattr(
-        "src.lead_targets.claim_targets",
-        lambda company_id, limit: [
-            {"id": 1, "term": "dental receptionist", "location": "Tampa, FL",
-             "state": "FL", "service_line": "Virtual Dental Assistant"},
-        ],
+        "src.lead_targets.list_config",
+        lambda c: {"terms": [], "locations": [], "overrides": []},
     )
+
+    location = _one_location()
+    calls = {"n": 0}
+
+    def fake_claim(company_id, source, limit):
+        calls["n"] += 1
+        return [location] if calls["n"] == 1 else []
+
+    monkeypatch.setattr("src.lead_targets.claim_locations", fake_claim)
+    monkeypatch.setattr("src.lead_targets.stamp_location", lambda *a: None)
     monkeypatch.setattr("src.lead_targets.record_target_result", lambda *a: None)
+    monkeypatch.setattr("src.lead_targets.record_location_sweep", lambda *a: None)
     monkeypatch.setattr(
         "src.job_boards.search_jobs",
         lambda *a, **k: ([{"source": "indeed", "external_id": "x", "title": "T"}],
                          {"indeed": {"rows": 1, "error": None}}),
     )
     monkeypatch.setattr("src.lead_store.upsert_postings", lambda rows: len(rows))
+    monkeypatch.setattr("src.lead_store.existing_external_ids", lambda source, ids: set())
 
     body = client.post("/api/cron/leads/collect",
                        headers={"X-Cron-Secret": "s3cret"}).json()
     assert body["rows"] == 1
+    assert body["new"] == 1
     assert "alert" not in body
+
+
+def test_an_incomplete_location_is_not_stamped(monkeypatch):
+    """A deadline hit mid-location must NOT stamp or record a sweep — the
+    crash-safe contract (plan §3) is that only a location whose full term
+    list finished gets a fresh cursor; an incomplete one is redone next run."""
+    monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
+    monkeypatch.setattr("src.lead_targets.resolve_company_id", lambda: "c1")
+    monkeypatch.setattr("src.lead_targets.ensure_targets", lambda c: _NO_SEED)
+    monkeypatch.setattr("src.lead_targets.enabled_terms", lambda c: [
+        {"id": 10, "term": "dental receptionist", "service_line": "Virtual Dental Assistant"},
+        {"id": 11, "term": "medical assistant", "service_line": "Virtual Medical Assistant"},
+    ])
+    monkeypatch.setattr(
+        "src.lead_targets.list_config",
+        lambda c: {"terms": [], "locations": [], "overrides": []},
+    )
+    monkeypatch.setattr(
+        "src.lead_targets.claim_locations", lambda c, s, limit: [_one_location()]
+    )
+    monkeypatch.setattr("src.lead_store.existing_external_ids", lambda source, ids: set())
+    monkeypatch.setattr("src.lead_store.upsert_postings", lambda rows: len(rows))
+    monkeypatch.setattr("src.lead_targets.record_target_result", lambda *a: None)
+
+    stamp_calls = []
+    sweep_calls = []
+    monkeypatch.setattr("src.lead_targets.stamp_location",
+                        lambda *a: stamp_calls.append(a))
+    monkeypatch.setattr("src.lead_targets.record_location_sweep",
+                        lambda *a: sweep_calls.append(a))
+
+    # A fake clock that jumps past the deadline the instant the first term's
+    # search runs — so the SECOND term's deadline check trips regardless of
+    # how many incidental `time.monotonic()` calls happen around it. Far more
+    # robust than pinning an exact call count.
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(real_time, "monotonic", lambda: clock["t"])
+
+    def fake_search(term, location, sources=None, target=None, hours_old=None):
+        clock["t"] = 10_000_000.0  # jump well past any budget's deadline
+        return (
+            [{"source": "indeed", "external_id": f"id-{term}", "title": "T"}],
+            {"indeed": {"rows": 1, "error": None}},
+        )
+
+    monkeypatch.setattr("src.job_boards.search_jobs", fake_search)
+
+    body = client.post(
+        "/api/cron/leads/collect?budget_minutes=1",
+        headers={"X-Cron-Secret": "s3cret"},
+    ).json()
+
+    assert body["incomplete"] == 1
+    assert stamp_calls == [], "an incomplete location must not be stamped"
+    assert sweep_calls == [], "an incomplete location must not record a sweep"
+    # The first term still ran and was recorded — only the STAMP is withheld.
+    assert body["rows"] == 1
 
 
 def test_running_out_of_credits_stops_the_run_cleanly(monkeypatch):
@@ -157,12 +292,12 @@ def test_collect_seeds_targets_on_a_cold_start(monkeypatch):
     monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
     monkeypatch.setattr("src.lead_targets.resolve_company_id", lambda: "c1")
     monkeypatch.setattr("src.lead_targets.ensure_targets",
-                        lambda c: {"config": 434, "existing": 0, "inserted": 434})
-    monkeypatch.setattr("src.lead_targets.claim_targets", lambda c, n: [])
+                        lambda c: {"terms": 21, "locations": 155})
+    _stub_empty_sweep(monkeypatch)
 
     body = client.post("/api/cron/leads/collect",
                        headers={"X-Cron-Secret": "s3cret"}).json()
-    assert body["seeded"] == 434
+    assert body["seeded"] == 176
     assert body["company_id"] == "c1"
 
 
@@ -176,7 +311,7 @@ def test_vercel_cron_bearer_header_is_accepted(monkeypatch):
     monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
     monkeypatch.setattr("src.lead_targets.resolve_company_id", lambda: "c1")
     monkeypatch.setattr("src.lead_targets.ensure_targets", lambda c: _NO_SEED)
-    monkeypatch.setattr("src.lead_targets.claim_targets", lambda c, n: [])
+    _stub_empty_sweep(monkeypatch)
     monkeypatch.setattr("src.lead_store.claim_unqualified", lambda c, n: [])
     resp = client.post("/api/cron/leads/collect",
                        headers={"Authorization": "Bearer s3cret"})
@@ -195,7 +330,7 @@ def test_both_stages_answer_a_get(monkeypatch):
     monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
     monkeypatch.setattr("src.lead_targets.resolve_company_id", lambda: "c1")
     monkeypatch.setattr("src.lead_targets.ensure_targets", lambda c: _NO_SEED)
-    monkeypatch.setattr("src.lead_targets.claim_targets", lambda c, n: [])
+    _stub_empty_sweep(monkeypatch)
     monkeypatch.setattr("src.lead_store.claim_unqualified", lambda c, n: [])
     headers = {"X-Cron-Secret": "s3cret"}
     assert client.get("/api/cron/leads/collect", headers=headers).status_code == 200
@@ -213,3 +348,21 @@ def test_the_scheduled_paths_exist_on_the_app():
     registered = {route.path for route in app.routes if hasattr(route, "path")}
     for job in config.get("crons", []):
         assert job["path"] in registered, job["path"]
+
+
+def test_the_retired_admin_matrix_routes_answer_501_not_a_crash(monkeypatch):
+    """`lead_targets.list_targets`/`add_targets`/`set_target_enabled` are
+    deleted (Phase 1). The routes that called them are stubbed to 501 rather
+    than left to 500 with an AttributeError — Phase 3 replaces them with the
+    dimension-shaped routes from docs/refactor/instant-signals-targets.md §4."""
+    from src.auth import require_admin
+
+    app.dependency_overrides[require_admin] = lambda: {"company_id": "c1", "id": "u1"}
+    try:
+        assert client.get("/api/admin/leads/config").status_code == 501
+        assert client.post("/api/admin/leads/targets", json={"rows": []}).status_code == 501
+        assert client.patch(
+            "/api/admin/leads/targets/1", json={"enabled": True}
+        ).status_code == 501
+    finally:
+        app.dependency_overrides.pop(require_admin, None)

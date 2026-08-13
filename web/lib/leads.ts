@@ -264,9 +264,9 @@ export interface LeadAnalytics {
   tracks: Record<string, number>
   reject_reasons: Array<{ reason: string; count: number }>
   collector: {
-    targets: number
+    locations: number
     swept: number
-    zero_row_targets: number
+    zero_row_locations: number
     last_run_at: string | null
     last_posting_at: string | null
     alert: string | null
