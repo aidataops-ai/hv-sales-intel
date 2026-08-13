@@ -668,12 +668,23 @@ def claim_locations(company_id: str, source: str, limit: int) -> list[dict]:
         else settings.lead_linkedin_stale_hours
     )
 
+    query = (
+        client.table("search_locations")
+        .select("*")
+        .eq("company_id", company_id)
+        .eq("enabled", True)
+    )
+    # LinkedIn sweeps statewide queries only (measured 2026-08-13: 23s/term
+    # and a 1.6% keep rate made its per-city sweep both the freshness
+    # bottleneck — ~3 days per cycle — and ~62 qualifier calls per keep).
+    # Statewide-only makes a full LinkedIn cycle ~46min, so its threshold can
+    # match Indeed's and "instant" holds across both boards. City-level
+    # coverage stays on Indeed. Env-tunable escape hatch, not a constant.
+    if source == "linkedin" and settings.lead_linkedin_statewide_only:
+        query = query.eq("granularity", "state")
     try:
         result = (
-            client.table("search_locations")
-            .select("*")
-            .eq("company_id", company_id)
-            .eq("enabled", True)
+            query
             .order(cursor_col, desc=False, nullsfirst=True)
             .order("id", desc=False)
             .execute()
@@ -892,10 +903,19 @@ def sweep_status(company_id: str) -> dict:
             else settings.lead_linkedin_stale_hours
         )
 
+        # Coverage is measured against what this source is actually asked to
+        # sweep — LinkedIn scoped to statewide rows would otherwise report
+        # against the 150 city rows it deliberately never touches.
+        scoped = (
+            [l for l in locations if l.get("granularity") == "state"]
+            if source == "linkedin" and settings.lead_linkedin_statewide_only
+            else locations
+        )
+
         fresh = 0
         never_swept = 0
         ages: list[float] = []
-        for loc in locations:
+        for loc in scoped:
             cursor = loc.get(cursor_col)
             if cursor is None:
                 never_swept += 1
@@ -907,7 +927,7 @@ def sweep_status(company_id: str) -> dict:
             if age_hours < threshold:
                 fresh += 1
 
-        enabled_count = len(locations)
+        enabled_count = len(scoped)
         status[source] = {
             "enabled_locations": enabled_count,
             "fresh_within_threshold": fresh,

@@ -364,6 +364,50 @@ def test_claim_locations_rejects_an_unknown_source():
         lead_targets.claim_locations("co", "monster", limit=5)
 
 
+def _filter_recording_client(rows):
+    """A `_FakeSelectClient` that also records every `.eq(col, val)` applied,
+    so a test can assert which DB-side filters the claim actually requested.
+    Built lazily because `_FakeSelectClient` is defined further down the
+    module."""
+
+    class _FilterRecordingClient(_FakeSelectClient):
+        def __init__(self, rows):
+            super().__init__(rows)
+            self.eq_calls: list[tuple] = []
+
+        def eq(self, *a, **k):
+            self.eq_calls.append(a)
+            return self
+
+    return _FilterRecordingClient(rows)
+
+
+def test_claim_locations_scopes_linkedin_to_statewide_rows(monkeypatch):
+    """LinkedIn sweeps only granularity='state' rows (measured 2026-08-13:
+    23s/term + 1.6% keep rate made per-city LinkedIn the freshness
+    bottleneck). Indeed must NOT get the filter, and the env escape hatch
+    must remove it."""
+    from src.settings import settings
+
+    monkeypatch.setattr(settings, "lead_linkedin_statewide_only", True)
+
+    li = _filter_recording_client([])
+    monkeypatch.setattr("src.storage._get_client", lambda: li)
+    lead_targets.claim_locations("co", "linkedin", limit=2)
+    assert ("granularity", "state") in li.eq_calls
+
+    indeed = _filter_recording_client([])
+    monkeypatch.setattr("src.storage._get_client", lambda: indeed)
+    lead_targets.claim_locations("co", "indeed", limit=2)
+    assert ("granularity", "state") not in indeed.eq_calls
+
+    monkeypatch.setattr(settings, "lead_linkedin_statewide_only", False)
+    li_off = _filter_recording_client([])
+    monkeypatch.setattr("src.storage._get_client", lambda: li_off)
+    lead_targets.claim_locations("co", "linkedin", limit=2)
+    assert ("granularity", "state") not in li_off.eq_calls
+
+
 def test_claim_locations_is_not_starved_by_a_wall_of_decayed_locations(monkeypatch):
     """Regression: many decayed locations sort as STALEST (oldest cursors)
     without being due (their streak-doubled thresholds are huge). A bounded

@@ -419,6 +419,22 @@ self-heals). New tables can be dropped or left inert.
 | ~20+ states | Shard collect by state-group (disjoint claims) |
 | Separate track | `claim_unqualified` SQL anti-join; Supabase client singleton; lazy `openai` import; 1000-row-cap sweep; analyze-path concurrency |
 
+### Decision 2026-08-13 — LinkedIn goes statewide-only (measured)
+
+First instrumented runs on the staging pipeline measured: **Indeed 1.85s/term,
+LinkedIn 23.0s/term**; all-time keep rates **Indeed 10.6% (915/8,623) vs
+LinkedIn 1.6% (260/16,081)** — ~62 qualifier calls per LinkedIn keep vs ~9 for
+Indeed. Per-city LinkedIn was simultaneously the freshness bottleneck (~3 days
+per 155-location cycle at the production budget) and the worst cost-per-keep
+in the pipeline, while producing 65% of the qualifier bill for 22% of keeps.
+
+**Change:** `lead_linkedin_statewide_only = True` (env-tunable) — LinkedIn
+claims only `granularity='state'` rows (5 queries/cycle ≈ 46 min), its
+threshold drops 24h → 6h, and `sweep_status` reports coverage against the
+scoped set. Result: posting → lead ≤ ~7h on BOTH boards. City-level coverage
+stays on Indeed, where the keeps come from. Revisit if per-source yield data
+ever shows a metro where city-level LinkedIn earns its 23s/term.
+
 ### Confirmed by the pre-merge branch review, deferred deliberately
 
 Findings from the 2026-08-13 adversarial review that are real but out of this

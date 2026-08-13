@@ -32,7 +32,15 @@ class Settings(BaseSettings):
     # cap bounds how far yield decay can push a dead location's threshold.
     lead_budget_minutes: int = 40
     lead_indeed_stale_hours: int = 6
-    lead_linkedin_stale_hours: int = 24
+    lead_linkedin_stale_hours: int = 6
+    # LinkedIn sweeps only the statewide queries, not per-city rows. Measured
+    # 2026-08-13: LinkedIn costs 23.0s/term vs Indeed's 1.85s, and its per-city
+    # sweep produced a 1.6% keep rate vs Indeed's 10.6% (~62 qualifier calls
+    # per keep vs ~9) while being the sole reason full-matrix freshness
+    # collapsed to ~3 days. Statewide-only cuts a LinkedIn cycle from ~24h of
+    # scrape to ~46min, so its 6h threshold above is actually sustainable.
+    # City-level coverage stays on Indeed, where the keeps come from.
+    lead_linkedin_statewide_only: bool = True
     lead_window_buffer_hours: int = 12
     lead_zero_streak_cap: int = 4
     # Phase-reserve + fit-check (Phase 4 livelock fix): when both boards are
