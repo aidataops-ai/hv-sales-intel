@@ -111,7 +111,11 @@ function ConfigBody({
 
   return (
     <>
-      <SweepStatusStrip sweep={config.sweep} />
+      {/* SweepStatusStrip is intentionally unmounted for now: until the new
+          collector has run for a while, coverage/never-swept read as alarming
+          ("10% coverage · 60 never swept") when they only mean the 60 new
+          cities haven't had their first sweep yet. Re-mount once cursors are
+          warm: <SweepStatusStrip sweep={config.sweep} /> */}
       <GeographyPanel
         locations={config.locations}
         catalog={config.catalog}
