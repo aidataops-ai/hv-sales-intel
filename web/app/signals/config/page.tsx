@@ -145,6 +145,9 @@ function ConfigBody({
 /** A compact one-line-per-source strip, not the big analytics StatTile cards
  *  — this is a glance while editing, not a dashboard. Makes the freshness
  *  cost of adding a state visible before an operator does it. */
+// Intentionally unmounted until the new collector warms the cursors — see the
+// ConfigBody note. The disable below keeps the component compiled and ready.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function SweepStatusStrip({ sweep }: { sweep: Record<string, SweepSourceStatus> }) {
   const sources = Object.entries(sweep)
   if (sources.length === 0) return null
