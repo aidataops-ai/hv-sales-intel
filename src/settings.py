@@ -23,6 +23,17 @@ class Settings(BaseSettings):
     # bounded slice and is safe to re-run (ADR-09).
     lead_collect_batch: int = 40
     lead_qualify_batch: int = 60
+    # Instant Signals target-dimension collector
+    # (docs/refactor/instant-signals-targets.md). Wall-clock budget replaces the old
+    # `--targets N` count now that the pipeline runs on GitHub Actions
+    # instead of a serverless invocation; per-source staleness thresholds
+    # and window buffer drive the adaptive search window; the zero-streak
+    # cap bounds how far yield decay can push a dead location's threshold.
+    lead_budget_minutes: int = 40
+    lead_indeed_stale_hours: int = 6
+    lead_linkedin_stale_hours: int = 24
+    lead_window_buffer_hours: int = 12
+    lead_zero_streak_cap: int = 4
     # Shared secret for the cron stages, matching the existing webhook
     # pattern. Empty disables the cron routes outright rather than leaving
     # them open.

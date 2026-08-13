@@ -1,58 +1,291 @@
-"""Tests for the search-target matrix and its rotation."""
+"""Tests for the search-target dimensions, claim ordering, and pure helpers."""
 
 import pytest
 
 from src import lead_config, lead_targets
 
-
-def test_build_targets_is_the_full_matrix():
-    targets = lead_targets.build_targets()
-    assert len(targets) == len(lead_config.role_terms()) * len(lead_config.locations())
-
-
-def test_build_targets_is_location_major():
-    """A contiguous slice should span several terms in one city, not one term
-    across every city — otherwise a run's results cover a thin geographic
-    stripe instead of a readable market."""
-    targets = lead_targets.build_targets()
-    first_location = targets[0]["location"]
-    term_count = len(lead_config.role_terms())
-    assert all(t["location"] == first_location for t in targets[:term_count])
-    assert len({t["term"] for t in targets[:term_count]}) == term_count
+# --------------------------------------------------------------------------
+# Pure helpers — adaptive window and yield-decay threshold (plan §3).
+# --------------------------------------------------------------------------
 
 
-def test_every_target_carries_its_service_line_and_state():
-    for target in lead_targets.build_targets():
-        assert target["service_line"]
-        assert len(target["state"]) == 2
-        assert target["granularity"] in ("state", "city")
+def test_adaptive_window_never_swept_gets_full_week():
+    assert lead_targets.adaptive_window_hours(None, buffer_hours=12) == 168
 
 
-def test_indeed_runs_every_firing_linkedin_on_a_slower_cycle():
-    """ADR-02 / design §6: Indeed is ~15x faster, so it rotates broadly while
-    LinkedIn supplements. Weights live in filters.json."""
-    runs = [lead_targets.sources_for_run(i) for i in range(6)]
-    indeed_runs = sum(1 for r in runs if "indeed" in r)
-    linkedin_runs = sum(1 for r in runs if "linkedin" in r)
-    assert indeed_runs == 6
-    assert 0 < linkedin_runs < indeed_runs
+def test_adaptive_window_floors_at_24_for_a_fresh_cursor():
+    from datetime import datetime, timezone
+    cursor = datetime.now(timezone.utc).isoformat()
+    assert lead_targets.adaptive_window_hours(cursor, buffer_hours=12) == 24
 
 
-def test_a_run_never_selects_zero_sources():
-    """A no-op run is indistinguishable from a board outage in the logs."""
-    for i in range(12):
-        assert lead_targets.sources_for_run(i)
+def test_adaptive_window_caps_at_168_for_a_stale_cursor():
+    from datetime import datetime, timedelta, timezone
+    cursor = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    assert lead_targets.adaptive_window_hours(cursor, buffer_hours=12) == 168
 
 
-def test_sources_for_run_only_returns_enabled_boards():
-    enabled = set(lead_config.enabled_sources())
-    for i in range(12):
-        assert set(lead_targets.sources_for_run(i)) <= enabled
+def test_adaptive_window_mid_range_is_hours_since_plus_buffer():
+    from datetime import datetime, timedelta, timezone
+    cursor = (datetime.now(timezone.utc) - timedelta(hours=20)).isoformat()
+    window = lead_targets.adaptive_window_hours(cursor, buffer_hours=12)
+    # ~20h since + 12h buffer = ~32h, clamped comfortably inside [24, 168]
+    assert 30 <= window <= 34
+
+
+def test_effective_threshold_doubles_per_streak():
+    assert lead_targets.effective_threshold_hours(6, zero_streak=0, cap=4) == 6
+    assert lead_targets.effective_threshold_hours(6, zero_streak=1, cap=4) == 12
+    assert lead_targets.effective_threshold_hours(6, zero_streak=2, cap=4) == 24
+    assert lead_targets.effective_threshold_hours(6, zero_streak=3, cap=4) == 48
+
+
+def test_effective_threshold_caps_growth():
+    capped = lead_targets.effective_threshold_hours(6, zero_streak=4, cap=4)
+    beyond = lead_targets.effective_threshold_hours(6, zero_streak=10, cap=4)
+    assert capped == beyond == 6 * (2 ** 4)
 
 
 # --------------------------------------------------------------------------
-# Single-tenant resolution (v1 pins one company at run time; the schema stays
-# multi-tenant so this is a pin to remove, not a migration to write).
+# build_claim_rows — pure cross of one location with enabled terms, minus
+# override-disabled cells. The claim contract callers depend on.
+# --------------------------------------------------------------------------
+
+
+def test_build_claim_rows_crosses_location_with_every_term():
+    location = {"id": 1, "location": "Tampa, FL", "state": "FL", "granularity": "city"}
+    terms = [
+        {"id": 10, "term": "RN", "service_line": "nursing"},
+        {"id": 11, "term": "medical assistant", "service_line": "clinical"},
+    ]
+    rows = lead_targets.build_claim_rows(location, terms, overrides={})
+    assert len(rows) == 2
+    assert {r["term"] for r in rows} == {"RN", "medical assistant"}
+
+
+def test_build_claim_rows_contract_keys_are_exact():
+    location = {"id": 1, "location": "Tampa, FL", "state": "FL", "granularity": "city"}
+    terms = [{"id": 10, "term": "RN", "service_line": "nursing"}]
+    rows = lead_targets.build_claim_rows(location, terms, overrides={})
+    assert set(rows[0]) == {
+        "term", "service_line", "location", "state", "granularity",
+        "term_id", "location_id",
+    }
+    assert rows[0] == {
+        "term": "RN", "service_line": "nursing",
+        "location": "Tampa, FL", "state": "FL", "granularity": "city",
+        "term_id": 10, "location_id": 1,
+    }
+
+
+def test_build_claim_rows_skips_an_override_disabled_cell():
+    location = {"id": 1, "location": "Tampa, FL", "state": "FL", "granularity": "city"}
+    terms = [
+        {"id": 10, "term": "RN", "service_line": "nursing"},
+        {"id": 11, "term": "medical assistant", "service_line": "clinical"},
+    ]
+    overrides = {(10, 1): False}
+    rows = lead_targets.build_claim_rows(location, terms, overrides)
+    assert len(rows) == 1
+    assert rows[0]["term"] == "medical assistant"
+
+
+def test_build_claim_rows_an_override_true_entry_is_not_skipped():
+    """Only an explicit `False` pin drops a cell — an explicit `True` (a
+    pin re-enabling a cell) behaves like no override at all."""
+    location = {"id": 1, "location": "Tampa, FL", "state": "FL", "granularity": "city"}
+    terms = [{"id": 10, "term": "RN", "service_line": "nursing"}]
+    overrides = {(10, 1): True}
+    rows = lead_targets.build_claim_rows(location, terms, overrides)
+    assert len(rows) == 1
+
+
+# --------------------------------------------------------------------------
+# add_terms / add_locations — validate-all-then-upsert-once.
+# --------------------------------------------------------------------------
+
+
+def test_clean_term_row_normalises_and_defaults_enabled():
+    row = lead_targets._clean_term_row("co", {"term": " RN ", "service_line": "nursing"})
+    assert row == {
+        "company_id": "co", "term": "RN", "service_line": "nursing", "enabled": True,
+    }
+
+
+def test_clean_term_row_rejects_empty_term():
+    with pytest.raises(lead_targets.TargetValidationError):
+        lead_targets._clean_term_row("co", {"term": "", "service_line": "nursing"})
+
+
+def test_clean_term_row_rejects_empty_service_line():
+    with pytest.raises(lead_targets.TargetValidationError):
+        lead_targets._clean_term_row("co", {"term": "RN", "service_line": ""})
+
+
+def test_clean_location_row_normalises_state_and_granularity():
+    row = lead_targets._clean_location_row(
+        "co", {"location": "Austin, TX", "state": "tx", "granularity": "City"}
+    )
+    assert row["state"] == "TX"
+    assert row["granularity"] == "city"
+    assert row["enabled"] is True
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"location": "", "state": "TX", "granularity": "city"},
+        {"location": "L", "state": "TEX", "granularity": "city"},
+        {"location": "L", "state": "TX", "granularity": "county"},
+    ],
+)
+def test_clean_location_row_rejects_rows_the_db_constraints_would(bad):
+    with pytest.raises(lead_targets.TargetValidationError):
+        lead_targets._clean_location_row("co", bad)
+
+
+def test_add_terms_validates_the_whole_batch_before_any_write(monkeypatch):
+    """One bad row rejects the request — no partial upsert call happens."""
+    calls = []
+    monkeypatch.setattr(
+        "src.storage._get_client", lambda: _FakeUpsertClient(calls)
+    )
+    with pytest.raises(lead_targets.TargetValidationError):
+        lead_targets.add_terms(
+            "co",
+            [
+                {"term": "RN", "service_line": "nursing"},
+                {"term": "", "service_line": "nursing"},
+            ],
+        )
+    assert calls == []
+
+
+def test_add_locations_validates_the_whole_batch_before_any_write(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "src.storage._get_client", lambda: _FakeUpsertClient(calls)
+    )
+    with pytest.raises(lead_targets.TargetValidationError):
+        lead_targets.add_locations(
+            "co",
+            [
+                {"location": "Tampa, FL", "state": "FL", "granularity": "city"},
+                {"location": "Bad", "state": "F", "granularity": "city"},
+            ],
+        )
+    assert calls == []
+
+
+def test_add_terms_makes_one_upsert_call_for_a_valid_batch(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "src.storage._get_client", lambda: _FakeUpsertClient(calls)
+    )
+    result = lead_targets.add_terms(
+        "co",
+        [{"term": "RN", "service_line": "nursing"}, {"term": "LPN", "service_line": "nursing"}],
+    )
+    assert result == {"requested": 2, "inserted": 2}
+    assert len(calls) == 1
+    assert calls[0]["table"] == "search_terms"
+    assert calls[0]["on_conflict"] == "company_id,term"
+    assert calls[0]["ignore_duplicates"] is True
+
+
+# --------------------------------------------------------------------------
+# claim_locations — nulls-first ordering, threshold filter, streak decay.
+# --------------------------------------------------------------------------
+
+
+def test_claim_locations_skips_a_streak_decayed_cell_still_within_threshold(monkeypatch):
+    """A location whose cursor is old enough for the BASE threshold but not
+    for its own decayed (streak-doubled) threshold should not be claimed."""
+    from datetime import datetime, timedelta, timezone
+    from src.settings import settings
+
+    monkeypatch.setattr(settings, "lead_indeed_stale_hours", 6)
+    monkeypatch.setattr(settings, "lead_zero_streak_cap", 4)
+
+    stale_but_decayed = (datetime.now(timezone.utc) - timedelta(hours=10)).isoformat()
+    truly_due = None  # never swept — always due
+
+    rows = [
+        {
+            "id": 1, "location": "Dead City, FL",
+            "last_indeed_at": stale_but_decayed, "indeed_zero_streak": 2,  # threshold=24h
+        },
+        {
+            "id": 2, "location": "Fresh City, FL",
+            "last_indeed_at": truly_due, "indeed_zero_streak": 0,
+        },
+    ]
+    monkeypatch.setattr("src.storage._get_client", lambda: _FakeSelectClient(rows))
+
+    claimed = lead_targets.claim_locations("co", "indeed", limit=5)
+    ids = [r["id"] for r in claimed]
+    assert 2 in ids
+    assert 1 not in ids
+
+
+def test_claim_locations_respects_limit(monkeypatch):
+    from src.settings import settings
+    monkeypatch.setattr(settings, "lead_indeed_stale_hours", 6)
+    monkeypatch.setattr(settings, "lead_zero_streak_cap", 4)
+
+    rows = [
+        {"id": i, "location": f"City {i}, FL", "last_indeed_at": None, "indeed_zero_streak": 0}
+        for i in range(5)
+    ]
+    monkeypatch.setattr("src.storage._get_client", lambda: _FakeSelectClient(rows))
+
+    claimed = lead_targets.claim_locations("co", "indeed", limit=2)
+    assert len(claimed) == 2
+
+
+def test_claim_locations_rejects_an_unknown_source():
+    with pytest.raises(ValueError):
+        lead_targets.claim_locations("co", "monster", limit=5)
+
+
+def test_claim_locations_is_not_starved_by_a_wall_of_decayed_locations(monkeypatch):
+    """Regression: many decayed locations sort as STALEST (oldest cursors)
+    without being due (their streak-doubled thresholds are huge). A bounded
+    over-fetch window (`limit * N`) would fill with them and return a
+    false-empty claim while a genuinely due location sits beyond the window.
+    claim_locations must fetch all enabled locations so the due one is found."""
+    from datetime import datetime, timedelta, timezone
+    from src.settings import settings
+
+    monkeypatch.setattr(settings, "lead_indeed_stale_hours", 6)
+    monkeypatch.setattr(settings, "lead_zero_streak_cap", 4)
+
+    now = datetime.now(timezone.utc)
+    # 10 dead locations: cursors 50h old (stalest, sort first) but streak=4
+    # → threshold 6*16=96h → NOT due.
+    rows = [
+        {
+            "id": i, "location": f"Dead {i}, FL",
+            "last_indeed_at": (now - timedelta(hours=50)).isoformat(),
+            "indeed_zero_streak": 4,
+        }
+        for i in range(10)
+    ]
+    # One live location: cursor 8h old (freshest, sorts LAST) with streak=0
+    # → threshold 6h → due.
+    rows.append({
+        "id": 99, "location": "Live City, FL",
+        "last_indeed_at": (now - timedelta(hours=8)).isoformat(),
+        "indeed_zero_streak": 0,
+    })
+    monkeypatch.setattr("src.storage._get_client", lambda: _FakeSelectClient(rows))
+
+    claimed = lead_targets.claim_locations("co", "indeed", limit=2)
+    assert [r["id"] for r in claimed] == [99]
+
+
+# --------------------------------------------------------------------------
+# Single-tenant resolution (unchanged from the old matrix module).
 # --------------------------------------------------------------------------
 
 
@@ -94,7 +327,7 @@ def test_no_companies_at_all_is_an_error(monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# Config page — catalog and hand-added-target validation.
+# Config page — catalog (unchanged; still a pure read of lead_config).
 # --------------------------------------------------------------------------
 
 
@@ -119,34 +352,9 @@ def test_catalog_tracks_group_every_term_under_its_service_line():
     assert len(flat) == len(lead_config.role_terms())
 
 
-def test_clean_target_row_normalises_state_and_granularity():
-    row = lead_targets._clean_target_row(
-        "co",
-        {"term": " Nurse ", "service_line": "X", "location": "Austin, TX",
-         "state": "tx", "granularity": "City"},
-    )
-    assert row["term"] == "Nurse"          # trimmed
-    assert row["state"] == "TX"            # upper-cased
-    assert row["granularity"] == "city"    # lower-cased
-    assert row["enabled"] is True          # defaulted
-    assert row["company_id"] == "co"
-
-
-@pytest.mark.parametrize(
-    "bad",
-    [
-        {"term": "", "service_line": "X", "location": "L", "state": "TX", "granularity": "city"},
-        {"term": "t", "service_line": "", "location": "L", "state": "TX", "granularity": "city"},
-        {"term": "t", "service_line": "X", "location": "", "state": "TX", "granularity": "city"},
-        {"term": "t", "service_line": "X", "location": "L", "state": "TEX", "granularity": "city"},
-        {"term": "t", "service_line": "X", "location": "L", "state": "TX", "granularity": "county"},
-    ],
-)
-def test_clean_target_row_rejects_rows_the_db_constraints_would(bad):
-    """Same invariants as the table's CHECK/NOT NULL constraints, caught early
-    so the add endpoint answers 400 instead of leaking a Postgres error."""
-    with pytest.raises(lead_targets.TargetValidationError):
-        lead_targets._clean_target_row("co", bad)
+# --------------------------------------------------------------------------
+# Fakes
+# --------------------------------------------------------------------------
 
 
 class _FakeCompanies:
@@ -157,6 +365,56 @@ class _FakeCompanies:
         return self
 
     def select(self, *a, **k):
+        return self
+
+    def limit(self, *a, **k):
+        return self
+
+    def execute(self):
+        return type("R", (), {"data": self.rows})()
+
+
+class _FakeUpsertClient:
+    """Records every upsert call so validation-before-write tests can assert
+    no write happened on a rejected batch."""
+
+    def __init__(self, calls):
+        self.calls = calls
+        self._table = None
+
+    def table(self, name):
+        self._table = name
+        return self
+
+    def upsert(self, rows, on_conflict=None, ignore_duplicates=False):
+        self.calls.append({
+            "table": self._table, "rows": rows,
+            "on_conflict": on_conflict, "ignore_duplicates": ignore_duplicates,
+        })
+        return self
+
+    def execute(self):
+        return type("R", (), {"data": None})()
+
+
+class _FakeSelectClient:
+    """Fakes the chained `.table().select().eq().order().order().limit()`
+    used by `claim_locations`, returning `rows` regardless of the filters
+    applied (the test asserts on the Python-side threshold filtering)."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def table(self, name):
+        return self
+
+    def select(self, *a, **k):
+        return self
+
+    def eq(self, *a, **k):
+        return self
+
+    def order(self, *a, **k):
         return self
 
     def limit(self, *a, **k):
