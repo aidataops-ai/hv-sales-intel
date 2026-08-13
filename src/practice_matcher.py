@@ -1,10 +1,21 @@
 """Match kept-independent job postings to their practice in the Places bank.
 
 The employer on a posting IS a practice in the universe; this resolves that
-mapping. `employer_name_norm` is folded against a same-city `practices.name`
-(both through `normalise_employer`, the exact function that produced
-employer_name_norm), scoped to KEPT INDEPENDENT leads — the only population
-where the link is well-defined (a hospital system has no single place_id).
+mapping. `employer_name_norm` is folded against a same-city-AND-STATE
+`practices.name` (both through `normalise_employer`, the exact function that
+produced employer_name_norm), scoped to KEPT INDEPENDENT leads — the only
+population where the link is well-defined (a hospital system has no single
+place_id).
+
+State is part of the bucket key, not just the city, because the multi-state
+geography expansion introduced cross-state duplicate city names (Greenville,
+NC vs Greenville, SC; Smyrna, GA vs Smyrna, TN; ...) — city-only bucketing
+would let a posting auto-link to a practice in the WRONG state whenever two
+states share a city name. A posting with no state on record (state is
+optional on `job_postings`) falls back to every practice in the city
+regardless of state, but that unscoped match is capped at `match_status`
+'review' — never 'auto' — since it is exactly the ambiguity state-scoping
+exists to remove.
 
 One module, two callers:
   * `scripts/link_postings.py` — a full bulk pass over every kept-independent
@@ -14,9 +25,9 @@ One module, two callers:
     against only the practices in the cities that batch touched.
 
 Writes to job_postings: practice_id, match_confidence, match_status
-('auto' >= auto_score, else 'review'), match_method, matched_at. Idempotent —
-a re-run re-scores and clears any prior name_city_v1 link that no longer
-qualifies. No Google calls, no credits.
+('auto' >= auto_score and state-scoped, else 'review'), match_method,
+matched_at. Idempotent — a re-run re-scores and clears any prior
+name_city_v1 link that no longer qualifies. No Google calls, no credits.
 """
 from __future__ import annotations
 
@@ -45,6 +56,15 @@ def city_key(c: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", c)
 
 
+def location_key(c: str | None, state: str | None) -> str:
+    """Fold a city+state pair into the bucket key exact matches are grouped
+    by. `state` blank/None folds to `''` — used only to build the
+    city-and-state index; the NULL-state fallback path in `link_postings`
+    looks candidates up by `city_key` alone instead of this, on purpose, so
+    it is never mistaken for a real state match."""
+    return f"{city_key(c)}|{(state or '').strip().upper()}"
+
+
 def score(a: str, b: str) -> float:
     """Name similarity in [0,1]: max of token-set Jaccard and char-ratio."""
     if a == b:
@@ -60,19 +80,32 @@ def _client():
     return _get_client()
 
 
-def load_practices_by_city(client, only_cities: set[str] | None = None) -> dict:
-    """Service-line-tagged practices bucketed by city_key. Each record:
+def load_practices_by_city(
+    client, only_cities: set[str] | None = None,
+) -> tuple[dict, dict]:
+    """Service-line-tagged practices, indexed two ways. Each record:
     (practice_id, norm_name, name, service_line).
 
-    `only_cities` restricts the load to a set of city_keys — the cron passes
-    just the batch's cities so it never pages the whole 20k-row universe.
+    Returns `(by_location, by_city)`:
+      * `by_location` keys on `location_key(city, state)` — the primary
+        index, used whenever the posting being matched has a state.
+      * `by_city` keys on `city_key(city)` alone — used ONLY as the fallback
+        for postings with no recorded state, since there is no state to
+        scope by. `link_postings` caps anything found this way at 'review'.
+
+    One DB pass builds both from the same rows, so a state-less posting's
+    fallback costs nothing extra. `only_cities` restricts the load to a set
+    of city_keys (city-only — the practice's state isn't known until the row
+    loads) — the cron passes just the batch's cities so it never pages the
+    whole 20k-row universe.
     """
+    by_location: dict[str, list] = defaultdict(list)
     by_city: dict[str, list] = defaultdict(list)
     page, size = 0, 1000
     while True:
         rows = (
             client.table("practices")
-            .select("id,name,city,service_line")
+            .select("id,name,city,state,service_line")
             .not_.is_("service_line", "null")
             .range(page * size, (page + 1) * size - 1)
             .execute().data
@@ -84,20 +117,28 @@ def load_practices_by_city(client, only_cities: set[str] | None = None) -> dict:
             if only_cities is not None and ck not in only_cities:
                 continue
             nn = normalise_employer(r.get("name"))
-            if nn:
-                by_city[ck].append((r["id"], nn, r.get("name"), r.get("service_line")))
+            if not nn:
+                continue
+            record = (r["id"], nn, r.get("name"), r.get("service_line"))
+            by_city[ck].append(record)
+            by_location[location_key(r.get("city"), r.get("state"))].append(record)
         if len(rows) < size:
             break
         page += 1
-    return by_city
+    return by_location, by_city
 
 
 def _kept_independent(client, company_id: str, posting_ids: list[int] | None) -> list:
-    """Kept-independent postings for this tenant: (id, employer_name_norm, city).
+    """Kept-independent postings for this tenant: (id, employer_name_norm,
+    city, state).
 
     `posting_ids`, when given, restricts to that set — the cron's incremental
     scope. The verdict in company_job_leads stays the source of truth for what
     'kept independent' means; passing ids only narrows, never widens it.
+
+    `state` is NOT required to be non-null like `city` is — a posting with no
+    state on record still gets matched (city-only fallback, capped at
+    'review' by `link_postings`), only one with no city at all is unmatchable.
     """
     kept: list[int] = []
     page, size = 0, 1000
@@ -124,7 +165,7 @@ def _kept_independent(client, company_id: str, posting_ids: list[int] | None) ->
     for i in range(0, len(kept), 400):
         rows = (
             client.table("job_postings")
-            .select("id,employer_name_norm,city")
+            .select("id,employer_name_norm,city,state")
             .in_("id", kept[i:i + 400])
             .not_.is_("employer_name_norm", "null")
             .not_.is_("city", "null").execute().data
@@ -156,17 +197,30 @@ def link_postings(
     # Load only the practices in the cities these postings live in — the cron
     # scope stays cheap, the full pass loads (almost) everything anyway.
     cities = {city_key(p.get("city")) for p in postings}
-    by_city = load_practices_by_city(client, only_cities=cities)
+    by_location, by_city = load_practices_by_city(client, only_cities=cities)
 
     matches: list[tuple] = []    # (posting_id, practice_id, conf, status)
     unmatched: list[int] = []
     for p in postings:
         q = p["employer_name_norm"]
-        cands = by_city.get(city_key(p.get("city")), [])
+        state = p.get("state")
+        if state:
+            # The common, trusted path: candidates scoped to this posting's
+            # own state, so "Greenville, NC" can never match a practice in
+            # "Greenville, SC" no matter how similar the names score.
+            cands = by_location.get(location_key(p.get("city"), state), [])
+            state_scoped = True
+        else:
+            # No state to scope by — fall back to every practice in the
+            # city regardless of state. That is exactly the ambiguity
+            # state-scoping exists to remove, so a match found this way is
+            # never trusted at 'auto' — only 'review', below.
+            cands = by_city.get(city_key(p.get("city")), [])
+            state_scoped = False
         best = max(cands, key=lambda r: score(q, r[1]), default=None)
         s = score(q, best[1]) if best else 0.0
         if best and s >= min_score:
-            status = "auto" if s >= auto_score else "review"
+            status = "auto" if (state_scoped and s >= auto_score) else "review"
             matches.append((p["id"], best[0], round(s, 2), status))
         else:
             unmatched.append(p["id"])

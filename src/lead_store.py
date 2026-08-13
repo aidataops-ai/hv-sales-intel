@@ -800,16 +800,20 @@ def collector_health(company_id: str) -> dict:
     location_ids = [l.get("id") for l in locations if l.get("id") is not None]
     started_ids: set = set()
     if location_ids:
-        try:
-            runs = (
-                client.table("target_runs")
-                .select("location_id")
-                .in_("location_id", location_ids)
-                .limit(10000).execute()
-            ).data or []
-            started_ids = {r["location_id"] for r in runs if r.get("location_id")}
-        except Exception:
-            started_ids = set()
+        # A `.limit(N)` alone does not paginate — PostgREST truncates any
+        # single request at 1000 rows regardless of what N asks for.
+        # `_paginated_query` issues successive `.range()` calls to get past
+        # that; term_count x location_count can exceed 1000 well before a
+        # tenant's dimension tables do.
+        from src.storage import _paginated_query
+
+        builder = (
+            client.table("target_runs")
+            .select("location_id")
+            .in_("location_id", location_ids)
+        )
+        runs = _paginated_query(builder, limit=20_000)
+        started_ids = {r["location_id"] for r in runs if r.get("location_id")}
     # Claimed (has a recorded cell) but never finished (no cursor on either
     # source) — a run that was interrupted. Not an error on its own; a
     # persistently high number means runs are being killed mid-sweep,

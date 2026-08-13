@@ -128,10 +128,15 @@ def collect(company_id: str, budget_minutes: float, sources: list[str]) -> dict:
     one source at a time, cross it with every enabled term, search, upsert,
     then stamp — only once every term for that location has actually run.
 
-    Indeed sweeps first and LinkedIn gets whatever budget is left, because
-    Indeed answers in ~1.5s against LinkedIn's ~22s; sharing one deadline
-    across both phases (rather than a budget each) is what makes that
-    trade-off automatic instead of a config knob.
+    Indeed sweeps first; LinkedIn's phase is guaranteed a reserved window
+    (`lead_indeed_budget_fraction`) rather than "whatever's left", because a
+    flooded Indeed phase (e.g. dozens of never-swept locations right after a
+    re-seed) could otherwise consume the whole budget every run and starve
+    LinkedIn indefinitely. Before starting a NEW location, a fit check
+    (`location_fits_budget`) estimates its cost from this run's own observed
+    per-term timing and skips claiming it at all if it can't finish — the fix
+    for the livelock where the same stalest location gets partially swept and
+    discarded, unstamped, every single run forever.
     """
     ordered_sources = [s for s in _SOURCE_ORDER if s in sources]
     _rule(f"COLLECT — budget={budget_minutes:g} min, sources={','.join(ordered_sources)}")
@@ -160,31 +165,57 @@ def collect(company_id: str, budget_minutes: float, sources: list[str]) -> dict:
     totals = Counter()
     per_source = {s: Counter() for s in ordered_sources}
     started = time.time()
-    deadline = time.monotonic() + budget_minutes * 60
+    run_start = time.monotonic()
+    budget_seconds = budget_minutes * 60
     loc_index = 0
+    # This run's own observed per-term cost, per source — the fit check uses
+    # it once it has at least one observation; a conservative default
+    # (`lead_*_est_term_s`) covers the very first location on each source.
+    default_est = {
+        "indeed": settings.lead_indeed_est_term_s,
+        "linkedin": settings.lead_linkedin_est_term_s,
+    }
+    term_seconds_total = {s: 0.0 for s in ordered_sources}
+    term_seconds_count = {s: 0 for s in ordered_sources}
 
     for source in ordered_sources:
         cursor_col = f"last_{source}_at"
-        print(f"  -- {source} --")
-        while time.monotonic() < deadline:
+        phase_end = lead_targets.phase_deadline(
+            source, ordered_sources, run_start, budget_seconds,
+            settings.lead_indeed_budget_fraction,
+        )
+        print(f"  -- {source} (phase budget {(phase_end - run_start) / 60:.1f} min) --")
+        while time.monotonic() < phase_end:
             claimed = lead_targets.claim_locations(company_id, source, limit=1)
             if not claimed:
                 print(f"  {source}: nothing due — sweep is caught up")
                 break
             location = claimed[0]
-            loc_index += 1
 
+            rows_for_loc = lead_targets.build_claim_rows(location, terms, overrides)
+            avg_term_s = (
+                term_seconds_total[source] / term_seconds_count[source]
+                if term_seconds_count[source] else default_est[source]
+            )
+            if not lead_targets.location_fits_budget(
+                time.monotonic(), phase_end, avg_term_s, len(rows_for_loc)
+            ):
+                print(f"  {source}: {location['location'][:26]} won't fit in remaining "
+                      f"budget (~{avg_term_s * len(rows_for_loc):.0f}s est) — stopping phase")
+                totals["skipped"] += 1
+                break  # do NOT touch this location; it stays claimable next run
+
+            loc_index += 1
             window = lead_targets.adaptive_window_hours(
                 location.get(cursor_col), settings.lead_window_buffer_hours
             )
-            rows_for_loc = lead_targets.build_claim_rows(location, terms, overrides)
 
             t0 = time.time()
             loc_rows = 0
             loc_new = 0
             completed = True
             for row in rows_for_loc:
-                if time.monotonic() >= deadline:
+                if time.monotonic() >= phase_end:
                     completed = False  # deadline hit mid-location — the
                     break              # unfinished terms are redone next run
 
@@ -202,6 +233,10 @@ def collect(company_id: str, budget_minutes: float, sources: list[str]) -> dict:
                 stat = stats.get(source, {})
                 if stat.get("error"):
                     totals["errors"] += 1
+                elapsed_s = stat.get("elapsed_s")
+                if elapsed_s is not None:
+                    term_seconds_total[source] += elapsed_s
+                    term_seconds_count[source] += 1
                 row_count = stat.get("rows", 0)
                 if found:
                     existing = lead_store.existing_external_ids(
@@ -264,7 +299,7 @@ def collect(company_id: str, budget_minutes: float, sources: list[str]) -> dict:
 
     print(f"\n  {totals['rows']} rows kept, {totals['written']} written, "
           f"{totals['new']} new, {totals['incomplete']} incomplete locations, "
-          f"{totals['errors']} errors")
+          f"{totals['skipped']} skipped (wouldn't fit), {totals['errors']} errors")
 
     # The Indeed failure mode is silence, not an error (ADR-02): the library
     # reaches an undocumented mobile API whose key can rotate upstream, after

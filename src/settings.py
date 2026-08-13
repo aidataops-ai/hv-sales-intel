@@ -18,10 +18,11 @@ class Settings(BaseSettings):
     qualifier_model: str = "gpt-5.6-terra"
     qualifier_reasoning_effort: str = "medium"
     qualifier_batch_size: int = 20
-    # Stage batch sizes. Both stages run as serverless invocations behind
-    # /api/index.py, so a full sweep can't fit one call — each drains a
-    # bounded slice and is safe to re-run (ADR-09).
-    lead_collect_batch: int = 40
+    # Qualify's batch size. It runs as a serverless invocation behind
+    # /api/index.py, so a full drain can't fit one call — it takes a
+    # bounded slice and is safe to re-run (ADR-09). Collect's equivalent
+    # (`lead_collect_batch`, a target COUNT) was retired with the matrix
+    # model — collect is now a wall-clock budget, see `lead_budget_minutes`.
     lead_qualify_batch: int = 60
     # Instant Signals target-dimension collector
     # (docs/refactor/instant-signals-targets.md). Wall-clock budget replaces the old
@@ -34,6 +35,22 @@ class Settings(BaseSettings):
     lead_linkedin_stale_hours: int = 24
     lead_window_buffer_hours: int = 12
     lead_zero_streak_cap: int = 4
+    # Phase-reserve + fit-check (Phase 4 livelock fix): when both boards are
+    # enabled, Indeed's phase is capped at this fraction of the collect
+    # budget so a flood of never-swept locations (e.g. right after a
+    # re-seed) can never fully starve LinkedIn's phase — LinkedIn always
+    # gets the rest of the budget, even if Indeed still has due locations
+    # left. A single enabled source gets the whole budget; there is nothing
+    # to reserve against.
+    lead_indeed_budget_fraction: float = 0.6
+    # Conservative per-term cost estimate used ONLY until this run has its
+    # own observed average (from job_boards' `elapsed_s`) — picking a
+    # location whose full term list can't fit in what's left of the phase
+    # budget is the other half of the livelock fix: it stops the collector
+    # from repeatedly claiming, partially sweeping, and abandoning the same
+    # stalest location every run without ever finishing it.
+    lead_indeed_est_term_s: float = 6.0
+    lead_linkedin_est_term_s: float = 25.0
     # The HTTP cron route's own budget — much smaller than
     # `lead_budget_minutes`, which is the GitHub Actions runner's ceiling.
     # This route still runs inside a serverless invocation with its own

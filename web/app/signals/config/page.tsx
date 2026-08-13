@@ -7,7 +7,7 @@ import SignalsTopBar from "@/components/signals-top-bar"
 import { useAuth } from "@/lib/auth"
 import {
   addLocations, addTerms, getSignalsConfig, setLocationEnabled, setOverride, setTermEnabled,
-  type AddDimensionResult, type NewLocationRow,
+  type AddDimensionResult, type CatalogState, type NewLocationRow,
   type SearchLocation, type SearchTerm, type SignalsConfig, type SweepSourceStatus,
   type TargetOverride,
 } from "@/lib/leads"
@@ -156,6 +156,14 @@ function GeographyPanel({
   const [adding, setAdding] = useState(false)
   const byState = useMemo(() => groupBy(locations, (l) => l.state), [locations])
 
+  // Catalog states with zero live rows — otherwise invisible except as a
+  // text hint in AddStateForm's suggestion line. GA/NC/SC/TN land here for
+  // any tenant that hasn't adopted them yet.
+  const unadoptedStates = useMemo(
+    () => catalog.states.filter((s) => !byState[s.code]),
+    [catalog.states, byState],
+  )
+
   return (
     <Panel
       icon={<MapPin className="w-4 h-4" />}
@@ -201,7 +209,61 @@ function GeographyPanel({
           <EmptyRow>No states yet — add one to start collecting.</EmptyRow>
         )}
       </div>
+
+      {unadoptedStates.length > 0 && (
+        <div className="mt-3 pt-3 border-t border-gray-100 dark:border-white/5">
+          <div className="text-[11px] text-gray-400 dark:text-gray-500 mb-1.5">
+            In the config catalog, not yet added:
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {unadoptedStates.map((s) => (
+              <AdoptStateChip key={s.code} state={s} onChanged={onChanged} />
+            ))}
+          </div>
+        </div>
+      )}
     </Panel>
+  )
+}
+
+/** A catalog state with no live `search_locations` rows yet — a scaled-up
+ *  `AddCityChip`: one click adds the statewide row plus every catalog city
+ *  for that state in a single request, no form. Keeps a checked-in
+ *  geography.json expansion (a new state added for every tenant) from being
+ *  invisible until someone notices the text hint in `AddStateForm`. */
+function AdoptStateChip({
+  state,
+  onChanged,
+}: {
+  state: CatalogState
+  onChanged: () => Promise<void>
+}) {
+  const [busy, setBusy] = useState(false)
+  const cityCount = state.cities.length
+
+  async function adopt() {
+    setBusy(true)
+    const rows: NewLocationRow[] = [
+      ...(state.statewide_query
+        ? [{ location: state.statewide_query, state: state.code, granularity: "state" as const }]
+        : []),
+      ...state.cities.map((c) => ({ location: c, state: state.code, granularity: "city" as const })),
+    ]
+    await addLocations(rows)
+    await onChanged()
+    setBusy(false)
+  }
+
+  return (
+    <button
+      onClick={adopt}
+      disabled={busy}
+      title={`Add ${state.code} — ${cityCount} ${cityCount === 1 ? "city" : "cities"} from the config catalog`}
+      className="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border border-dashed border-gray-300 dark:border-white/15 text-gray-400 dark:text-gray-500 hover:border-teal-400 hover:text-teal-600 transition disabled:opacity-50"
+    >
+      {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
+      {state.code} · {cityCount} {cityCount === 1 ? "city" : "cities"}
+    </button>
   )
 }
 

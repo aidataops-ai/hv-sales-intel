@@ -418,3 +418,27 @@ self-heals). New tables can be dropped or left inert.
 | Real multi-state tenants | ICP-driven cadence tiers; ICP → targets derivation |
 | ~20+ states | Shard collect by state-group (disjoint claims) |
 | Separate track | `claim_unqualified` SQL anti-join; Supabase client singleton; lazy `openai` import; 1000-row-cap sweep; analyze-path concurrency |
+
+### Confirmed by the pre-merge branch review, deferred deliberately
+
+Findings from the 2026-08-13 adversarial review that are real but out of this
+refactor's scope — each needs its own change with its own owner:
+
+- **`scripts/seed_practices.py` is hardcoded to FL** (`.eq('state','FL')` in
+  `demand_locations`, and `_loc_key` strips state) — the practice bank never
+  expands into GA/NC/SC/TN from observed leads, so new-state leads go
+  unmatched until the seeding script is made multi-state.
+- **City facet/filter collapses cross-state duplicates** — `job_postings.city`
+  is used without state in the leads facet and `cities` filter
+  (`lead_store.py`), so Greenville NC and Greenville SC merge into one entry
+  whose selection returns both states' leads (feed + CSV export). Fix is a
+  `"City, ST"` facet key, which touches the feed API and the filter UI.
+- **ICP scorer hardcodes FL as focus market** — already covered by the
+  "ICP-driven cadence tiers / ICP → targets" deferred row; the same wiring
+  must feed `geographies.focus_states` into `icp_scorer._vertical_fit`.
+- **Metro-overlap city curation** — several new GA/SC cities sit inside
+  another listed city's 50-mile search radius (six Atlanta-metro entries,
+  four Charleston-metro). Yield decay cannot prune them (they return plenty
+  of already-seen rows, not zero rows). Wants either curation or a
+  novelty-based (not zero-row-based) decay signal — revisit with the
+  per-source novelty data this refactor starts collecting.

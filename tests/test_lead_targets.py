@@ -47,6 +47,57 @@ def test_effective_threshold_caps_growth():
 
 
 # --------------------------------------------------------------------------
+# phase_deadline / location_fits_budget — the livelock fix (plan §3, Phase 4).
+# --------------------------------------------------------------------------
+
+
+def test_phase_deadline_reserves_a_fraction_for_indeed_when_both_enabled():
+    d = lead_targets.phase_deadline(
+        "indeed", ["indeed", "linkedin"], start=1000.0, budget_seconds=600.0,
+        indeed_fraction=0.6,
+    )
+    assert d == 1000.0 + 360.0
+
+
+def test_phase_deadline_gives_linkedin_the_full_budget_when_both_enabled():
+    """Not a split — indeed's reserve caps ITS phase, but linkedin still
+    gets the whole run deadline, not "whatever's left of the total"."""
+    d = lead_targets.phase_deadline(
+        "linkedin", ["indeed", "linkedin"], start=1000.0, budget_seconds=600.0,
+        indeed_fraction=0.6,
+    )
+    assert d == 1000.0 + 600.0
+
+
+def test_phase_deadline_gives_a_single_enabled_source_the_full_budget():
+    for source, sources in (("linkedin", ["linkedin"]), ("indeed", ["indeed"])):
+        d = lead_targets.phase_deadline(
+            source, sources, start=1000.0, budget_seconds=600.0, indeed_fraction=0.6,
+        )
+        assert d == 1000.0 + 600.0
+
+
+def test_location_fits_budget_true_with_headroom():
+    # estimate = 5*3=15s, *0.8 safety = 12s; now(0)+12 <= deadline(100)
+    assert lead_targets.location_fits_budget(
+        now=0.0, phase_deadline_ts=100.0, avg_term_seconds=5.0, term_count=3,
+    ) is True
+
+
+def test_location_fits_budget_false_when_estimate_exceeds_remaining():
+    # estimate = 25*3=75s, *0.8 safety = 60s; now(90)+60=150 > deadline(100)
+    assert lead_targets.location_fits_budget(
+        now=90.0, phase_deadline_ts=100.0, avg_term_seconds=25.0, term_count=3,
+    ) is False
+
+
+def test_location_fits_budget_zero_terms_always_fits():
+    assert lead_targets.location_fits_budget(
+        now=99.9, phase_deadline_ts=100.0, avg_term_seconds=999.0, term_count=0,
+    ) is True
+
+
+# --------------------------------------------------------------------------
 # build_claim_rows — pure cross of one location with enabled terms, minus
 # override-disabled cells. The claim contract callers depend on.
 # --------------------------------------------------------------------------
@@ -350,6 +401,64 @@ def test_catalog_tracks_group_every_term_under_its_service_line():
     assert set(tracks) == set(lead_config.service_lines())
     flat = [term for terms in tracks.values() for term in terms]
     assert len(flat) == len(lead_config.role_terms())
+
+
+# --------------------------------------------------------------------------
+# Seeding — ensure_targets now diff-seeds unconditionally (Phase 4: the old
+# "only seed when zero locations" gate made config expansions invisible to
+# already-seeded tenants).
+# --------------------------------------------------------------------------
+
+
+def test_ensure_targets_seeds_even_when_the_tenant_already_has_rows(monkeypatch):
+    """The old gate short-circuited on an existence check before ever
+    upserting. `_FakeUpsertClient` has no `.select()` at all, so if
+    `ensure_targets` regressed back to gating on one, this would fail with
+    an AttributeError instead of quietly passing — the fake enforces the
+    "no existence check" contract, not just the outcome."""
+    calls = []
+    monkeypatch.setattr(
+        "src.storage._get_client", lambda: _FakeUpsertClient(calls)
+    )
+    result = lead_targets.ensure_targets("co")
+    tables = [c["table"] for c in calls]
+    assert "search_terms" in tables
+    assert "search_locations" in tables
+    assert set(result) == {"terms", "locations"}
+
+
+def test_seed_search_targets_reports_true_inserted_counts_not_attempted(monkeypatch):
+    """`ignore_duplicates` upsert's RETURNING only includes rows Postgres
+    actually inserted — a conflicting (already-existing) row never reaches
+    RETURNING. `inserted` must reflect that count, not the batch size sent."""
+
+    class _FakePartialInsertClient:
+        def __init__(self):
+            self._table = None
+
+        def table(self, name):
+            self._table = name
+            return self
+
+        def upsert(self, rows, on_conflict=None, ignore_duplicates=False):
+            # Simulate Postgres: only the first row of the batch was
+            # actually new, the rest already existed and were skipped.
+            self._returned = rows[:1]
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": self._returned})()
+
+    monkeypatch.setattr(
+        "src.storage._get_client", lambda: _FakePartialInsertClient()
+    )
+    result = lead_targets.seed_search_targets("co")
+    assert result["terms"] == 1
+    assert result["locations"] == 1
+    # Sanity: the full config batch is bigger than 1 row per table, so this
+    # is genuinely exercising "fewer inserted than attempted", not a fluke.
+    assert len(lead_config.role_terms()) > 1
+    assert len(lead_config.locations()) > 1
 
 
 # --------------------------------------------------------------------------

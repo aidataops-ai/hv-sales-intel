@@ -2097,6 +2097,15 @@ def cron_collect_leads(
     inside a serverless invocation with its own wall-clock ceiling, unlike
     `scripts/run_leads.py` on the Actions runner, which is the steady-state
     path this route now shadows for a manual/quick trigger.
+
+    Indeed's phase is capped at `lead_indeed_budget_fraction` of the budget
+    when both sources are enabled (LinkedIn always gets the rest), and a
+    location whose estimated cost (this run's own observed per-term timing)
+    doesn't fit the remaining phase is never started at all — see
+    `lead_targets.phase_deadline` / `location_fits_budget` for why: without
+    both, a re-seed flooding Indeed with never-swept locations can starve
+    LinkedIn for the whole run, and the stalest LinkedIn location can get
+    claimed, partially swept, and abandoned unstamped every run forever.
     """
     _require_cron_secret(x_cron_secret, authorization)
     from src.job_boards import search_jobs
@@ -2123,30 +2132,52 @@ def cron_collect_leads(
         "company_id": tenant, "sources": sources,
         "seeded": seeded["terms"] + seeded["locations"],
         "locations": 0, "rows": 0, "written": 0, "new": 0,
-        "incomplete": 0, "errors": [],
+        "incomplete": 0, "skipped": 0, "errors": [],
     }
     # Per-source zero-row tripwire bookkeeping: swept count + total rows.
     per_source = {s: {"locations": 0, "rows": 0} for s in sources}
 
-    deadline = _time.monotonic() + budget * 60
+    run_start = _time.monotonic()
+    budget_seconds = budget * 60
+    default_est = {
+        "indeed": app_settings.lead_indeed_est_term_s,
+        "linkedin": app_settings.lead_linkedin_est_term_s,
+    }
+    term_seconds_total = {s: 0.0 for s in sources}
+    term_seconds_count = {s: 0 for s in sources}
+
     for source in sources:
         cursor_col = f"last_{source}_at"
-        while _time.monotonic() < deadline:
+        phase_end = lead_targets.phase_deadline(
+            source, sources, run_start, budget_seconds,
+            app_settings.lead_indeed_budget_fraction,
+        )
+        while _time.monotonic() < phase_end:
             claimed = lead_targets.claim_locations(tenant, source, limit=1)
             if not claimed:
                 break
             location = claimed[0]
-            summary["locations"] += 1
 
+            rows_for_loc = lead_targets.build_claim_rows(location, terms, overrides)
+            avg_term_s = (
+                term_seconds_total[source] / term_seconds_count[source]
+                if term_seconds_count[source] else default_est[source]
+            )
+            if not lead_targets.location_fits_budget(
+                _time.monotonic(), phase_end, avg_term_s, len(rows_for_loc)
+            ):
+                summary["skipped"] += 1
+                break  # do NOT touch this location; it stays claimable next run
+
+            summary["locations"] += 1
             window = lead_targets.adaptive_window_hours(
                 location.get(cursor_col), app_settings.lead_window_buffer_hours
             )
-            rows_for_loc = lead_targets.build_claim_rows(location, terms, overrides)
 
             loc_rows = 0
             completed = True
             for row in rows_for_loc:
-                if _time.monotonic() >= deadline:
+                if _time.monotonic() >= phase_end:
                     completed = False
                     break
                 try:
@@ -2160,6 +2191,10 @@ def cron_collect_leads(
                 stat = stats.get(source, {})
                 if stat.get("error"):
                     summary["errors"].append(f"{source}: {stat['error']}")
+                elapsed_s = stat.get("elapsed_s")
+                if elapsed_s is not None:
+                    term_seconds_total[source] += elapsed_s
+                    term_seconds_count[source] += 1
                 row_count = stat.get("rows", 0)
                 if found:
                     existing = lead_store.existing_external_ids(

@@ -246,6 +246,128 @@ def test_an_incomplete_location_is_not_stamped(monkeypatch):
     assert body["rows"] == 1
 
 
+def test_reserve_deadline_stops_indeed_before_the_full_budget_so_linkedin_still_runs(
+    monkeypatch,
+):
+    """Phase reserve (plan §3, Phase 4 livelock fix): Indeed's phase is capped
+    at a fraction of the total budget even though `claim_locations` keeps
+    returning a due location on every call — otherwise a flooded Indeed
+    phase (e.g. right after a re-seed) could consume the entire run and
+    LinkedIn would never get a turn."""
+    monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
+    monkeypatch.setattr("src.lead_targets.resolve_company_id", lambda: "c1")
+    monkeypatch.setattr("src.lead_targets.ensure_targets", lambda c: _NO_SEED)
+    monkeypatch.setattr(settings, "lead_indeed_budget_fraction", 0.6)
+    monkeypatch.setattr(settings, "lead_indeed_est_term_s", 6.0)
+    monkeypatch.setattr(settings, "lead_linkedin_est_term_s", 25.0)
+    monkeypatch.setattr("src.lead_targets.enabled_terms", lambda c: [
+        {"id": 10, "term": "dental receptionist", "service_line": "Virtual Dental Assistant"},
+    ])
+    monkeypatch.setattr(
+        "src.lead_targets.list_config",
+        lambda c: {"terms": [], "locations": [], "overrides": []},
+    )
+    monkeypatch.setattr("src.lead_targets.record_target_result", lambda *a: None)
+    monkeypatch.setattr("src.lead_store.existing_external_ids", lambda source, ids: set())
+    monkeypatch.setattr("src.lead_store.upsert_postings", lambda rows: 0)
+    monkeypatch.setattr(
+        "src.job_boards.search_jobs",
+        lambda *a, **k: ([], {"indeed": {"rows": 0, "error": None, "elapsed_s": 0.1},
+                              "linkedin": {"rows": 0, "error": None, "elapsed_s": 0.1}}),
+    )
+
+    stamp_calls = []
+    monkeypatch.setattr(
+        "src.lead_targets.stamp_location",
+        lambda company_id, location_id, source: stamp_calls.append(source),
+    )
+    monkeypatch.setattr("src.lead_targets.record_location_sweep", lambda *a: None)
+
+    # A fake clock driven by claim_locations itself (not by search — kept
+    # near-instant here) so the reserve's own arithmetic is what's under
+    # test, isolated from the fit-check's estimate.
+    clock = {"t": 0.0}
+    monkeypatch.setattr(real_time, "monotonic", lambda: clock["t"])
+
+    def fake_claim(company_id, source, limit):
+        clock["t"] += 25.0  # simulate wall-clock spent claiming + processing
+        return [_one_location()]
+
+    monkeypatch.setattr("src.lead_targets.claim_locations", fake_claim)
+
+    body = client.post(
+        "/api/cron/leads/collect?budget_minutes=2",
+        headers={"X-Cron-Secret": "s3cret"},
+    ).json()
+
+    # 120s budget, 0.6 fraction -> indeed's phase deadline is 72s. Clock
+    # advances 25s per claim: indeed fits two locations (25s, 50s) then the
+    # third claim (75s) fails the fit check and the phase ends — LinkedIn
+    # then gets its own full-budget phase (deadline 120s) and fits one more
+    # (100s) before its own third claim (125s) also stops it.
+    assert stamp_calls == ["indeed", "indeed", "linkedin"]
+    assert body["locations"] == 3
+    assert body["skipped"] == 2
+
+
+def test_fit_check_skips_a_location_that_wont_fit_and_never_touches_it(monkeypatch):
+    """`location_fits_budget` must stop a location from ever being claimed
+    and started once this run's own observed per-term cost says it can't
+    finish in what's left of the phase — the fix for the cross-run livelock
+    where the same stalest location gets partially swept and abandoned,
+    unstamped, every run forever."""
+    monkeypatch.setattr(settings, "lead_cron_secret", "s3cret")
+    monkeypatch.setattr("src.lead_targets.resolve_company_id", lambda: "c1")
+    monkeypatch.setattr("src.lead_targets.ensure_targets", lambda c: _NO_SEED)
+    monkeypatch.setattr("src.lead_config.enabled_sources", lambda: ("indeed",))
+    monkeypatch.setattr(settings, "lead_indeed_est_term_s", 6.0)
+    monkeypatch.setattr("src.lead_targets.enabled_terms", lambda c: [
+        {"id": 10, "term": "dental receptionist", "service_line": "Virtual Dental Assistant"},
+        {"id": 11, "term": "medical assistant", "service_line": "Virtual Medical Assistant"},
+    ])
+    monkeypatch.setattr(
+        "src.lead_targets.list_config",
+        lambda c: {"terms": [], "locations": [], "overrides": []},
+    )
+    monkeypatch.setattr("src.lead_targets.record_target_result", lambda *a: None)
+    monkeypatch.setattr("src.lead_store.existing_external_ids", lambda source, ids: set())
+    monkeypatch.setattr("src.lead_store.upsert_postings", lambda rows: 0)
+    monkeypatch.setattr(
+        "src.lead_targets.claim_locations", lambda c, s, limit: [_one_location()]
+    )
+
+    stamp_calls = []
+    monkeypatch.setattr("src.lead_targets.stamp_location",
+                        lambda *a: stamp_calls.append(a))
+    monkeypatch.setattr("src.lead_targets.record_location_sweep", lambda *a: None)
+
+    clock = {"t": 0.0}
+    monkeypatch.setattr(real_time, "monotonic", lambda: clock["t"])
+    search_calls = []
+
+    def fake_search(term, location, sources=None, target=None, hours_old=None):
+        search_calls.append(term)
+        clock["t"] += 15.0
+        return ([], {"indeed": {"rows": 0, "error": None, "elapsed_s": 15.0}})
+
+    monkeypatch.setattr("src.job_boards.search_jobs", fake_search)
+
+    # A 40s budget (single source -> the whole budget is indeed's phase).
+    # Location #1 (2 terms, default 6s/term estimate) fits and completes,
+    # observing a REAL 15s/term average along the way. That real average is
+    # what dooms location #2: estimate = 15*2*0.8 = 24s, and only 10s is
+    # left (30s elapsed of 40s) — the fit check must refuse to start it.
+    body = client.post(
+        f"/api/cron/leads/collect?budget_minutes={40 / 60:.10f}",
+        headers={"X-Cron-Secret": "s3cret"},
+    ).json()
+
+    assert len(search_calls) == 2, "only the first (fitting) location should ever search"
+    assert len(stamp_calls) == 1
+    assert body["locations"] == 1
+    assert body["skipped"] == 1
+
+
 def test_running_out_of_credits_stops_the_run_cleanly(monkeypatch):
     """Stop rather than keep calling the model against a balance that can't
     pay. The postings stay unqualified and are re-claimed after a top-up."""
