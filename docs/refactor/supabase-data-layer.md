@@ -11,6 +11,68 @@ Live scale at time of audit (prod project `ovzzusccogpuyfyybaml`):
 `leads` 6.7k · `usage_events` 4.1k. **Anything unpaginated against these
 tables is already truncated at PostgREST's silent 1,000-row cap.**
 
+## Deployment reality: Vercel functions + Supabase free tier
+
+This app runs as Vercel serverless functions against a free-tier Supabase
+project. Four limits bind, and they change what the fixes below are *for* —
+several stop being latency niceties and become cost/survival requirements.
+
+**1. Supabase free egress: 5 GB/month — and the qualify stage alone would
+blow it ~7×.** Egress is all data leaving Supabase, whether to a Vercel
+function or a GitHub Actions runner. The two §2 cron hogs, measured against
+live table sizes:
+
+- `claim_unqualified` in steady state scans essentially the whole
+  `job_postings` table newest-first with `select("*")` (nearly every row is
+  already qualified, so it keeps paging), transferring on the order of the
+  table's 45 MB **per qualify run**.
+- `load_practices_by_city` streams the whole service-line-tagged practices
+  bank (~23 MB table) per run, filtering client-side.
+
+At the hourly cadence the pipeline is built for, that is roughly
+**(30-50 MB × 24 × 30) ≈ 25-35 GB/month against a 5 GB cap** — the single
+largest cost item in the codebase, and it applies wherever the pipeline
+runs (GH Actions egress counts the same). The frontend adds real egress
+too: the practices map query pulls 500 `select("*")` rows (call scripts,
+email drafts) per page load. Consequence: **the §2 query-diet items for the
+two cron reads are promoted into Phase 2** — they are prerequisites for
+running the pipeline at all on this tier, not polish.
+
+**2. Supabase free database: 500 MB — at 105 MB today, and `job_postings`
+(45 MB) is the growth driver.** Every judged posting is stored, discards
+included (~13:1 discard ratio), full `description` and all. At the new
+pipeline's collection scale the cap is months away. New item this
+investigation adds: a **retention migration** — null out `description` (or
+delete the row) for discarded postings older than ~30 days; the verdict
+row in `company_job_leads` is what analytics needs, not the body text.
+
+**3. Supabase free compute is a shared-CPU Nano instance.** Per-row RLS
+`auth.*()` re-evaluation (§5), `count="exact"` over the 29k-row join on
+every list page (§2), and Python-side aggregation that forces full scans
+(§1) all land on that tiny instance — the DB-side fixes matter *more* here,
+not less. A slow query also holds one of a small number of pooled
+connections longer.
+
+**4. Vercel functions are short-lived, per-instance, and capped in
+seconds.** Four consequences:
+
+- The **120s default PostgREST timeout (§0.3) exceeds the function
+  ceiling** on the Hobby plan (seconds to low minutes depending on config)
+  — a hung query kills the invocation with no error path. The explicit
+  timeout must sit well under the function limit (~10-15s).
+- **In-process caches only live per warm instance.** The `_get_client`
+  singleton still pays (6-27 constructions → 1 per warm instance), but the
+  auth fix should be **stateless first**: verify the JWT locally (drops the
+  GoTrue round trip) + merge profile/membership into one query — a TTL
+  cache is a bonus on warm paths, not the mechanism.
+- **CSV exports must fit the duration cap.** The practices export's ~15k
+  sequential write round trips (§3) plus a 23k-row paged read cannot finish
+  inside a Hobby function limit — the bulk-write fix is what makes exports
+  work at all, and the "streaming" responses should stream for real instead
+  of materializing everything first.
+- Frontend polling/refetch patterns (§4) burn Vercel invocations *and*
+  Supabase egress — every invocation also pays the 3-4 auth round trips.
+
 ## 0. Why the app feels slow — the two amplifiers
 
 Every finding in this document is multiplied by these two. Fix them first;
@@ -201,18 +263,28 @@ compounded with §0.2 — is the honest answer to "why is the app slow."
 
 ## 7. Proposed phasing (one PR each, staging first)
 
-1. **Foundation** — memoize `_get_client`; `ClientOptions` timeouts; auth
-   `def` + local JWT verify + merged membership query; cache OpenAI clients
-   (+timeouts). Small diff, discounts everything.
-2. **Correctness** — §1 rows 1-7: paginate or aggregate the truncated
-   reads; chunk + bulk the export-count writes. Analytics/usage/users
-   numbers become right again.
-3. **Query diet** — §2: column lists, anti-join for `claim_unqualified`,
-   server-side city filter in the matcher, `count="planned"`, facets RPC.
+Reordered for the free-tier constraints above: the egress-critical cron
+reads move up into Phase 2, and the auth fix is stateless-first.
+
+1. **Foundation** — memoize `_get_client`; `ClientOptions` timeout (~10-15s,
+   under the Vercel function ceiling); auth as plain `def` + local JWT
+   verify + merged profile/membership query (stateless — per-instance TTL
+   cache only as a bonus); cache OpenAI clients (+timeouts). Small diff,
+   discounts everything.
+2. **Correctness + cost survival** — §1 rows 1-7 (paginate or aggregate the
+   truncated reads; chunk + bulk the export-count writes so exports fit the
+   function duration cap) **plus the two egress hogs**: `claim_unqualified`
+   scans on `select("id")` (or the anti-join RPC) and the matcher's city
+   filter pushed server-side. **Plus the retention migration** for
+   discarded postings' descriptions. This phase is what makes the hourly
+   pipeline affordable inside 5 GB/month and keeps the DB under 500 MB.
+3. **Query diet** — the rest of §2: column lists on list/export/detail
+   paths, `count="planned"`, facets RPC/aggregate.
 4. **Round-trip consolidation** — §3 N+1s and redundant reads; §4 frontend
-   splice-not-refetch, parallel auth, bulk toggle route, session endpoint.
-5. **DB migration** — §5 RLS initplan + FK indexes (+ unused-index cleanup
-   last).
+   splice-not-refetch, parallel auth, bulk toggle route, session endpoint
+   (also trims Vercel invocation count).
+5. **DB migration** — §5 RLS initplan + FK indexes on the Nano instance
+   (+ unused-index cleanup last).
 
 Verification gates per phase: `pytest` (baseline: 20 pre-existing failures
 in auth/call_log/enrich/practices families), `npm run build`, and a
