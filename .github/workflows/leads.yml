@@ -3,13 +3,9 @@ name: Lead Pipeline
 # Runs the collect -> qualify sweep that used to live in Vercel Cron. A GitHub
 # runner has no serverless wall-clock ceiling, so the full sweep runs in one
 # shot via scripts/run_leads.py instead of two bounded hourly HTTP stages.
-#
-# Dispatch-only since 2026-08-15: the OLD matrix pipeline no longer runs on a
-# schedule — the scheduled sweeps are leads-indeed.yml / leads-linkedin.yml,
-# which run the STAGING pipeline until it is promoted to main. This file
-# remains the manual retrigger target (dispatch it with ref=staging to run
-# the new pipeline by hand).
 on:
+  schedule:
+    - cron: '0 * * * *'   # hourly, on the hour (UTC)
   workflow_dispatch:
     inputs:
       stage:
