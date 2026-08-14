@@ -3,6 +3,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { Loader2, Plus, MapPin, Tags, Pin, X } from "lucide-react"
 
+import PipelineToggleButton from "@/components/pipeline-toggle-button"
+import RetriggerButton from "@/components/retrigger-button"
 import SignalsTopBar from "@/components/signals-top-bar"
 import { useAuth } from "@/lib/auth"
 import {
@@ -56,15 +58,23 @@ export default function SignalsConfigPage() {
       <SignalsTopBar />
       <main className="pt-14">
         <div className="max-w-[1200px] mx-auto p-4 space-y-4">
-          <header className="px-1">
-            <h1 className="font-serif text-lg font-semibold text-gray-900 dark:text-white">
-              Collector configuration
-            </h1>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
-              What the pipeline searches for — states, cities, tracks &amp; keywords.
-              Changes take effect on the next{" "}
-              <span className="text-gray-400 dark:text-gray-500">Run pipeline</span> sweep.
-            </p>
+          <header className="px-1 flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h1 className="font-serif text-lg font-semibold text-gray-900 dark:text-white">
+                Collector configuration
+              </h1>
+              <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
+                What the pipeline searches for — states, cities, tracks &amp; keywords.
+                Changes take effect on the next{" "}
+                <span className="text-gray-400 dark:text-gray-500">Run pipeline</span> sweep.
+              </p>
+            </div>
+            {user?.role === "admin" && (
+              <div className="flex items-center gap-2">
+                <PipelineToggleButton />
+                <RetriggerButton />
+              </div>
+            )}
           </header>
 
           {authLoading || loading ? (

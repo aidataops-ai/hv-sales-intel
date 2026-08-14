@@ -2519,84 +2519,116 @@ def _github_actions_headers() -> dict:
     }
 
 
-def _leads_workflow_url() -> str:
+def _scheduled_workflow_files() -> list[str]:
+    """The workflow files the pause/resume toggle controls.
+
+    The scheduled pair by default (source-split, one workflow per board).
+    Falls back to the dispatch workflow if the list is configured empty, so
+    the toggle can never be a silent no-op.
+    """
+    files = [
+        f.strip()
+        for f in app_settings.github_leads_scheduled_workflows.split(",")
+        if f.strip()
+    ]
+    return files or [app_settings.github_leads_workflow]
+
+
+def _workflow_url(workflow_file: str) -> str:
     return (
         f"https://api.github.com/repos/{app_settings.github_repo}"
-        f"/actions/workflows/{app_settings.github_leads_workflow}"
+        f"/actions/workflows/{workflow_file}"
     )
 
 
 @app.get("/api/admin/leads/pipeline")
 async def get_lead_pipeline_state(admin: dict = Depends(require_admin)):
-    """Report whether the scheduled pipeline workflow is active or paused.
+    """Report whether the scheduled pipeline workflows are active or paused.
 
-    Reads the workflow's `state` from GitHub: "active" means the hourly cron
-    will fire; any of the disabled_* states means it won't. Collapsed to a
-    two-value state so the frontend toggle doesn't care *how* it was disabled.
+    Reads each scheduled workflow's `state` from GitHub: "active" means its
+    cron will fire; any of the disabled_* states means it won't. Collapsed to
+    a two-value state — "active" if ANY scheduled workflow is active — so the
+    frontend toggle doesn't care how many workflows exist or how one was
+    disabled. A workflow GitHub hasn't registered yet (404 — e.g. the file
+    hasn't landed on the default branch) is skipped, not an error.
     """
     headers = _github_actions_headers()
 
     import httpx
+    states: dict[str, str] = {}
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(_leads_workflow_url(), headers=headers)
+            for wf in _scheduled_workflow_files():
+                resp = await client.get(_workflow_url(wf), headers=headers)
+                if resp.status_code == 404:
+                    continue
+                if resp.status_code != 200:
+                    detail = (resp.text or "").strip()[:200]
+                    raise HTTPException(
+                        502,
+                        f"GitHub rejected the state read ({resp.status_code}): {detail}",
+                    )
+                states[wf] = resp.json().get("state", "")
+    except HTTPException:
+        raise
     except Exception as e:
         log.warning("[leads.pipeline.state.error] %s: %s",
                     type(e).__name__, str(e)[:200])
         raise HTTPException(502, "Could not reach GitHub to read the workflow state")
 
-    if resp.status_code != 200:
-        detail = (resp.text or "").strip()[:200]
-        raise HTTPException(
-            502, f"GitHub rejected the state read ({resp.status_code}): {detail}"
-        )
-
-    gh_state = resp.json().get("state", "")
-    return {"state": "active" if gh_state == "active" else "paused",
-            "github_state": gh_state}
+    any_active = any(s == "active" for s in states.values())
+    return {"state": "active" if any_active else "paused",
+            "workflows": states}
 
 
 @app.post("/api/admin/leads/pipeline/stop")
 async def stop_lead_pipeline(admin: dict = Depends(require_admin)):
-    """Pause the pipeline: disable the scheduled workflow and cancel live runs.
+    """Pause the pipeline: disable every scheduled workflow, cancel live runs.
 
-    Disabling the workflow stops the hourly cron (and blocks manual dispatches)
-    but leaves an in-flight run going, so queued and in-progress runs are
-    cancelled too — after the click nothing should still be spending credits.
-    A failed cancel of one run doesn't fail the request: the workflow is
-    already disabled, which is the part that must not silently no-op.
+    Disabling a workflow stops its cron but leaves an in-flight run going, so
+    queued and in-progress runs are cancelled too — after the click nothing
+    should still be spending credits. A failed cancel of one run doesn't fail
+    the request: the workflows are already disabled, which is the part that
+    must not silently no-op. Unregistered workflows (404) are skipped; the
+    manual dispatch workflow is deliberately NOT in this set, so "Run
+    pipeline" keeps working while paused.
     """
     headers = _github_actions_headers()
-    base = _leads_workflow_url()
 
     import httpx
+    disabled: list[str] = []
+    cancelled = 0
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.put(f"{base}/disable", headers=headers)
-            if resp.status_code != 204:
-                detail = (resp.text or "").strip()[:200]
-                log.warning("[leads.pipeline.stop.rejected] status=%s body=%s",
-                            resp.status_code, detail)
-                raise HTTPException(
-                    502, f"GitHub rejected the disable ({resp.status_code}): {detail}"
-                )
-
-            cancelled = 0
-            for status in ("queued", "in_progress"):
-                runs_resp = await client.get(
-                    f"{base}/runs", headers=headers,
-                    params={"status": status, "per_page": 100},
-                )
-                if runs_resp.status_code != 200:
+            for wf in _scheduled_workflow_files():
+                base = _workflow_url(wf)
+                resp = await client.put(f"{base}/disable", headers=headers)
+                if resp.status_code == 404:
                     continue
-                for run in runs_resp.json().get("workflow_runs", []):
-                    cancel_resp = await client.post(
-                        f"https://api.github.com/repos/{app_settings.github_repo}"
-                        f"/actions/runs/{run['id']}/cancel",
-                        headers=headers,
+                if resp.status_code != 204:
+                    detail = (resp.text or "").strip()[:200]
+                    log.warning("[leads.pipeline.stop.rejected] wf=%s status=%s body=%s",
+                                wf, resp.status_code, detail)
+                    raise HTTPException(
+                        502, f"GitHub rejected the disable ({resp.status_code}): {detail}"
                     )
-                    if cancel_resp.status_code == 202:
-                        cancelled += 1
+                disabled.append(wf)
+
+                for status in ("queued", "in_progress"):
+                    runs_resp = await client.get(
+                        f"{base}/runs", headers=headers,
+                        params={"status": status, "per_page": 100},
+                    )
+                    if runs_resp.status_code != 200:
+                        continue
+                    for run in runs_resp.json().get("workflow_runs", []):
+                        cancel_resp = await client.post(
+                            f"https://api.github.com/repos/{app_settings.github_repo}"
+                            f"/actions/runs/{run['id']}/cancel",
+                            headers=headers,
+                        )
+                        if cancel_resp.status_code == 202:
+                            cancelled += 1
     except HTTPException:
         raise
     except Exception as e:
@@ -2604,34 +2636,42 @@ async def stop_lead_pipeline(admin: dict = Depends(require_admin)):
                     type(e).__name__, str(e)[:200])
         raise HTTPException(502, "Could not reach GitHub to stop the pipeline")
 
-    log.info("[leads.pipeline.stop] cancelled=%s by=%s", cancelled, admin.get("id"))
-    return {"ok": True, "state": "paused", "cancelled_runs": cancelled}
+    log.info("[leads.pipeline.stop] disabled=%s cancelled=%s by=%s",
+             disabled, cancelled, admin.get("id"))
+    return {"ok": True, "state": "paused", "workflows": disabled,
+            "cancelled_runs": cancelled}
 
 
 @app.post("/api/admin/leads/pipeline/resume")
 async def resume_lead_pipeline(admin: dict = Depends(require_admin)):
-    """Resume the pipeline: re-enable the workflow so the hourly cron fires."""
+    """Resume the pipeline: re-enable every scheduled workflow's cron."""
     headers = _github_actions_headers()
 
     import httpx
+    enabled: list[str] = []
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.put(f"{_leads_workflow_url()}/enable", headers=headers)
+            for wf in _scheduled_workflow_files():
+                resp = await client.put(f"{_workflow_url(wf)}/enable", headers=headers)
+                if resp.status_code == 404:
+                    continue
+                if resp.status_code != 204:
+                    detail = (resp.text or "").strip()[:200]
+                    log.warning("[leads.pipeline.resume.rejected] wf=%s status=%s body=%s",
+                                wf, resp.status_code, detail)
+                    raise HTTPException(
+                        502, f"GitHub rejected the enable ({resp.status_code}): {detail}"
+                    )
+                enabled.append(wf)
+    except HTTPException:
+        raise
     except Exception as e:
         log.warning("[leads.pipeline.resume.error] %s: %s",
                     type(e).__name__, str(e)[:200])
         raise HTTPException(502, "Could not reach GitHub to resume the pipeline")
 
-    if resp.status_code != 204:
-        detail = (resp.text or "").strip()[:200]
-        log.warning("[leads.pipeline.resume.rejected] status=%s body=%s",
-                    resp.status_code, detail)
-        raise HTTPException(
-            502, f"GitHub rejected the enable ({resp.status_code}): {detail}"
-        )
-
-    log.info("[leads.pipeline.resume] by=%s", admin.get("id"))
-    return {"ok": True, "state": "active"}
+    log.info("[leads.pipeline.resume] enabled=%s by=%s", enabled, admin.get("id"))
+    return {"ok": True, "state": "active", "workflows": enabled}
 
 
 # ---------------------------------------------------------------------------

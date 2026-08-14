@@ -92,6 +92,14 @@ class Settings(BaseSettings):
     github_token: str = ""
     github_repo: str = "aidataops-ai/hv-sales-intel"
     github_leads_workflow: str = "leads.yml"
+    # The workflows the pause/resume toggle controls — the SCHEDULED pair
+    # (source-split 2026-08-14), comma-separated. Deliberately excludes
+    # `github_leads_workflow` (leads.yml, dispatch-only): pausing stops the
+    # automatic spend but leaves the manual "Run pipeline" dispatch working.
+    # Workflow enable/disable is repo-level, not per-branch — listing a
+    # workflow that carries another environment's cron here would pause that
+    # environment too.
+    github_leads_scheduled_workflows: str = "leads-indeed.yml,leads-linkedin.yml"
     github_workflow_ref: str = "main"
 
     # Bootstrap admin (seeded on startup if profiles has zero admins)
