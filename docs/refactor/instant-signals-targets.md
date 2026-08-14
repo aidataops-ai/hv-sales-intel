@@ -435,6 +435,46 @@ scoped set. Result: posting → lead ≤ ~7h on BOTH boards. City-level coverage
 stays on Indeed, where the keeps come from. Revisit if per-source yield data
 ever shows a metro where city-level LinkedIn earns its 23s/term.
 
+> Superseded 2026-08-14: the flag's default flipped back to `False` when the
+> city tier returned as a *recall* layer with its own slow threshold — see
+> the next decision. The measurement above still stands; what changed is
+> that a uniform threshold was the real problem, not city coverage itself.
+
+### Decision 2026-08-14 — Source-split workflows + LinkedIn city recall tier
+
+Two changes shipped together, each enabling the other.
+
+**Why:** run history showed the hourly on-the-hour cron actually delivers
+**~18 of 24 runs/day** (GitHub skips congested schedule slots, clustering
+overnight UTC), and the user wanted LinkedIn back at city level without
+giving up the freshness the statewide-only decision bought.
+
+**1. One workflow per board.** `leads-indeed.yml` (hourly at `:17`, full
+40-min budget, qualify attached) and `leads-linkedin.yml` (2-hourly at
+`:41`, 35-min budget, collect-only). `leads.yml` stays dispatch-only — it is
+what the app's manual retrigger endpoint fires, and it grew a `sources`
+input. Off-hour cron minutes reduce the skip rate; separate `concurrency`
+groups; the per-source cursor columns mean the jobs never contend for rows.
+Effects: Indeed's phase reserve (60%) becomes moot in the scheduled path (a
+single-source run takes the whole budget), Indeed city freshness improves
+~6.6h → ~5h, and a broken board no longer eats the other board's window.
+The schedules only fire once the files land on `main`; on staging both are
+dispatch-only.
+
+**2. LinkedIn runs two tiers.** Statewide rows stay the *instant* tier
+(6h threshold — a statewide query already sees every city's postings).
+City rows return as a *recall* tier on `lead_linkedin_city_stale_hours`
+(default 72h): they only add postings the statewide query dropped past the
+board's ~40-results-per-query cap in dense markets. A full city pass is ~33h
+of scrape (33 terms × 155 cities × 23s), so the dedicated LinkedIn workflow
+turns the recall wheel in ~4 days — *recall depth on a slow rotation, not
+signal latency*: a fresh posting still lands ≤ ~7h via statewide. Claim
+orders `granularity desc` first for LinkedIn so the instant tier can never
+be buried behind the (permanently staler) city backlog; `claim_locations`
+and `sweep_status` both judge city rows against the recall threshold.
+`lead_linkedin_statewide_only=True` remains the escape hatch that drops the
+city tier entirely.
+
 ### Confirmed by the pre-merge branch review, deferred deliberately
 
 Findings from the 2026-08-13 adversarial review that are real but out of this

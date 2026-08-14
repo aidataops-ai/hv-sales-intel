@@ -674,14 +674,21 @@ def claim_locations(company_id: str, source: str, limit: int) -> list[dict]:
         .eq("company_id", company_id)
         .eq("enabled", True)
     )
-    # LinkedIn sweeps statewide queries only (measured 2026-08-13: 23s/term
-    # and a 1.6% keep rate made its per-city sweep both the freshness
-    # bottleneck — ~3 days per cycle — and ~62 qualifier calls per keep).
-    # Statewide-only makes a full LinkedIn cycle ~46min, so its threshold can
-    # match Indeed's and "instant" holds across both boards. City-level
-    # coverage stays on Indeed. Env-tunable escape hatch, not a constant.
+    # Escape hatch: statewide-only LinkedIn drops the city recall tier
+    # entirely (the pre-tier 2026-08-13 shape — see settings for the
+    # measured history).
     if source == "linkedin" and settings.lead_linkedin_statewide_only:
         query = query.eq("granularity", "state")
+    if source == "linkedin":
+        # LinkedIn's statewide rows are its instant tier and must claim
+        # ahead of the city recall tier: city cursors run DAYS older by
+        # design (their threshold is `lead_linkedin_city_stale_hours`), so
+        # pure stalest-first would bury a due statewide row behind hours of
+        # city sweeps and break the ≤6h signal-latency promise. 'state' >
+        # 'city' lexically, so one desc order expresses the tier split;
+        # within a tier the order below is still stalest-first. Harmless
+        # under statewide-only (a single granularity remains).
+        query = query.order("granularity", desc=True)
     try:
         result = (
             query
@@ -697,11 +704,16 @@ def claim_locations(company_id: str, source: str, limit: int) -> list[dict]:
     due: list[dict] = []
     for loc in result.data or []:
         cursor = loc.get(cursor_col)
+        # LinkedIn city rows are judged against the recall-tier threshold,
+        # not the statewide instant one — the whole point of the tier split.
+        loc_base = base_hours
+        if source == "linkedin" and (loc.get("granularity") or "") != "state":
+            loc_base = settings.lead_linkedin_city_stale_hours
         if cursor is None:
             due.append(loc)
         else:
             streak = int(loc.get(streak_col) or 0)
-            threshold = effective_threshold_hours(base_hours, streak, settings.lead_zero_streak_cap)
+            threshold = effective_threshold_hours(loc_base, streak, settings.lead_zero_streak_cap)
             age_hours = (now - _parse_iso(cursor)).total_seconds() / 3600
             if age_hours >= threshold:
                 due.append(loc)
@@ -923,7 +935,13 @@ def sweep_status(company_id: str) -> dict:
             age_hours = (now - _parse_iso(cursor)).total_seconds() / 3600
             ages.append(age_hours)
             streak = int(loc.get(streak_col) or 0)
-            threshold = effective_threshold_hours(base_hours, streak, settings.lead_zero_streak_cap)
+            # Same per-tier threshold the claim uses: a LinkedIn city row
+            # 30h old is FRESH against its recall threshold, not overdue
+            # against the statewide instant one.
+            loc_base = base_hours
+            if source == "linkedin" and (loc.get("granularity") or "") != "state":
+                loc_base = settings.lead_linkedin_city_stale_hours
+            threshold = effective_threshold_hours(loc_base, streak, settings.lead_zero_streak_cap)
             if age_hours < threshold:
                 fresh += 1
 

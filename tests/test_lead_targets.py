@@ -408,6 +408,76 @@ def test_claim_locations_scopes_linkedin_to_statewide_rows(monkeypatch):
     assert ("granularity", "state") not in li_off.eq_calls
 
 
+def _order_recording_client(rows):
+    """A `_FakeSelectClient` that records every `.order(...)` applied, so a
+    test can assert the DB-side ordering the claim requested. Built lazily
+    because `_FakeSelectClient` is defined further down the module."""
+
+    class _OrderRecordingClient(_FakeSelectClient):
+        def __init__(self, rows):
+            super().__init__(rows)
+            self.order_calls: list[tuple] = []
+
+        def order(self, *a, **k):
+            self.order_calls.append((a, k))
+            return self
+
+    return _OrderRecordingClient(rows)
+
+
+def test_claim_locations_linkedin_claims_the_statewide_tier_first(monkeypatch):
+    """With the city recall tier enabled, LinkedIn's claim must order
+    statewide rows ahead of city rows — city cursors run days older by
+    design (recall threshold), so pure stalest-first would bury a due
+    statewide row behind hours of city sweeps. Indeed keeps pure
+    stalest-first: it has no tiers."""
+    from src.settings import settings
+
+    monkeypatch.setattr(settings, "lead_linkedin_statewide_only", False)
+
+    li = _order_recording_client([])
+    monkeypatch.setattr("src.storage._get_client", lambda: li)
+    lead_targets.claim_locations("co", "linkedin", limit=2)
+    first_args, first_kwargs = li.order_calls[0]
+    assert first_args == ("granularity",)
+    assert first_kwargs.get("desc") is True  # 'state' sorts before 'city'
+
+    indeed = _order_recording_client([])
+    monkeypatch.setattr("src.storage._get_client", lambda: indeed)
+    lead_targets.claim_locations("co", "indeed", limit=2)
+    assert all(args[0] != "granularity" for args, _ in indeed.order_calls)
+
+
+def test_claim_locations_linkedin_city_rows_use_the_recall_threshold(monkeypatch):
+    """A LinkedIn city row is judged against `lead_linkedin_city_stale_hours`,
+    not the statewide instant threshold: at a 7h-old cursor a statewide row
+    is due (6h threshold) while a city row is not (72h recall threshold)."""
+    from datetime import datetime, timedelta, timezone
+    from src.settings import settings
+
+    monkeypatch.setattr(settings, "lead_linkedin_statewide_only", False)
+    monkeypatch.setattr(settings, "lead_linkedin_stale_hours", 6)
+    monkeypatch.setattr(settings, "lead_linkedin_city_stale_hours", 72)
+    monkeypatch.setattr(settings, "lead_zero_streak_cap", 4)
+
+    seven_h = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat()
+    eighty_h = (datetime.now(timezone.utc) - timedelta(hours=80)).isoformat()
+    rows = [
+        {"id": 1, "location": "Florida, USA", "granularity": "state",
+         "last_linkedin_at": seven_h, "linkedin_zero_streak": 0},
+        {"id": 2, "location": "Tampa, FL", "granularity": "city",
+         "last_linkedin_at": seven_h, "linkedin_zero_streak": 0},
+        {"id": 3, "location": "Miami, FL", "granularity": "city",
+         "last_linkedin_at": eighty_h, "linkedin_zero_streak": 0},
+    ]
+    monkeypatch.setattr("src.storage._get_client", lambda: _FakeSelectClient(rows))
+
+    ids = [r["id"] for r in lead_targets.claim_locations("co", "linkedin", limit=5)]
+    assert 1 in ids      # statewide: 7h old >= 6h instant threshold
+    assert 2 not in ids  # city: 7h old < 72h recall threshold
+    assert 3 in ids      # city: 80h old >= 72h recall threshold
+
+
 def test_claim_locations_is_not_starved_by_a_wall_of_decayed_locations(monkeypatch):
     """Regression: many decayed locations sort as STALEST (oldest cursors)
     without being due (their streak-doubled thresholds are huge). A bounded

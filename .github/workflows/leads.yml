@@ -1,17 +1,19 @@
 name: Lead Pipeline
 
-# Runs the collect -> qualify sweep that used to live in Vercel Cron. A GitHub
-# runner has no serverless wall-clock ceiling, so the full sweep runs in one
-# shot via scripts/run_leads.py instead of two bounded hourly HTTP stages.
+# Manual dispatch only — the scheduled sweeps live in leads-indeed.yml and
+# leads-linkedin.yml (one workflow per board, split 2026-08-14 so each source
+# gets its own full budget, cadence, and failure isolation). This file stays
+# for two callers:
+#   - the app's manual "retrigger" endpoint (settings.github_leads_workflow
+#     dispatches THIS file), and
+#   - hand-run backfills/debug sweeps, where picking a stage, a source
+#     subset, and a budget in one place beats juggling two workflows.
 #
-# Collect is a wall-clock budget, not a target count (instant-signals refactor,
-# Phase 2): it claims the stalest due location per source one at a time, cross-
-# es it with every enabled term, and stamps only once the location's sweep
-# finishes — Indeed first, LinkedIn on whatever budget is left. See
-# docs/refactor/instant-signals-targets.md §3.
+# Collect is a wall-clock budget, not a target count (instant-signals
+# refactor, Phase 2): it claims the stalest due location per source one at a
+# time, crosses it with every enabled term, and stamps only once the
+# location's sweep finishes. See docs/refactor/instant-signals-targets.md §3.
 on:
-  schedule:
-    - cron: '0 * * * *'   # hourly, on the hour (UTC)
   workflow_dispatch:
     inputs:
       stage:
@@ -19,6 +21,11 @@ on:
         type: choice
         default: both
         options: [both, collect, qualify]
+      sources:
+        description: 'Job boards to sweep'
+        type: choice
+        default: both
+        options: [both, indeed, linkedin]
       budget-minutes:
         description: 'Collect wall-clock budget (minutes)'
         default: '40'
@@ -53,7 +60,13 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           LEAD_COMPANY_ID: ${{ secrets.LEAD_COMPANY_ID }}
         run: |
+          SOURCES="${{ github.event.inputs.sources || 'both' }}"
+          EXTRA=""
+          if [ "$SOURCES" != "both" ]; then
+            EXTRA="--sources $SOURCES"
+          fi
           python scripts/run_leads.py \
             --stage "${{ github.event.inputs.stage || 'both' }}" \
             --budget-minutes "${{ github.event.inputs.budget-minutes || '40' }}" \
+            $EXTRA \
             --verbose
