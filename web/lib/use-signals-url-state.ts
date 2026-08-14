@@ -39,6 +39,7 @@ export function useSignalsUrlState(): [
     () => ({
       cities: (params.get("cities") ?? "").split(",").filter(Boolean),
       tracks: (params.get("tracks") ?? "").split(",").filter(Boolean),
+      states: (params.get("states") ?? "").split(",").filter(Boolean),
       band: params.get("band") ?? "",
       decision: params.get("decision") ?? "",
       work_mode: params.get("work_mode") ?? "",
@@ -66,6 +67,7 @@ export function useSignalsUrlState(): [
       const sp = new URLSearchParams()
       if (merged.cities.length) sp.set("cities", merged.cities.join(","))
       if (merged.tracks.length) sp.set("tracks", merged.tracks.join(","))
+      if (merged.states.length) sp.set("states", merged.states.join(","))
       if (merged.band) sp.set("band", merged.band)
       if (merged.decision) sp.set("decision", merged.decision)
       if (merged.work_mode) sp.set("work_mode", merged.work_mode)

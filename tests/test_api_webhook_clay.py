@@ -88,6 +88,63 @@ def test_webhook_happy_path_writes_owner_fields_and_sets_enriched():
     assert "enriched_at" in captured
 
 
+def test_webhook_maps_and_coerces_organization_size():
+    """Clay's org-size (int or messy string) is coerced to an int and written."""
+    from api.index import _coerce_org_size
+
+    assert _coerce_org_size("1,200") == 1200
+    assert _coerce_org_size("50-100 employees") == 50
+    assert _coerce_org_size(42) == 42
+    assert _coerce_org_size("N/A") is None
+    assert _coerce_org_size(0) is None
+
+    existing = {"place_id": "abc", "name": "Test"}
+    captured = {}
+
+    def fake_update(place_id, fields, touched_by=None):
+        captured.update(fields)
+        return {**existing, **fields}
+
+    with patch("api.index.app_settings") as s:
+        s.clay_inbound_secret = "shhh"
+        with patch("api.index.get_practice", return_value=existing):
+            with patch("api.index.update_practice_fields", side_effect=fake_update):
+                client = TestClient(app)
+                resp = client.post(
+                    "/api/webhooks/clay",
+                    json={"place_id": "abc", "owner_name": "Jane",
+                          "organization_size": "1,200"},
+                    headers={"X-Clay-Secret": "shhh"},
+                )
+
+    assert resp.status_code == 200
+    assert captured["organization_size"] == 1200
+
+
+def test_webhook_omits_organization_size_when_unparseable():
+    existing = {"place_id": "abc", "name": "Test"}
+    captured = {}
+
+    def fake_update(place_id, fields, touched_by=None):
+        captured.update(fields)
+        return {**existing, **fields}
+
+    with patch("api.index.app_settings") as s:
+        s.clay_inbound_secret = "shhh"
+        with patch("api.index.get_practice", return_value=existing):
+            with patch("api.index.update_practice_fields", side_effect=fake_update):
+                client = TestClient(app)
+                resp = client.post(
+                    "/api/webhooks/clay",
+                    json={"place_id": "abc", "owner_name": "Jane",
+                          "organization_size": "unknown"},
+                    headers={"X-Clay-Secret": "shhh"},
+                )
+
+    assert resp.status_code == 200
+    assert "organization_size" not in captured
+
+
 def test_webhook_flips_to_failed_when_no_owner_fields():
     existing = {"place_id": "abc", "name": "Test"}
     captured = {}

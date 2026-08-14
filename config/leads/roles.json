@@ -1,7 +1,7 @@
 {
   "_comment": "Search terms for the job-posting lead collector. These are what practices ACTUALLY POST, not what we sell — searching a service name ('Virtual Dental Assistant') returns near-zero results, or competitor VA agencies. See ADR-03.",
 
-  "_tracks_note": "Five service lines are in scope. The other H&V lines are parked in `_parked_terms` rather than deleted, so re-enabling a track is a copy-paste rather than a rebuild.",
+  "_tracks_note": "Six service lines are in scope. The other H&V lines are parked in `_parked_terms` rather than deleted, so re-enabling a track is a copy-paste rather than a rebuild.",
 
   "terms": [
     { "term": "medical assistant",                  "service_line": "Virtual Medical Assistant" },

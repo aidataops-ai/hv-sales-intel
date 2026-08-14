@@ -1552,12 +1552,34 @@ async def search(body: SearchRequest, user: dict = Depends(get_current_user)):
     }
 
 
+def _practice_exported(company_id: str, practice_id: int | None) -> bool:
+    """True when the practice's newest linked posting has already been exported
+    to Talent-DB for this company.
+
+    Mirrors the dedup guard in POST /api/practices/{place_id}/import-lead so the
+    practice-detail Import Lead button can render 'Exported' after a reload
+    instead of reverting to its default state. A practice with no linked posting
+    is never deduped (always sendable), so it reports False.
+    """
+    from src import lead_store
+
+    if not practice_id:
+        return False
+    posting = lead_store.newest_posting_for_practice(practice_id)
+    if not posting:
+        return False
+    lead_row = lead_store.find_lead_by_posting(company_id, posting["id"])
+    return bool(lead_row and lead_row.get("talentdb_exported_at"))
+
+
 @app.get("/api/practices/{place_id}")
 def get_single(place_id: str, user: dict = Depends(get_current_user)):
     row = get_practice(place_id)
     if not row:
         raise HTTPException(status_code=404, detail="Practice not found")
-    return _attach_lead_url(row)
+    result = _attach_lead_url(row)
+    result["exported"] = _practice_exported(user["company_id"], row.get("id"))
+    return result
 
 
 class AnalyzeRequest(BaseModel):
@@ -1937,6 +1959,63 @@ async def update_last_call_note_endpoint(
     return {"practice": _attach_lead_url(practice), "sf_warning": warning}
 
 
+def _talentdb_response(result: dict) -> dict:
+    """Shape a talentdb.import_lead result into the endpoint response.
+
+    A non-ok result becomes a non-blocking `talentdb_warning` string rather
+    than an error — the Import Lead button is fail-soft.
+    """
+    warning = None
+    if not result.get("ok"):
+        msg = result.get("message") or result.get("status") or "unknown error"
+        warning = f"Talent-DB import failed: {msg}"
+    return {
+        "talentdb_status": result.get("status"),
+        "talentdb_warning": warning,
+        "local_entity_id": result.get("local_entity_id"),
+    }
+
+
+@app.post("/api/practices/{place_id}/import-lead")
+async def import_lead_practice_endpoint(
+    place_id: str,
+    user: dict = Depends(get_current_user),
+):
+    """Push a practice (+ its newest linked job posting) to Talent-DB as a Lead.
+
+    One-way and fire-and-forget. Deduped per (company, posting): a posting
+    already exported is not re-sent. Practices with no linked posting are always
+    sendable (there is nothing to dedup on).
+    """
+    from src import lead_store, talentdb
+
+    practice = get_practice(place_id)
+    if not practice:
+        raise HTTPException(404, "Practice not found")
+
+    company_id = user["company_id"]
+    posting = None
+    lead_row = None
+    pid = practice.get("id")
+    if pid:
+        posting = lead_store.newest_posting_for_practice(pid)
+    if posting:
+        lead_row = lead_store.find_lead_by_posting(company_id, posting["id"])
+        if lead_row and lead_row.get("talentdb_exported_at"):
+            log.info("[api.import_lead.skip] place_id=%s already_exported", place_id)
+            return {"talentdb_status": "already_exported", "talentdb_warning": None,
+                    "local_entity_id": None}
+
+    log.info("[api.import_lead] place_id=%s user=%s posting=%s",
+             place_id, user.get("email"), posting["id"] if posting else None)
+    result = await talentdb.import_lead(practice, posting, lead_row)
+    if result.get("ok") and lead_row:
+        lead_store.mark_lead_exported(company_id, lead_row["id"])
+    log.info("[api.import_lead.response] place_id=%s ok=%s status=%s",
+             place_id, result.get("ok"), result.get("status"))
+    return _talentdb_response(result)
+
+
 @app.get("/api/debug/env")
 async def debug_env(user: dict = Depends(require_admin)):
     """Admin-only sanity check: which env vars does the deployed function see?
@@ -2000,6 +2079,31 @@ class ClayWebhookPayload(BaseModel):
     owner_phone: str | None = None
     owner_title: str | None = None
     owner_linkedin: str | None = None
+    # Headcount from Clay. Accepted as int or str (Clay returns messy values like
+    # "1,200" or "50-100"); coerced to an int below so a bad value never rejects
+    # the whole enrichment callback.
+    organization_size: int | str | None = None
+
+
+def _coerce_org_size(value) -> int | None:
+    """Best-effort parse Clay's org-size into a positive int, else None.
+
+    Takes the first run of digits (commas stripped), so "1,200" -> 1200 and
+    "50-100 employees" -> 50. Anything without digits -> None (skipped)."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        n = int(value)
+        return n if n > 0 else None
+    if isinstance(value, str):
+        digits = ""
+        for ch in value.replace(",", "").strip():
+            if ch.isdigit():
+                digits += ch
+            elif digits:
+                break
+        return int(digits) if digits else None
+    return None
 
 
 @app.post("/api/webhooks/clay")
@@ -2019,6 +2123,10 @@ def clay_webhook(
         value = getattr(body, key)
         if value is not None and value != "":
             fields[key] = value
+
+    org_size = _coerce_org_size(body.organization_size)
+    if org_size is not None:
+        fields["organization_size"] = org_size
 
     has_any_contact = any(k in fields for k in ("owner_name", "owner_email", "owner_phone"))
     fields["enrichment_status"] = "enriched" if has_any_contact else "failed"
@@ -2395,6 +2503,137 @@ async def retrigger_lead_pipeline(admin: dict = Depends(require_admin)):
     }
 
 
+def _github_actions_headers() -> dict:
+    """Auth headers for the GitHub Actions API, or 503 if not configured."""
+    token = app_settings.github_token
+    if not token:
+        raise HTTPException(
+            503,
+            "Pipeline control is not configured — set GITHUB_TOKEN to a token "
+            "with actions:write on the repo.",
+        )
+    return {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def _leads_workflow_url() -> str:
+    return (
+        f"https://api.github.com/repos/{app_settings.github_repo}"
+        f"/actions/workflows/{app_settings.github_leads_workflow}"
+    )
+
+
+@app.get("/api/admin/leads/pipeline")
+async def get_lead_pipeline_state(admin: dict = Depends(require_admin)):
+    """Report whether the scheduled pipeline workflow is active or paused.
+
+    Reads the workflow's `state` from GitHub: "active" means the hourly cron
+    will fire; any of the disabled_* states means it won't. Collapsed to a
+    two-value state so the frontend toggle doesn't care *how* it was disabled.
+    """
+    headers = _github_actions_headers()
+
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(_leads_workflow_url(), headers=headers)
+    except Exception as e:
+        log.warning("[leads.pipeline.state.error] %s: %s",
+                    type(e).__name__, str(e)[:200])
+        raise HTTPException(502, "Could not reach GitHub to read the workflow state")
+
+    if resp.status_code != 200:
+        detail = (resp.text or "").strip()[:200]
+        raise HTTPException(
+            502, f"GitHub rejected the state read ({resp.status_code}): {detail}"
+        )
+
+    gh_state = resp.json().get("state", "")
+    return {"state": "active" if gh_state == "active" else "paused",
+            "github_state": gh_state}
+
+
+@app.post("/api/admin/leads/pipeline/stop")
+async def stop_lead_pipeline(admin: dict = Depends(require_admin)):
+    """Pause the pipeline: disable the scheduled workflow and cancel live runs.
+
+    Disabling the workflow stops the hourly cron (and blocks manual dispatches)
+    but leaves an in-flight run going, so queued and in-progress runs are
+    cancelled too — after the click nothing should still be spending credits.
+    A failed cancel of one run doesn't fail the request: the workflow is
+    already disabled, which is the part that must not silently no-op.
+    """
+    headers = _github_actions_headers()
+    base = _leads_workflow_url()
+
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.put(f"{base}/disable", headers=headers)
+            if resp.status_code != 204:
+                detail = (resp.text or "").strip()[:200]
+                log.warning("[leads.pipeline.stop.rejected] status=%s body=%s",
+                            resp.status_code, detail)
+                raise HTTPException(
+                    502, f"GitHub rejected the disable ({resp.status_code}): {detail}"
+                )
+
+            cancelled = 0
+            for status in ("queued", "in_progress"):
+                runs_resp = await client.get(
+                    f"{base}/runs", headers=headers,
+                    params={"status": status, "per_page": 100},
+                )
+                if runs_resp.status_code != 200:
+                    continue
+                for run in runs_resp.json().get("workflow_runs", []):
+                    cancel_resp = await client.post(
+                        f"https://api.github.com/repos/{app_settings.github_repo}"
+                        f"/actions/runs/{run['id']}/cancel",
+                        headers=headers,
+                    )
+                    if cancel_resp.status_code == 202:
+                        cancelled += 1
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.warning("[leads.pipeline.stop.error] %s: %s",
+                    type(e).__name__, str(e)[:200])
+        raise HTTPException(502, "Could not reach GitHub to stop the pipeline")
+
+    log.info("[leads.pipeline.stop] cancelled=%s by=%s", cancelled, admin.get("id"))
+    return {"ok": True, "state": "paused", "cancelled_runs": cancelled}
+
+
+@app.post("/api/admin/leads/pipeline/resume")
+async def resume_lead_pipeline(admin: dict = Depends(require_admin)):
+    """Resume the pipeline: re-enable the workflow so the hourly cron fires."""
+    headers = _github_actions_headers()
+
+    import httpx
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.put(f"{_leads_workflow_url()}/enable", headers=headers)
+    except Exception as e:
+        log.warning("[leads.pipeline.resume.error] %s: %s",
+                    type(e).__name__, str(e)[:200])
+        raise HTTPException(502, "Could not reach GitHub to resume the pipeline")
+
+    if resp.status_code != 204:
+        detail = (resp.text or "").strip()[:200]
+        log.warning("[leads.pipeline.resume.rejected] status=%s body=%s",
+                    resp.status_code, detail)
+        raise HTTPException(
+            502, f"GitHub rejected the enable ({resp.status_code}): {detail}"
+        )
+
+    log.info("[leads.pipeline.resume] by=%s", admin.get("id"))
+    return {"ok": True, "state": "active"}
+
+
 # ---------------------------------------------------------------------------
 # Instant Signals — config page. Reads the config catalog and edits the live
 # `search_terms` / `search_locations` / `target_overrides` dimension tables by
@@ -2573,18 +2812,40 @@ def set_leads_override(body: SetOverrideRequest, admin: dict = Depends(require_a
 # ---------------------------------------------------------------------------
 
 # CSV column order — kept in sync with the export endpoint below.
-_LEAD_EXPORT_COLUMNS = [
-    "employer_name", "title", "city", "state", "source", "url", "posted_at",
-    "salary_min", "salary_max", "salary_interval", "work_mode", "service_line",
-    "employer_type", "provider_count", "confidence", "confidence_band",
-    "reason", "draft", "disposition", "created_at",
-]
+# The posting facts an operator acts on, then the outreach contact columns.
+def _posting_from_lead(lead: dict) -> dict:
+    """Reconstruct a posting dict from a flattened export lead.
+
+    `leads_for_export` lifts the posting's columns onto the lead (renaming
+    `first_seen_at` → `posting_created_at` and dropping the posting `id`), so
+    talentdb's builders — which expect a raw posting dict — get their keys back.
+    """
+    return {
+        "id": lead.get("posting_id"),
+        "source": lead.get("source"),
+        "url": lead.get("url"),
+        "title": lead.get("title"),
+        "posted_at": lead.get("posted_at"),
+        "board_remote_flag": lead.get("board_remote_flag"),
+        "description": lead.get("description"),
+        "search_term": lead.get("search_term"),
+        "search_location": lead.get("search_location"),
+        "service_line_hint": lead.get("service_line_hint"),
+        "first_seen_at": lead.get("posting_created_at"),
+        "last_seen_at": lead.get("last_seen_at"),
+        "match_confidence": lead.get("match_confidence"),
+        "match_status": lead.get("match_status"),
+        "matched_at": lead.get("matched_at"),
+        "employer_name": lead.get("employer_name"),
+        "city": lead.get("city"),
+        "state": lead.get("state"),
+    }
 
 
 def _lead_filters(
     cities: str | None, tracks: str | None, disposition: str | None,
     band: str | None, decision: str | None, work_mode: str | None,
-    source: str | None, state: str | None, salary: str | None,
+    source: str | None, states: str | None, salary: str | None,
     search: str | None, practice: str | None = None,
 ) -> dict:
     """Build the filter dict once, so the feed and the export cannot drift.
@@ -2601,8 +2862,9 @@ def _lead_filters(
     return {
         "cities": [c for c in (cities.split(",") if cities else []) if c],
         "tracks": [t for t in (tracks.split(",") if tracks else []) if t],
+        "states": [s for s in (states.split(",") if states else []) if s],
         "disposition": disposition, "band": band, "decision": decision,
-        "work_mode": work_mode, "source": source, "state": state,
+        "work_mode": work_mode, "source": source,
         "salary": salary, "search": search, "practice": practice,
     }
 
@@ -2641,7 +2903,7 @@ def export_leads_csv(
     decision: str | None = Query(None),
     work_mode: str | None = Query(None),
     source: str | None = Query(None),
-    state: str | None = Query(None),
+    states: str | None = Query(None, description="comma-separated 2-letter codes"),
     salary: str | None = Query(None),
     search: str | None = Query(None),
     practice: str | None = Query(None),
@@ -2664,30 +2926,48 @@ def export_leads_csv(
         except ValueError:
             raise HTTPException(status_code=400, detail="max_exports must be an integer")
 
+    from src import talentdb
+    from src.storage import get_practices_by_place_ids
+
     rows = lead_store.leads_for_export(
         user["company_id"],
         filters=_lead_filters(cities, tracks, disposition, band, decision,
-                              work_mode, source, state, salary, search, practice),
+                              work_mode, source, states, salary, search, practice),
         max_exports=cap,
     )
+
+    # Attach the FULL practice record to each lead in one query — the embedded
+    # practice on the lead only carries a handful of columns, but the Talent-DB
+    # mapping needs the analysis/CRM fields too.
+    place_ids = [
+        (r.get("practice") or {}).get("place_id")
+        for r in rows
+        if (r.get("practice") or {}).get("place_id")
+    ]
+    practices_by_place = get_practices_by_place_ids(place_ids)
 
     def _serialize(value) -> str:
         if value is None:
             return ""
-        if isinstance(value, list):
-            return ", ".join(str(v) for v in value)
-        if isinstance(value, dict):
+        # Lists/dicts as JSON so structured fields (tags, sales_angles,
+        # icp_breakdown, website_contacts) round-trip into a CSV import.
+        if isinstance(value, (list, dict)):
             return json.dumps(value)
+        if isinstance(value, bool):
+            return "true" if value else "false"
         return str(value)
 
     def iter_csv():
         buf = io.StringIO()
         writer = csv.writer(buf)
-        writer.writerow(_LEAD_EXPORT_COLUMNS)
+        writer.writerow(talentdb.CSV_COLUMNS)
         yield buf.getvalue()
         buf.seek(0); buf.truncate(0)
         for row in rows:
-            writer.writerow([_serialize(row.get(col)) for col in _LEAD_EXPORT_COLUMNS])
+            embedded = row.get("practice") or {}
+            full = practices_by_place.get(embedded.get("place_id")) or embedded or None
+            fields = talentdb.build_fields(full, _posting_from_lead(row), row)
+            writer.writerow([_serialize(fields.get(col)) for col in talentdb.CSV_COLUMNS])
             yield buf.getvalue()
             buf.seek(0); buf.truncate(0)
 
@@ -2718,7 +2998,7 @@ def list_leads_endpoint(
     ),
     work_mode: str | None = Query(None),     # onsite | remote | hybrid
     source: str | None = Query(None),        # indeed | linkedin
-    state: str | None = Query(None),
+    states: str | None = Query(None),        # comma-separated 2-letter codes
     salary: str | None = Query(None),        # "yes" | "no"
     search: str | None = Query(None),        # employer + title
     practice: str | None = Query(None),      # "yes" | "no" — linked to a practice
@@ -2731,7 +3011,7 @@ def list_leads_endpoint(
     rows, total = lead_store.list_leads(
         user["company_id"],
         filters=_lead_filters(cities, tracks, disposition, band, decision,
-                              work_mode, source, state, salary, search, practice),
+                              work_mode, source, states, salary, search, practice),
         sort=sort, direction=dir, offset=offset, limit=limit,
     )
     return {
@@ -2785,3 +3065,40 @@ def patch_lead_endpoint(
     if not updated:
         raise HTTPException(500, "Lead update failed")
     return updated
+
+
+@app.post("/api/leads/{lead_id}/import")
+async def import_lead_signal_endpoint(
+    lead_id: int,
+    user: dict = Depends(get_current_user),
+):
+    """Push a signals lead (its posting + linked practice) to Talent-DB.
+
+    The lead IS a (company, posting) row, so its `talentdb_exported_at` marker
+    is the dedup key: an already-exported lead is not re-sent. Fail-soft.
+    """
+    from src import talentdb
+
+    company_id = user["company_id"]
+    lead = lead_store.get_lead(company_id, lead_id)
+    if not lead:
+        raise HTTPException(404, "Lead not found")
+    if lead.get("talentdb_exported_at"):
+        log.info("[api.lead_import.skip] lead_id=%s already_exported", lead_id)
+        return {"talentdb_status": "already_exported", "talentdb_warning": None,
+                "local_entity_id": None}
+
+    posting = lead_store.get_posting(lead.get("posting_id"))
+    practice = None
+    place_id = (lead.get("practice") or {}).get("place_id")
+    if place_id:
+        practice = get_practice(place_id)
+
+    log.info("[api.lead_import] lead_id=%s user=%s place_id=%s",
+             lead_id, user.get("email"), place_id)
+    result = await talentdb.import_lead(practice, posting, lead)
+    if result.get("ok"):
+        lead_store.mark_lead_exported(company_id, lead_id)
+    log.info("[api.lead_import.response] lead_id=%s ok=%s status=%s",
+             lead_id, result.get("ok"), result.get("status"))
+    return _talentdb_response(result)

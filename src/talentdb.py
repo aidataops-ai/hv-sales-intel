@@ -1,0 +1,351 @@
+"""Talent-DB inbound Lead webhook — the "Import Lead" push.
+
+One-way, fire-and-forget: we map a practice (+ its linked job posting) into a
+Salesforce-style Lead envelope, HMAC-sign the exact bytes, and POST them to the
+Talent-DB webhook. See docs/specs/2026-08-11-talentdb-lead-webhook-design.md.
+
+Contract shape (only what we send — the receiver accepts more):
+
+    { "objectType": "Lead", "operation": "upsert", "fields": { ... } }
+
+We deliberately omit `eventId` / `salesforceId` / `salesforceUpdatedAt`; dedup
+is done on our side (see lead_store.mark_lead_exported), not via an upsert key.
+Keys we have no value for are omitted rather than sent as ""/null. Native JSON
+types are preserved (numbers, bools, [], {}).
+"""
+
+import hashlib
+import hmac
+import json
+import logging
+
+import httpx
+
+from src.settings import settings
+
+log = logging.getLogger("hvsi.talentdb")
+
+
+def is_configured() -> bool:
+    """True when both the webhook URL and signing secret are set."""
+    return bool(settings.talentdb_webhook_url and settings.talentdb_webhook_secret)
+
+
+# Job-board source -> `source` slug. Anything else (incl. no linked posting)
+# falls back to the generic slug.
+_SOURCE_SLUGS = {
+    "indeed": "hv-sales-intel-indeed",
+    "linkedin": "hv-sales-intel-linkedin",
+}
+
+
+def _source_slug(source: str | None) -> str:
+    return _SOURCE_SLUGS.get(source or "", "hv-sales-intel")
+
+
+# Our track name → the receiver's Tracks UUID code. `interested_tracks` sends
+# the CODE (a label/made-up string stores but won't render as a tag). These are
+# prod's current codes — if L&D re-creates a track its code changes, so pull
+# fresh from the Tracks admin if a tag stops rendering.
+_TRACK_CODES = {
+    "Virtual Medical Scheduler": "45c76242-e585-11f0-831c-2eb420401434",
+    "Virtual Medical Assistant": "dc6dec2a-e58f-11f0-a406-32c63f1d4ac3",
+    "Virtual Medical Scribe": "c20ec098-2e91-11f1-bc1e-1adb42af3a6e",
+    "Virtual Dental Assistant": "88bcb836-c0aa-11f0-a242-325255367c63",
+    "Virtual Chiropractic Assistant": "01b24202-7fa4-11f1-be03-7e3910071e94",
+    "Virtual Wellness and Hospitality Assistant": "4bb21e9c-e592-11f0-8817-32c63f1d4ac3",
+    "Virtual Assisted Living Coordinator": "d7acd1ee-699f-11f1-b509-5e9236066227",
+    "Virtual Legal Assistant": "21364a0a-4e31-11f1-a825-9e198b55c155",
+    "Virtual Home Health Operations Coordinator": "7d69fef4-8395-11f1-ab36-7ed30a98e1a8",
+}
+
+
+def _track_code(track: str | None) -> str | None:
+    """Our track name → the receiver's Tracks UUID; None if unmapped (omitted)."""
+    return _TRACK_CODES.get((track or "").strip())
+
+
+def _org_size_bucket(value) -> str | None:
+    """Integer headcount → the receiver's organization_size picklist bucket."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    n = int(value)
+    if n <= 0:
+        return None
+    if n <= 10:
+        return "2_10"
+    if n <= 25:
+        return "11_25"
+    if n <= 50:
+        return "25_50"
+    if n <= 250:
+        return "50_250"
+    if n <= 500:
+        return "250_500"
+    return "500_plus"
+
+
+def _phones(p: dict) -> tuple[str | None, str | None]:
+    """(primary, alternate) phone — owner line, then office, then website line,
+    deduped so the same number is never sent twice."""
+    seen: list[str] = []
+    for candidate in (p.get("owner_phone"), p.get("phone"), p.get("website_doctor_phone")):
+        val = str(candidate).strip() if candidate is not None else ""
+        if val and val not in seen:
+            seen.append(val)
+    return (seen[0] if seen else None), (seen[1] if len(seen) > 1 else None)
+
+
+def _painpoints_text(value) -> str | None:
+    """pain_points JSON array string → newline-joined textarea text."""
+    parsed = _coerce_json(value)
+    if isinstance(parsed, list):
+        return "\n".join(str(x) for x in parsed if x) or None
+    if isinstance(value, str):
+        return value.strip() or None
+    return None
+
+
+def _coerce_json(value):
+    """Return real JSON for a column that may be stored as a JSON string.
+
+    Dicts/lists/numbers/bools/None pass through; a JSON string is parsed; an
+    unparseable string becomes None (dropped by _omit_missing).
+    """
+    if value is None or isinstance(value, (list, dict, int, float, bool)):
+        return value
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    return None
+
+
+def _split_owner_name(owner_name: str | None) -> tuple[str | None, str | None]:
+    """Split the enriched contact's full name into (FirstName, LastName).
+
+    Last whitespace token is the last name, everything before it the first name.
+    A single token becomes the last name (no first name). Empty → (None, None),
+    so both keys are omitted — there is no company-name fallback.
+    """
+    name = (owner_name or "").strip()
+    if not name:
+        return None, None
+    if " " in name:
+        first, last = name.rsplit(" ", 1)
+        return (first.strip() or None), (last.strip() or None)
+    return None, name
+
+
+def _omit_missing(fields: dict) -> dict:
+    """Drop keys with no value. None and "" are "no value"; 0 / False / {}
+    are real values we keep."""
+    out = {}
+    for k, v in fields.items():
+        if v is None or v == "":
+            continue
+        out[k] = v
+    return out
+
+
+def build_fields(
+    practice: dict | None,
+    posting: dict | None,
+    lead: dict | None = None,
+) -> dict:
+    """Map a practice (+ its linked posting + lead) onto the Talent-DB `fields`.
+
+    Keys are the receiver's exact accepted field API names (its schema: a mix of
+    PascalCase core fields and snake_case posting/scoring fields). NOT sent:
+    `Industry` (not evaluated on our side), `hiring_timeline` / `locations_count`
+    (no source in our system). Any of the three args may be None; missing values
+    are omitted.
+    """
+    p = practice or {}
+    pg = posting or {}
+    ld = lead or {}
+    source = pg.get("source")
+    company = p.get("name") or pg.get("employer_name")
+    first_name, last_name = _split_owner_name(p.get("owner_name"))
+    phone_primary, phone_alt = _phones(p)
+    # The lead's qualified track is authoritative; the posting hint is the fallback.
+    track = ld.get("service_line") or pg.get("service_line_hint")
+    track_code = _track_code(track)
+    pid = p.get("id")
+
+    fields = {
+        # Our practice id — the receiver's stable link back to our record.
+        "source_practice_id": str(pid) if pid is not None else None,
+
+        # --- Contact + company (PascalCase) ---
+        "Company": company,                         # required
+        "LastName": last_name or company,           # falls back to company
+        "FirstName": first_name,                    # from owner_name; omit if none
+        "Title": p.get("owner_title"),              # contact's role (Clay enrichment)
+        "Email": p.get("owner_email") or p.get("email"),
+        "Phone": phone_primary,
+        "alternate_phone": phone_alt,
+        "Country": "USA",                           # ISO alpha-3, hardcoded for now
+        "City": p.get("city") or pg.get("city"),
+        "State": p.get("state") or pg.get("state"),
+        "Website": p.get("website"),
+
+        # --- Classification ---
+        # Industry: NOT sent (not evaluated on our side).
+        "interested_tracks": [track_code] if track_code else None,   # Tracks UUID(s)
+        "organization_size": _org_size_bucket(p.get("organization_size")),  # bucket
+        # hiring_timeline / locations_count: no source in our system → omitted.
+        "No_of_Providers__c": ld.get("provider_count"),
+        "Lead_Type__c": "Outbound",                 # picklist Inbound | Outbound
+        "source": _source_slug(source),             # hv-sales-intel-{indeed|linkedin}
+        "lead_role": ld.get("lead_role"),           # Company Spokesperson's Role picklist
+        "practice_notes": p.get("notes"),
+        "pain_points": _painpoints_text(p.get("pain_points")),
+
+        # --- Posting (snake_case) ---
+        "role_title": pg.get("title"),
+        "posting_source": source,                   # raw indeed | linkedin
+        "posting_url": pg.get("url"),
+        "posted_at": pg.get("posted_at"),
+        "board_remote": pg.get("board_remote_flag"),
+        "posting_description": pg.get("description"),
+        "search_term": pg.get("search_term"),
+        "search_location": pg.get("search_location"),
+        "first_seen_at": pg.get("first_seen_at"),
+        "last_seen_at": pg.get("last_seen_at"),
+        "match_confidence": pg.get("match_confidence"),
+        "match_status": pg.get("match_status"),
+
+        # --- Scoring / analysis (snake_case) ---
+        "urgency_score": p.get("urgency_score"),
+        "hiring_signal_score": p.get("hiring_signal_score"),
+        "icp_tier": p.get("icp_tier"),
+        "icp_breakdown": _coerce_json(p.get("icp_breakdown")),
+        "category": p.get("category"),
+        "review_count": p.get("review_count"),
+        "opening_hours": p.get("opening_hours"),
+        "summary": p.get("summary"),
+        "sales_angles": _coerce_json(p.get("sales_angles")),
+        # call_script + email_draft go as raw strings (the receiver's target
+        # shows them escaped, unlike icp_breakdown / sales_angles which are JSON).
+        "call_script": p.get("call_script"),
+        "email_draft": p.get("email_draft"),
+    }
+    return _omit_missing(fields)
+
+
+# Canonical column order for the signals CSV export — the exact `fields` keys the
+# webhook sends, so an exported CSV round-trips into a Talent-DB CSV import.
+CSV_COLUMNS = [
+    "source_practice_id",
+    # Contact + company
+    "Company", "LastName", "FirstName", "Title", "Email", "Phone",
+    "alternate_phone", "Country", "City", "State", "Website",
+    # Classification
+    "interested_tracks", "organization_size", "No_of_Providers__c",
+    "Lead_Type__c", "source", "lead_role", "practice_notes", "pain_points",
+    # Posting
+    "role_title", "posting_source", "posting_url", "posted_at",
+    "board_remote", "posting_description", "search_term", "search_location",
+    "first_seen_at", "last_seen_at", "match_confidence", "match_status",
+    # Scoring / analysis
+    "urgency_score", "hiring_signal_score", "icp_tier", "icp_breakdown",
+    "category", "review_count", "opening_hours", "summary", "sales_angles",
+    "call_script", "email_draft",
+]
+
+
+def build_envelope(
+    practice: dict | None,
+    posting: dict | None,
+    lead: dict | None = None,
+) -> dict:
+    """The full request body: `objectType` + `operation` + `fields`.
+
+    The app-origin webhook (`/api/sales-intel/webhook`) mints its own record, so
+    it takes no `salesforceId`, `salesforceUpdatedAt`, or `eventId` — we send
+    none of them. Dedup is handled on our side via the export marker.
+    """
+    return {
+        "objectType": "Lead",
+        "operation": "upsert",
+        "fields": build_fields(practice, posting, lead),
+    }
+
+
+def _serialize(envelope: dict) -> bytes:
+    """Serialize once to the exact bytes we both sign and send."""
+    return json.dumps(envelope, separators=(",", ":"), default=str).encode("utf-8")
+
+
+def _sign(raw: bytes) -> str:
+    """HMAC-SHA256 over the raw body, hex, prefixed `sha256=`."""
+    digest = hmac.new(
+        settings.talentdb_webhook_secret.encode("utf-8"), raw, hashlib.sha256
+    ).hexdigest()
+    return f"sha256={digest}"
+
+
+async def import_lead(
+    practice: dict | None,
+    posting: dict | None,
+    lead: dict | None = None,
+) -> dict:
+    """POST one signed Lead to Talent-DB. Fail-soft: never raises.
+
+    Returns a normalized dict: {ok, status, message, local_entity_id,
+    http_status}. `ok` is True only when the receiver accepted the record;
+    callers use it to decide whether to set the export marker.
+    """
+    if not is_configured():
+        log.warning("[talentdb.skip] not_configured url=%s secret=%s",
+                    bool(settings.talentdb_webhook_url),
+                    bool(settings.talentdb_webhook_secret))
+        return {"ok": False, "status": "not_configured",
+                "message": "Talent-DB webhook is not configured."}
+
+    envelope = build_envelope(practice, posting, lead)
+    raw = _serialize(envelope)
+    headers = {
+        "Content-Type": "application/json",
+        "X-HV-Signature": _sign(raw),
+    }
+    log.info("[talentdb.request] company=%r fields=%d bytes=%d",
+             envelope["fields"].get("Company"), len(envelope["fields"]), len(raw))
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        try:
+            # Send the SAME bytes we signed — not a re-serialized dict.
+            resp = await client.post(
+                settings.talentdb_webhook_url, headers=headers, content=raw
+            )
+        except httpx.HTTPError as e:
+            log.error("[talentdb.network_error] err=%r", e)
+            return {"ok": False, "status": "network_error", "message": str(e)}
+
+    try:
+        data = resp.json()
+    except Exception:
+        data = {}
+    ok = bool(data.get("ok"))
+    # Surface the receiver's complaint on any non-success so the warning is
+    # actionable (schema validation errors, missing fields, etc.).
+    message = data.get("message")
+    if not ok and not message:
+        message = (resp.text or "").strip()[:500] or None
+    if not ok:
+        log.warning("[talentdb.response] http=%s ok=%s status=%s body=%s",
+                    resp.status_code, data.get("ok"), data.get("status"),
+                    (resp.text or "")[:800])
+    else:
+        log.info("[talentdb.response] http=%s ok=%s status=%s",
+                 resp.status_code, ok, data.get("status"))
+
+    return {
+        "ok": ok,
+        "status": data.get("status") or ("ok" if resp.is_success else "error"),
+        "message": message,
+        "local_entity_id": data.get("localEntityId"),
+        "http_status": resp.status_code,
+    }

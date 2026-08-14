@@ -161,6 +161,7 @@ _OPTIONAL_COLUMNS = {
     "icp_breakdown",
     "analysis_input_hash",
     "website_contacts",
+    "organization_size",
     "website_doctor_name",
     "website_doctor_phone",
     "call_count",
@@ -704,6 +705,33 @@ def get_practice(place_id: str) -> dict | None:
     except Exception:
         return None
     return _flatten_attribution(result.data) if result and result.data else None
+
+
+def get_practices_by_place_ids(place_ids: list[str]) -> dict[str, dict]:
+    """Fetch full practice rows for a batch of place_ids, keyed by place_id.
+
+    One query per chunk (not per row) so the signals CSV export can attach the
+    full practice record to each lead without N round-trips. Returns {} if
+    unconfigured; missing place_ids are simply absent from the map.
+    """
+    client = _get_client()
+    if not client or not place_ids:
+        return {}
+    out: dict[str, dict] = {}
+    unique = list({pid for pid in place_ids if pid})
+    CHUNK = 200
+    for i in range(0, len(unique), CHUNK):
+        chunk = unique[i:i + CHUNK]
+        try:
+            rows = (
+                client.table("practices").select(PROFILE_JOIN_SELECT)
+                .in_("place_id", chunk).execute()
+            ).data or []
+        except Exception:
+            continue
+        for r in rows:
+            out[r["place_id"]] = _flatten_attribution(r)
+    return out
 
 
 def query_for_export(max_exports: int | None) -> list[dict]:

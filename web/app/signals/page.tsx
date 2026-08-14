@@ -5,7 +5,6 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import ConfigButton from "@/components/config-button"
 import ExportButton from "@/components/export-button"
 import Pagination from "@/components/pagination"
-import RetriggerButton from "@/components/retrigger-button"
 import SignalsFilterBar from "@/components/signals-filter-bar"
 import SignalsTable from "@/components/signals-table"
 import SignalsTopBar from "@/components/signals-top-bar"
@@ -117,7 +116,6 @@ function SignalsContent() {
     <div className="min-h-screen bg-cream dark:bg-night-900">
       <SignalsTopBar>
         <ConfigButton />
-        <RetriggerButton />
         <ExportButton
           endpoint="/api/leads/export.csv"
           label="Export the signals matching your current filters"

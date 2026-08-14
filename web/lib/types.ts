@@ -12,6 +12,7 @@ export interface Practice {
   lat: number | null
   lng: number | null
   opening_hours: string | null
+  organization_size?: number | null
   status: string
 
   // Phase 2 (AI analysis) — optional, absent on unscored practices
@@ -65,6 +66,9 @@ export interface Practice {
   // Website-extracted doctor info
   website_doctor_name: string | null
   website_doctor_phone: string | null
+
+  // Computed read-time: newest linked posting already exported to Talent-DB.
+  exported?: boolean
 }
 
 export interface EmailMessage {

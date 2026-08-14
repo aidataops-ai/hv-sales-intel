@@ -52,7 +52,8 @@ DECISION_FILTERS = ("keep", "discard", "all")
 # certain than an auto one. Embedded to-one, so it is null on unlinked postings.
 _PRACTICE_COLS = (
     "id, place_id, name, address, city, state, phone, website, "
-    "category, service_line, rating, review_count"
+    "category, service_line, rating, review_count, "
+    "owner_name, owner_email, owner_phone, owner_title"
 )
 
 # One row per lead, with its posting inlined. `!inner` matters: it makes the
@@ -74,7 +75,8 @@ _LEAD_LIST_COLS = (
     "band_rank, reason, employer_type, role_suitable, work_mode, service_line, "
     "provider_count, model, qualified_at, disposition, reject_reason, notes, "
     "last_touched_by, last_touched_at, contacted_at, "
-    "export_count, last_exported_at, last_exported_by, created_at"
+    "export_count, last_exported_at, last_exported_by, created_at, "
+    "talentdb_exported_at"
 )
 _POSTING_LIST_COLS = (
     "id, source, external_id, url, title, employer_name, employer_name_norm, "
@@ -374,8 +376,8 @@ def _apply_filters(query, *, filters: dict):
         query = query.eq("work_mode", work_mode)
     if source := filters.get("source"):
         query = query.eq("posting.source", source)
-    if state := filters.get("state"):
-        query = query.eq("posting.state", state)
+    if states := filters.get("states"):
+        query = query.in_("posting.state", states)
     if filters.get("salary") == "yes":
         query = query.not_.is_("posting.salary_min", "null")
     elif filters.get("salary") == "no":
@@ -524,6 +526,86 @@ def update_lead_workflow(
         log.warning("[leads.update.error] %s: %s", type(e).__name__, str(e)[:250])
         return None
     return get_lead(company_id, lead_id)
+
+
+# ---------------------------------------------------------------------------
+# Talent-DB export (Import Lead) — dedup marker + posting lookups
+# ---------------------------------------------------------------------------
+
+
+def get_posting(posting_id: int) -> dict | None:
+    """Fetch a single raw posting row (shared across tenants)."""
+    client = _client()
+    if not client or not posting_id:
+        return None
+    try:
+        result = (
+            client.table("job_postings").select("*")
+            .eq("id", posting_id).maybe_single().execute()
+        )
+    except Exception:
+        return None
+    return result.data if result and result.data else None
+
+
+def newest_posting_for_practice(practice_id: int) -> dict | None:
+    """The most recent job posting linked to a practice, or None if unlinked.
+
+    Newest by `posted_at` then `id` — the practice-detail Import Lead button
+    resolves `Lead_Type__c` / the `posting_*` fields from this row.
+    """
+    client = _client()
+    if not client or not practice_id:
+        return None
+    try:
+        result = (
+            client.table("job_postings").select("*")
+            .eq("practice_id", practice_id)
+            .order("posted_at", desc=True, nullsfirst=False)
+            .order("id", desc=True)
+            .limit(1).execute()
+        )
+    except Exception:
+        return None
+    rows = result.data or []
+    return rows[0] if rows else None
+
+
+def find_lead_by_posting(company_id: str, posting_id: int) -> dict | None:
+    """The (company, posting) lead row for a posting, if one exists.
+
+    Carries the export marker (dedup) plus the qualifier fields the Talent-DB
+    payload needs (`provider_count`, `service_line`) so the practice-initiated
+    import matches the signals path."""
+    client = _client()
+    if not client or not company_id or not posting_id:
+        return None
+    try:
+        result = (
+            client.table("company_job_leads")
+            .select("id, talentdb_exported_at, provider_count, service_line")
+            .eq("company_id", company_id).eq("posting_id", posting_id)
+            .maybe_single().execute()
+        )
+    except Exception:
+        return None
+    return result.data if result and result.data else None
+
+
+def mark_lead_exported(company_id: str, lead_id: int) -> None:
+    """Stamp `talentdb_exported_at` so this posting isn't re-sent. Fail-soft."""
+    client = _client()
+    if not client or not company_id or not lead_id:
+        return
+    try:
+        (
+            client.table("company_job_leads")
+            .update({"talentdb_exported_at": _now()})
+            .eq("company_id", company_id).eq("id", lead_id).execute()
+        )
+    except Exception as e:
+        log.warning("[leads.mark_exported.error] %s: %s",
+                    type(e).__name__, str(e)[:200])
 
 
 # ---------------------------------------------------------------------------

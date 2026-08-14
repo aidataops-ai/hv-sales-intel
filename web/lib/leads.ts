@@ -95,6 +95,10 @@ export interface Lead {
   last_touched_at: string | null
   contacted_at: string | null
   created_at: string
+
+  /** When this lead was pushed to Talent-DB via Import Lead. Null = never.
+   *  Set means the button shows "Exported" and won't re-send. */
+  talentdb_exported_at: string | null
 }
 
 /** What the feed shows. The API defaults to `keep`; `all` is the opt-out. */
@@ -103,6 +107,8 @@ export type DecisionFilter = "keep" | "discard" | "all"
 export interface LeadFilters {
   cities: string[]
   tracks: string[]
+  /** 2-letter state codes (e.g. "FL", "GA"). Filters on the posting's state. */
+  states: string[]
   band: string
   /** "" means the API default, which is keeps only. */
   decision: string
@@ -115,8 +121,30 @@ export interface LeadFilters {
 }
 
 export const EMPTY_LEAD_FILTERS: LeadFilters = {
-  cities: [], tracks: [], band: "", decision: "", work_mode: "",
+  cities: [], tracks: [], states: [], band: "", decision: "", work_mode: "",
   source: "", salary: "", practice: "", search: "",
+}
+
+/** 2-letter code → full state name, for display in the state filter. Filtering
+ *  still uses the code (what the backend stores); this is label-only. Unknown
+ *  codes fall through to themselves (e.g. the "US"/"UK" catch-all buckets). */
+const US_STATE_NAMES: Record<string, string> = {
+  AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California",
+  CO: "Colorado", CT: "Connecticut", DE: "Delaware", DC: "District of Columbia",
+  FL: "Florida", GA: "Georgia", HI: "Hawaii", ID: "Idaho", IL: "Illinois",
+  IN: "Indiana", IA: "Iowa", KS: "Kansas", KY: "Kentucky", LA: "Louisiana",
+  ME: "Maine", MD: "Maryland", MA: "Massachusetts", MI: "Michigan",
+  MN: "Minnesota", MS: "Mississippi", MO: "Missouri", MT: "Montana",
+  NE: "Nebraska", NV: "Nevada", NH: "New Hampshire", NJ: "New Jersey",
+  NM: "New Mexico", NY: "New York", NC: "North Carolina", ND: "North Dakota",
+  OH: "Ohio", OK: "Oklahoma", OR: "Oregon", PA: "Pennsylvania",
+  RI: "Rhode Island", SC: "South Carolina", SD: "South Dakota", TN: "Tennessee",
+  TX: "Texas", UT: "Utah", VT: "Vermont", VA: "Virginia", WA: "Washington",
+  WV: "West Virginia", WI: "Wisconsin", WY: "Wyoming",
+}
+
+export function stateLabel(code: string): string {
+  return US_STATE_NAMES[code] ?? code
 }
 
 /** Turn the filter state into the query params both the feed and the CSV
@@ -127,6 +155,7 @@ export function filterParams(
   const out: Record<string, string | string[]> = {}
   if (filters.cities.length) out.cities = filters.cities
   if (filters.tracks.length) out.tracks = filters.tracks
+  if (filters.states.length) out.states = filters.states
   if (filters.band) out.band = filters.band
   if (filters.decision) out.decision = filters.decision
   if (filters.work_mode) out.work_mode = filters.work_mode
@@ -216,6 +245,30 @@ export async function updateLead(
   })
 }
 
+export interface ImportLeadResult {
+  talentdb_status: string | null   // ok | skipped | already_exported | error | ...
+  talentdb_warning: string | null  // non-null on a soft failure
+  local_entity_id?: number | null
+}
+
+/** Push a signals lead (its posting + linked practice) to Talent-DB.
+ *  Returns the server's status/warning rather than throwing so the button
+ *  can show the outcome; a genuine network failure returns a warning too. */
+export async function importLeadFromSignal(
+  id: number,
+): Promise<ImportLeadResult> {
+  try {
+    return await leadFetch<ImportLeadResult>(`/api/leads/${id}/import`, {
+      method: "POST",
+    })
+  } catch {
+    return {
+      talentdb_status: "error",
+      talentdb_warning: "Import failed — please try again.",
+    }
+  }
+}
+
 export type RetriggerResult =
   | { ok: true; ref: string; workflow: string }
   | { ok: false; error: string }
@@ -228,6 +281,48 @@ export type RetriggerResult =
 export async function retriggerLeads(): Promise<RetriggerResult> {
   try {
     const res = await fetch(`${API_URL}/api/admin/leads/retrigger`, {
+      method: "POST",
+      credentials: "include",
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      return { ok: false, error: body.detail || `Failed (${res.status})` }
+    }
+    return await res.json()
+  } catch {
+    return { ok: false, error: "Could not reach the server." }
+  }
+}
+
+export type PipelineState = "active" | "paused"
+
+/** Read whether the scheduled pipeline workflow is active or paused (admin
+ *  only). Returns null when the state can't be read — no token configured,
+ *  GitHub unreachable — so the button can render without claiming a state. */
+export async function getPipelineState(): Promise<PipelineState | null> {
+  try {
+    const res = await fetch(`${API_URL}/api/admin/leads/pipeline`, {
+      credentials: "include",
+    })
+    if (!res.ok) return null
+    const body = await res.json()
+    return body.state === "paused" ? "paused" : "active"
+  } catch {
+    return null
+  }
+}
+
+export type PipelineToggleResult =
+  | { ok: true; state: PipelineState; cancelled_runs?: number }
+  | { ok: false; error: string }
+
+/** Pause (disable the workflow + cancel live runs) or resume the scheduled
+ *  pipeline. Discriminated result for the same reason as retriggerLeads. */
+export async function togglePipeline(
+  action: "stop" | "resume",
+): Promise<PipelineToggleResult> {
+  try {
+    const res = await fetch(`${API_URL}/api/admin/leads/pipeline/${action}`, {
       method: "POST",
       credentials: "include",
     })
