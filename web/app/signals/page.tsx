@@ -4,6 +4,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 
 import ExportButton from "@/components/export-button"
 import Pagination from "@/components/pagination"
+import PipelineToggleButton from "@/components/pipeline-toggle-button"
 import RetriggerButton from "@/components/retrigger-button"
 import SignalsFilterBar from "@/components/signals-filter-bar"
 import SignalsTable from "@/components/signals-table"
@@ -115,6 +116,7 @@ function SignalsContent() {
   return (
     <div className="min-h-screen bg-cream dark:bg-night-900">
       <SignalsTopBar>
+        <PipelineToggleButton />
         <RetriggerButton />
         <ExportButton
           endpoint="/api/leads/export.csv"

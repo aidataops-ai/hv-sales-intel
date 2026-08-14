@@ -294,6 +294,48 @@ export async function retriggerLeads(): Promise<RetriggerResult> {
   }
 }
 
+export type PipelineState = "active" | "paused"
+
+/** Read whether the scheduled pipeline workflow is active or paused (admin
+ *  only). Returns null when the state can't be read — no token configured,
+ *  GitHub unreachable — so the button can render without claiming a state. */
+export async function getPipelineState(): Promise<PipelineState | null> {
+  try {
+    const res = await fetch(`${API_URL}/api/admin/leads/pipeline`, {
+      credentials: "include",
+    })
+    if (!res.ok) return null
+    const body = await res.json()
+    return body.state === "paused" ? "paused" : "active"
+  } catch {
+    return null
+  }
+}
+
+export type PipelineToggleResult =
+  | { ok: true; state: PipelineState; cancelled_runs?: number }
+  | { ok: false; error: string }
+
+/** Pause (disable the workflow + cancel live runs) or resume the scheduled
+ *  pipeline. Discriminated result for the same reason as retriggerLeads. */
+export async function togglePipeline(
+  action: "stop" | "resume",
+): Promise<PipelineToggleResult> {
+  try {
+    const res = await fetch(`${API_URL}/api/admin/leads/pipeline/${action}`, {
+      method: "POST",
+      credentials: "include",
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      return { ok: false, error: body.detail || `Failed (${res.status})` }
+    }
+    return await res.json()
+  } catch {
+    return { ok: false, error: "Could not reach the server." }
+  }
+}
+
 export interface FilterOptions {
   cities: string[]
   tracks: string[]
