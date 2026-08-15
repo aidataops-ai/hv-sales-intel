@@ -318,3 +318,26 @@ counts + facets aggregate.
 **Wave 3:** round-trip consolidation (api route reshapes, `add_tags` RPC,
 practice-detail join, session endpoint, bulk toggle route + frontend
 wiring).
+
+### Status 2026-08-15 — all three waves implemented and merged on staging
+
+Suite went 20 failed / 410 passed → **19 failed / 574 passed** (the 19 are
+the pre-existing stale-fixture families; one old failure was legitimately
+fixed). Shell cold load: 3-4 requests → 1 (`/api/session`); bulk state
+toggle: ~65 requests → 1; qualify-stage egress: whole-table `select("*")`
+scans → id-only + survivor hydration.
+
+Awaiting explicit user go (not done): applying
+`2026-08-15-rls-initplan-fk-indexes.sql` and
+`2026-08-15-posting-retention.sql` to the live project; setting
+`SUPABASE_JWT_SECRET` (needs confirmation the project uses the legacy
+HS256 secret).
+
+Small follow-ups deferred from the wave reports: retire `/api/me` (zero
+frontend callers now); fix the stale `company_id` conftest fixtures (would
+clear most of the 19 baseline failures); `update_lead_workflow` returns
+None for both "not found" and "write raised" (PATCH surfaces DB errors as
+404); `_paginated_query` swallows mid-scan failures into short results; a
+`city_key` generated column would make the matcher's spelling-variant
+filter exact; `goToPage(1)` could re-slice instead of refetch;
+`AuthContextValue.refreshCompanies` appears to have no consumers.
