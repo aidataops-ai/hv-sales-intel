@@ -9,7 +9,8 @@ import SignalsTopBar from "@/components/signals-top-bar"
 import { useAuth } from "@/lib/auth"
 import {
   addLocations, addTerms, deleteLocation, deleteTerm, getSignalsConfig,
-  setLocationEnabled, setOverride, setTermEnabled,
+  setLocationEnabled, setLocationsEnabledBulk, setOverride, setTermEnabled,
+  setTermsEnabledBulk,
   type AddDimensionResult, type CatalogState, type NewLocationRow,
   type SearchLocation, type SearchTerm, type SignalsConfig, type SweepSourceStatus,
   type TargetOverride,
@@ -21,18 +22,20 @@ import {
  * `refresh` re-reads the whole config — 4 backend queries, each paying its own
  * server-side auth round trips — so it is reserved for edits that change the
  * *shape* of the config (add / delete, where rows appear or vanish and catalog
- * membership shifts) and for bulk toggles (a partial failure inside a
- * `Promise.all` leaves an unknown state that only a re-read can reconcile).
+ * membership shifts) and for the genuinely ambiguous outcome: a bulk toggle
+ * that came back with fewer rows than it asked for, which only a re-read can
+ * reconcile.
  *
- * The `splice*` callbacks cover the common case: a single-row PATCH/PUT whose
- * response already *is* the new row. Flipping one boolean used to cost ~11
- * round trips; splicing costs the one PATCH. See
- * docs/refactor/supabase-data-layer.md §4.
+ * The `splice*` callbacks cover everything else: a PATCH/PUT whose response
+ * already *is* the new row (or rows). Flipping one boolean used to cost ~11
+ * round trips; splicing costs the one PATCH. The bulk toggles pass the whole
+ * batch — "Enable all" on a state is one request answering with every row it
+ * flipped. See docs/refactor/supabase-data-layer.md §4.
  */
 interface ConfigEdits {
   refresh: () => Promise<void>
-  spliceTerm: (row: SearchTerm) => void
-  spliceLocation: (row: SearchLocation) => void
+  spliceTerms: (rows: SearchTerm[]) => void
+  spliceLocations: (rows: SearchLocation[]) => void
   spliceOverride: (
     termId: number,
     locationId: number,
@@ -75,21 +78,24 @@ export default function SignalsConfigPage() {
 
   // `prev.catalog` is passed through untouched, so the catalog-membership
   // memos in ConfigBody keep their identity and don't recompute on a toggle.
-  const spliceTerm = useCallback((row: SearchTerm) => {
+  // Both take a batch: a single toggle is the one-element case, so the bulk
+  // toggles need no second code path.
+  const spliceTerms = useCallback((rows: SearchTerm[]) => {
+    if (rows.length === 0) return
+    const byId = new Map(rows.map((r) => [r.id, r]))
     setConfig((prev) =>
       prev
-        ? { ...prev, terms: prev.terms.map((t) => (t.id === row.id ? row : t)) }
+        ? { ...prev, terms: prev.terms.map((t) => byId.get(t.id) ?? t) }
         : prev,
     )
   }, [])
 
-  const spliceLocation = useCallback((row: SearchLocation) => {
+  const spliceLocations = useCallback((rows: SearchLocation[]) => {
+    if (rows.length === 0) return
+    const byId = new Map(rows.map((r) => [r.id, r]))
     setConfig((prev) =>
       prev
-        ? {
-            ...prev,
-            locations: prev.locations.map((l) => (l.id === row.id ? row : l)),
-          }
+        ? { ...prev, locations: prev.locations.map((l) => byId.get(l.id) ?? l) }
         : prev,
     )
   }, [])
@@ -108,8 +114,8 @@ export default function SignalsConfigPage() {
   )
 
   const edits: ConfigEdits = useMemo(
-    () => ({ refresh, spliceTerm, spliceLocation, spliceOverride }),
-    [refresh, spliceTerm, spliceLocation, spliceOverride],
+    () => ({ refresh, spliceTerms, spliceLocations, spliceOverride }),
+    [refresh, spliceTerms, spliceLocations, spliceOverride],
   )
 
   useEffect(() => {
@@ -421,15 +427,22 @@ function StateRow({
   const addable = catalogCities.filter((c) => !cityNames.has(c))
   const enabledCities = cityLocations.filter((l) => l.enabled).length
 
-  // Bulk toggle keeps the full re-read: one failed PATCH inside the
-  // `Promise.all` would leave the panel disagreeing with the server about
-  // which rows actually flipped, and only a re-read can settle that.
+  // One PATCH for the whole state. This used to be a PATCH per row inside a
+  // `Promise.all` — ~64 requests for a big state, each paying its own auth
+  // round trips — followed by a full config re-read, because a partial
+  // failure across that batch left the panel unable to say which rows had
+  // actually flipped. A single tenant-scoped UPDATE answers with the rows it
+  // changed, so the common case splices; the re-read is now only for the one
+  // case that is still ambiguous (see below).
   async function setAll(next: boolean) {
+    const ids = locations.filter((l) => l.enabled !== next).map((l) => l.id)
+    if (ids.length === 0) return
     setBulkBusy(true)
-    await Promise.all(
-      locations.filter((l) => l.enabled !== next).map((l) => setLocationEnabled(l.id, next)),
-    )
-    await edits.refresh()
+    const rows = await setLocationsEnabledBulk(ids, next)
+    // A short answer means some ids didn't update (stray or another
+    // tenant's); the server is the only one who knows the true state.
+    if (rows && rows.length === ids.length) edits.spliceLocations(rows)
+    else await edits.refresh()
     setBulkBusy(false)
   }
 
@@ -530,7 +543,7 @@ function LocationChip({
   async function toggle() {
     setBusy(true)
     const row = await setLocationEnabled(location.id, !location.enabled)
-    if (row) edits.spliceLocation(row)
+    if (row) edits.spliceLocations([row])
     else await edits.refresh()
     setBusy(false)
   }
@@ -842,7 +855,7 @@ function TermPill({
   async function toggle() {
     setBusy(true)
     const row = await setTermEnabled(term.id, !term.enabled)
-    if (row) edits.spliceTerm(row)
+    if (row) edits.spliceTerms([row])
     else await edits.refresh()
     setBusy(false)
   }
@@ -993,11 +1006,9 @@ function AddKeywordForm({
   )
 }
 
-/** Enable/disable every term in a track. Fires one PATCH per term — a track
- *  has a handful of keywords (not the old per-cell fan-out), so this stays a
- *  Promise.all rather than needing a bulk endpoint. Bulk edits keep the full
- *  re-read: a partial failure across the batch leaves a state only the server
- *  can settle. */
+/** Enable/disable every term in a track in one PATCH, splicing the rows it
+ *  answers with. Same shape as the state-level location toggle — see `setAll`
+ *  for why a short answer falls back to the full re-read. */
 function TrackToggle({
   terms,
   enabled,
@@ -1009,12 +1020,13 @@ function TrackToggle({
 }) {
   const [busy, setBusy] = useState(false)
   async function toggle() {
-    setBusy(true)
     const next = !enabled
-    await Promise.all(
-      terms.filter((t) => t.enabled !== next).map((t) => setTermEnabled(t.id, next)),
-    )
-    await edits.refresh()
+    const ids = terms.filter((t) => t.enabled !== next).map((t) => t.id)
+    if (ids.length === 0) return
+    setBusy(true)
+    const rows = await setTermsEnabledBulk(ids, next)
+    if (rows && rows.length === ids.length) edits.spliceTerms(rows)
+    else await edits.refresh()
     setBusy(false)
   }
   return <Toggle on={enabled} busy={busy} onClick={toggle} />

@@ -8,7 +8,7 @@
  * badge on a button.
  */
 
-import { useCallback, useEffect, useState } from "react"
+import { useSyncExternalStore } from "react"
 
 // 1 credit = 33¢. Customer-facing price.
 export const CREDIT_VALUE_CENTS = 33
@@ -122,31 +122,110 @@ export function rangeLabel(range: [number, number]): string {
 }
 
 // ---------------------------------------------------------------
-// React hook — global credits state with manual refresh
+// Shared store — one credits snapshot for the whole app
+//
+// The balance used to be per-hook state, so every `useCredits()` mount
+// fired its own GET /api/me/credits — and the topbar pill mounts on
+// every page, alongside the shell's own /api/me + /api/me/companies.
+// Credits now arrive with the rest of the shell in GET /api/session,
+// which `AuthProvider` seeds into this store on boot.
+//
+// A module-level store rather than a second React context, for two
+// reasons: `lib/auth.tsx` already imports this module for the seed, so
+// a context here would close the import cycle; and a plain store lets a
+// non-React caller (a spend that just settled) push a fresh balance.
+// `useSyncExternalStore` gives every subscriber the same snapshot, so
+// the pill and a page reading the same balance can't disagree.
 // ---------------------------------------------------------------
 
+export interface CreditsSnapshot {
+  data: CreditsState | null
+  /** True until the first read settles — seeded or failed. Drives the
+   *  pill's skeleton exactly as the old per-hook `loading` did. */
+  loading: boolean
+  /** `Date.now()` of the last settle; 0 while unsettled. Only used by
+   *  `refreshCreditsIfStale`. */
+  fetchedAt: number
+}
+
+const UNSETTLED: CreditsSnapshot = { data: null, loading: true, fetchedAt: 0 }
+
+// Replaced wholesale, never mutated: `useSyncExternalStore` compares
+// snapshots by identity and would miss an in-place edit.
+let snapshot: CreditsSnapshot = UNSETTLED
+const listeners = new Set<() => void>()
+
+function publish(next: CreditsSnapshot) {
+  snapshot = next
+  // `forEach`, not `for…of`: the project compiles without downlevelIteration.
+  listeners.forEach((listener) => listener())
+}
+
+function subscribe(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => {
+    listeners.delete(listener)
+  }
+}
+
+const getSnapshot = () => snapshot
+// Client components still render once on the server, where the store can
+// only ever be unsettled. A stable constant keeps that render hydratable.
+const getServerSnapshot = () => UNSETTLED
+
+/** Seed the store from a `/api/session` payload (or any already-fetched
+ *  body). Called by `AuthProvider` — the balance rides along with the
+ *  shell's one boot request instead of costing a second one. */
+export function seedCredits(data: CreditsState | null) {
+  publish({ data, loading: false, fetchedAt: Date.now() })
+}
+
+/** Mark the store settled after a *failed* session read, keeping whatever
+ *  data is already there. On a cold load that leaves `null` + settled —
+ *  identical to what the old hook produced when its fetch 401'd or threw.
+ *  On a re-hydrate (token refresh) it declines to blank a good balance,
+ *  which the old hook — fetching only on mount — also never did. */
+export function settleCreditsUnfetched() {
+  if (!snapshot.loading) return
+  publish({ ...snapshot, loading: false, fetchedAt: Date.now() })
+}
+
+/** Drop the balance on sign-out, so a second sign-in in the same tab can
+ *  never paint the previous tenant's number before its session lands.
+ *
+ *  Settled-and-empty rather than back to `UNSETTLED`: a signed-out shell has
+ *  no balance to wait for, and leaving `loading` true would park the pill on
+ *  its skeleton for as long as the tab stayed on the page. */
+export function clearCredits() {
+  publish({ data: null, loading: false, fetchedAt: Date.now() })
+}
+
+/** Re-read the balance from `/api/me/credits` — the single-purpose route,
+ *  still the right call for a targeted refresh after a spend or a top-up
+ *  (a whole `/api/session` would be the wasteful option here). */
+export async function refreshCredits(): Promise<void> {
+  publish({ ...snapshot, loading: true })
+  const data = await fetchCredits()
+  publish({ data, loading: false, fetchedAt: Date.now() })
+}
+
+/** Refresh only if the snapshot has gone stale, and never while one is in
+ *  flight. Lets a detail view (the credits ledger) guarantee fresh
+ *  transactions on a client-side navigation without duplicating the boot
+ *  fetch when it is the page the session just loaded for. */
+export async function refreshCreditsIfStale(maxAgeMs = 5_000): Promise<void> {
+  if (snapshot.loading) return
+  if (Date.now() - snapshot.fetchedAt <= maxAgeMs) return
+  await refreshCredits()
+}
+
+/**
+ * Read the shared credit balance.
+ *
+ * Same `{ data, loading, refresh }` shape it always had, so callers didn't
+ * change — but it now subscribes to the store instead of owning a fetch.
+ */
 export function useCredits() {
-  const [data, setData] = useState<CreditsState | null>(null)
-  const [loading, setLoading] = useState(true)
-
-  const refresh = useCallback(async () => {
-    setLoading(true)
-    setData(await fetchCredits())
-    setLoading(false)
-  }, [])
-
-  useEffect(() => {
-    let cancelled = false
-    fetchCredits().then((d) => {
-      if (!cancelled) {
-        setData(d)
-        setLoading(false)
-      }
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  return { data, loading, refresh }
+  const snap = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)
+  return { data: snap.data, loading: snap.loading, refresh: refreshCredits }
 }

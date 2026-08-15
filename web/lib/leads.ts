@@ -537,6 +537,57 @@ export async function setTermEnabled(
   }
 }
 
+/**
+ * Enable or disable many rows of one dimension in a single request.
+ *
+ * `null` means the request itself failed; an empty array means it succeeded
+ * and nothing matched. Callers splice the returned rows into local state, so
+ * those two have to be distinguishable — the same reasoning as `setOverride`.
+ * A caller that gets back fewer rows than it asked for is looking at a
+ * partial update (stray ids, or another tenant's) and should re-read rather
+ * than assume.
+ */
+async function setDimensionEnabledBulk<T>(
+  dimension: "terms" | "locations",
+  ids: number[],
+  enabled: boolean,
+): Promise<T[] | null> {
+  if (ids.length === 0) return []
+  try {
+    const data = await leadFetch<{ updated: T[] }>(
+      `/api/admin/leads/${dimension}/bulk`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, enabled }),
+      },
+    )
+    return data.updated ?? []
+  } catch {
+    return null
+  }
+}
+
+/** Enable or disable many terms at once (admin) — one PATCH for a whole
+ *  track, where the page used to fire one per keyword. Returns the updated
+ *  rows, or null if the request failed. */
+export function setTermsEnabledBulk(
+  ids: number[],
+  enabled: boolean,
+): Promise<SearchTerm[] | null> {
+  return setDimensionEnabledBulk<SearchTerm>("terms", ids, enabled)
+}
+
+/** Enable or disable many locations at once (admin). The one that pays off
+ *  most: "Enable all" on a state is dozens of city rows plus its statewide
+ *  row, and that was dozens of PATCHes plus a full config re-read. */
+export function setLocationsEnabledBulk(
+  ids: number[],
+  enabled: boolean,
+): Promise<SearchLocation[] | null> {
+  return setDimensionEnabledBulk<SearchLocation>("locations", ids, enabled)
+}
+
 export type DeleteDimensionResult = { ok: true } | { ok: false; error: string }
 
 /** Hard-delete one hand-added term (admin). A term still in the checked-in
