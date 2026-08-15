@@ -6,6 +6,12 @@ class Settings(BaseSettings):
     supabase_url: str = ""
     supabase_key: str = ""                    # anon key (legacy name preserved)
     supabase_service_role_key: str = ""       # admin client for auth verification
+    # Legacy HS256 JWT secret (Supabase dashboard → Project Settings → API →
+    # JWT Settings). Set it and `get_current_user` verifies each request's
+    # access token locally, dropping a GoTrue `auth.get_user` round trip from
+    # every authenticated request. Left empty, auth falls back to that round
+    # trip unchanged — so this is safe to roll out one environment at a time.
+    supabase_jwt_secret: str = ""
     openai_api_key: str = ""
     # gpt-4.1 is the recommended default for ICP analysis — significantly
     # more accurate than gpt-4o on multi-criteria classification.

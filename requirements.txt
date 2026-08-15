@@ -2,6 +2,9 @@ fastapi>=0.111,<1
 uvicorn[standard]>=0.29,<1
 httpx>=0.27,<1
 supabase>=2.4,<3
+# Local verification of Supabase access tokens (src/auth.py). Arrives
+# transitively via supabase/gotrue; declared because we import it directly.
+PyJWT>=2.8,<3
 pydantic-settings>=2.2,<3
 python-dotenv>=1.0,<2
 openai>=1.30,<2
