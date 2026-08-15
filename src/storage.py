@@ -1,11 +1,17 @@
 import json
 import re
 from datetime import datetime, timezone
+from typing import Any
 
-from supabase import create_client
+from supabase import ClientOptions, create_client
 
 from src.models import Practice
 from src.settings import settings
+
+# PostgREST's default client timeout is 120s — longer than any serverless
+# ceiling we deploy under, so a hung query would burn the whole invocation
+# instead of failing fast. 15s is well above p99 for every query we issue.
+POSTGREST_TIMEOUT_SECONDS = 15
 
 
 # ---------------------------------------------------------------------------
@@ -47,19 +53,46 @@ _JSONB_ANALYSIS_FIELDS = frozenset({
 PROFILE_JOIN_SELECT = "*, last_touched_by_profile:profiles!last_touched_by(name)"
 
 
+# Memoized client, mirroring src/auth.py's admin-client pattern. Building a
+# client is not free: each one owns a brand-new httpx connection pool, so
+# constructing one per call meant no HTTP connection was ever reused and every
+# PostgREST query paid a fresh TCP+TLS handshake. The cache is keyed on the
+# credentials it was built from so that changing settings (as tests do) yields
+# a new client rather than a stale one bound to the old creds.
+_client: Any = None
+_client_creds: tuple[str, str] | None = None
+
+
 def _get_client():
     """Return Supabase client or None if unconfigured.
 
     Uses the service-role key when available so backend writes bypass RLS.
     The backend is the only client talking to the DB and performs its own
     auth checks, so service-role is the correct scope here.
+
+    The client is cached per credential pair so its underlying connection
+    pool (and TLS session) is reused across the ~44 call sites.
     """
-    if not settings.supabase_url:
+    global _client, _client_creds
+    url = settings.supabase_url
+    if not url:
         return None
     key = settings.supabase_service_role_key or settings.supabase_key
     if not key:
         return None
-    return create_client(settings.supabase_url, key)
+    # Unconfigured returns above never populate the cache, so a client is only
+    # ever memoized alongside the exact creds that produced it.
+    creds = (url, key)
+    if _client is None or _client_creds != creds:
+        _client = create_client(
+            url,
+            key,
+            options=ClientOptions(
+                postgrest_client_timeout=POSTGREST_TIMEOUT_SECONDS,
+            ),
+        )
+        _client_creds = creds
+    return _client
 
 
 def _with_attribution(fields: dict, touched_by: str | None) -> dict:

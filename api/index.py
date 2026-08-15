@@ -668,9 +668,23 @@ class ChangePasswordRequest(BaseModel):
 
 
 def _anon_supabase_client():
-    """Anon (non-admin) Supabase client used to verify a user's current password."""
-    from supabase import create_client
-    return create_client(app_settings.supabase_url, app_settings.supabase_key)
+    """Anon (non-admin) Supabase client used to verify a user's current password.
+
+    Built per call rather than memoized: this is a rare re-auth path, and the
+    client is short-lived by design. It still takes an explicit timeout so it
+    can never inherit PostgREST's 120s default.
+    """
+    from supabase import ClientOptions, create_client
+
+    from src.storage import POSTGREST_TIMEOUT_SECONDS
+
+    return create_client(
+        app_settings.supabase_url,
+        app_settings.supabase_key,
+        options=ClientOptions(
+            postgrest_client_timeout=POSTGREST_TIMEOUT_SECONDS,
+        ),
+    )
 
 
 @app.post("/api/me/password")
