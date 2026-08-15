@@ -756,29 +756,56 @@ def increment_export_counts(
 
 
 def lead_analytics(company_id: str, days: int = 30) -> dict:
-    """Aggregates for `/signals/analytics`.
+    """Aggregates for `/signals/analytics`, over the trailing `days` window.
 
-    Computed in Python over a bounded row set rather than in SQL: the numbers
+    Computed in Python over the window's rows rather than in SQL: the numbers
     are small (a tenant's leads, not the shared posting universe), and keeping
     it here means the analytics view needs no database function to deploy
     alongside it.
+
+    Two things make "in Python" honest at 29k+ lead rows:
+
+    * The window is applied SERVER-SIDE (`gte` on `created_at`) instead of by
+      slicing `per_day` after the fact. So `total`, `keep_rate`, the bands and
+      the dispositions all describe the same window the chart draws — they
+      used to be whole-table figures next to a 30-day chart — and the scan is
+      bounded by the window rather than by the table.
+    * The read is PAGED. A bare `.limit(20_000)` does NOT lift PostgREST's
+      1,000-row ceiling: every figure on this page was previously computed
+      over the newest 1,000 leads, with `total` pinned at exactly 1000 and
+      `keep_rate` a ratio of whatever that window happened to hold.
+
+    Full coverage is affordable because the select carries only the six
+    columns the buckets read plus the posting's `source` — no `draft`, no
+    posting `description`, and no `posted_at` (nothing here reads it).
     """
     client = _client()
     if not client or not company_id:
         return _empty_analytics()
 
+    from datetime import timedelta
+
+    from src.storage import _paginated_query
+
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
     try:
-        rows = (
+        builder = (
             client.table("company_job_leads")
             .select(
                 "decision, confidence_band, disposition, reject_reason, service_line, "
-                "created_at, posting:job_postings!inner(source, posted_at)"
+                "created_at, posting:job_postings!inner(source)"
             )
             .eq("company_id", company_id)
+            .gte("created_at", since)
+            # Ordering by the primary key keeps the pages disjoint: an
+            # unordered paged read can repeat or skip rows between requests.
             .order("id", desc=True)
-            .limit(20_000)
-            .execute()
-        ).data or []
+        )
+        # A ceiling, not an expectation — a 365-day window on the busiest
+        # tenant is still well under this, and it stops a runaway loop if the
+        # filter above ever fails to bind.
+        rows = _paginated_query(builder, limit=100_000)
     except Exception as e:
         log.warning("[leads.analytics.error] %s: %s", type(e).__name__, str(e)[:250])
         return _empty_analytics()
@@ -819,6 +846,8 @@ def lead_analytics(company_id: str, days: int = 30) -> dict:
     return {
         "total": len(rows),
         "keep_rate": round(keeps / len(rows), 3) if rows else 0.0,
+        # The window is already enforced server-side; the slice is a belt to
+        # that brace (a day boundary can land one extra bucket in the set).
         "per_day": [
             {"day": day, **counts}
             for day, counts in sorted(by_day.items())[-days:]
@@ -865,14 +894,23 @@ def collector_health(company_id: str) -> dict:
         return {"locations": 0, "swept": 0, "unfinished": 0,
                 "zero_row_locations": 0, "last_run_at": None,
                 "last_posting_at": None, "alert": None}
+    # A `.limit(N)` alone does not paginate — PostgREST truncates any single
+    # request at 1000 rows regardless of what N asks for. Safe at today's ~160
+    # locations, but at national scale a bare limit would silently drop every
+    # location past the first page: `locations`/`swept` would under-report and
+    # the zero-row tripwire would stop seeing the locations it exists to watch.
+    from src.storage import _paginated_query
+
     try:
-        locations = (
+        builder = (
             client.table("search_locations")
             .select("id,last_indeed_at,last_linkedin_at,"
                     "indeed_zero_streak,linkedin_zero_streak")
             .eq("company_id", company_id).eq("enabled", True)
-            .limit(5000).execute()
-        ).data or []
+            # Paged reads need a stable order or the pages can overlap.
+            .order("id")
+        )
+        locations = _paginated_query(builder, limit=20_000)
     except Exception:
         locations = []
 
@@ -882,17 +920,16 @@ def collector_health(company_id: str) -> dict:
     location_ids = [l.get("id") for l in locations if l.get("id") is not None]
     started_ids: set = set()
     if location_ids:
-        # A `.limit(N)` alone does not paginate — PostgREST truncates any
-        # single request at 1000 rows regardless of what N asks for.
-        # `_paginated_query` issues successive `.range()` calls to get past
-        # that; term_count x location_count can exceed 1000 well before a
-        # tenant's dimension tables do.
-        from src.storage import _paginated_query
-
+        # Same reason as above, and it bites sooner here: term_count x
+        # location_count cells can exceed 1000 well before a tenant's
+        # dimension tables do. `target_runs` has no surrogate key (its PK is
+        # the (term, location, source) triple), so `location_id` is what the
+        # pages sort on.
         builder = (
             client.table("target_runs")
             .select("location_id")
             .in_("location_id", location_ids)
+            .order("location_id")
         )
         runs = _paginated_query(builder, limit=20_000)
         started_ids = {r["location_id"] for r in runs if r.get("location_id")}

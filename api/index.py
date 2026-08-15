@@ -167,16 +167,42 @@ class CreateUserRequest(BaseModel):
 def list_users(admin: dict = Depends(require_admin)):
     """List all profiles with per-user touched-practice count."""
     client = get_admin_client()
-    profiles_res = client.table("profiles").select("*").execute()
-    counts_res = client.table("practices").select("last_touched_by").execute()
+    # Narrowed from `select("*")`: these are every column `profiles` has
+    # today, so the payload is unchanged, but a column added later (a token,
+    # a preferences blob) will not join an admin list response by default.
+    profiles = (
+        client.table("profiles")
+        .select("id,email,name,role,disabled_at,created_at")
+        .execute()
+    ).data or []
+
+    # `practices_touched` used to be counted in Python over an unpaginated
+    # `practices.select("last_touched_by")` — PostgREST silently truncates
+    # that at 1,000 of 23k rows, so every user's count was simply wrong, and
+    # the app paid a table scan to get the wrong answer.
+    #
+    # One `count="exact", head=True` request per profile instead: a HEAD with
+    # no response body, answered in the database. Profiles number 3-10 here,
+    # so it is 3-10 tiny requests against ~23 round trips and 23k rows of
+    # transfer for the paged-scan alternative — and it stays correct as
+    # `practices` grows, since the cost tracks the user list, not the table.
+    # (If profiles ever numbered in the hundreds, the single paged
+    # `select("last_touched_by")` scan becomes the better trade.)
     counts: dict[str, int] = {}
-    for row in counts_res.data or []:
-        uid = row.get("last_touched_by")
-        if uid:
-            counts[uid] = counts.get(uid, 0) + 1
-    users = []
-    for p in profiles_res.data or []:
-        users.append({**p, "practices_touched": counts.get(p["id"], 0)})
+    for p in profiles:
+        try:
+            res = (
+                client.table("practices")
+                .select("id", count="exact", head=True)
+                .eq("last_touched_by", p["id"])
+                .execute()
+            )
+            counts[p["id"]] = res.count or 0
+        except Exception as e:
+            log.warning("[admin.users.count.error] %s: %s", type(e).__name__, e)
+            counts[p["id"]] = 0
+
+    users = [{**p, "practices_touched": counts.get(p["id"], 0)} for p in profiles]
     return {"users": users}
 
 
@@ -1050,20 +1076,47 @@ def admin_usage(
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     client = get_admin_client()
 
+    # `.limit(5000)` does NOT lift PostgREST's 1,000-row ceiling, so every
+    # total below was computed over the newest 1,000 events in the window —
+    # cost was under-reported for any window holding more than that. Page the
+    # aggregate scan, and carry only the columns the buckets actually read:
+    # `metadata` is jsonb, is rendered for the newest 50 rows only, and used
+    # to be dragged across the wire for every row in the window.
     rows: list[dict]
     try:
-        result = (
-            client.table("usage_events").select("*")
+        from src.storage import _paginated_query
+
+        agg = (
+            client.table("usage_events")
+            .select("kind,model,input_tokens,output_tokens,calls,cost_cents,created_at")
             .eq("company_id", admin["company_id"])
             .gte("created_at", since)
             .order("created_at", desc=True)
-            .limit(5000)
-            .execute()
+            .order("id", desc=True)
         )
-        rows = result.data or []
+        rows = _paginated_query(agg, limit=200_000)
     except Exception as e:
         log.warning("[usage.fetch.error] %s", e)
         rows = []
+
+    # The rendered tail, fetched on its own so `metadata` rides along for the
+    # 50 rows that display it instead of for the whole window.
+    try:
+        recent_rows = (
+            client.table("usage_events")
+            .select("created_at,kind,model,input_tokens,output_tokens,"
+                    "calls,cost_cents,metadata")
+            .eq("company_id", admin["company_id"])
+            .gte("created_at", since)
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+            .limit(50)
+            .execute()
+        ).data or []
+    except Exception as e:
+        log.warning("[usage.recent.error] %s", e)
+        # Same rows, minus the jsonb the fallback never fetched.
+        recent_rows = rows[:50]
 
     by_kind: dict[str, dict] = {}
     by_model: dict[str, dict] = {}
@@ -1136,7 +1189,7 @@ def admin_usage(
         "calls": r.get("calls") or 1,
         "cost_cents": round(float(r.get("cost_cents") or 0), 4),
         "metadata": r.get("metadata"),
-    } for r in rows[:50]]
+    } for r in recent_rows[:50]]
 
     return {
         "window_days": days,

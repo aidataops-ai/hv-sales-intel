@@ -24,6 +24,9 @@ class FakeQuery:
         self.table = table
         self.log = log
         self.rows = rows
+        # The column list this query asked for, so a test can assert the read
+        # stays narrow — full coverage is only affordable on thin rows.
+        self.selected: tuple = ()
 
     def upsert(self, payload, **kwargs):
         self.log.append(("upsert", self.table, payload, kwargs))
@@ -34,12 +37,17 @@ class FakeQuery:
         return self
 
     def select(self, *a, **k):
+        self.selected = a
         return self
 
     def eq(self, *a, **k):
         return self
 
     def in_(self, *a, **k):
+        return self
+
+    def gte(self, column, value):
+        self.log.append(("gte", self.table, column, value))
         return self
 
     def order(self, *a, **k):
@@ -71,6 +79,48 @@ class FakeClient:
 
     def table(self, name):
         return FakeQuery(name, self.log, self.by_table.get(name, self.rows))
+
+
+class RangeAwareQuery(FakeQuery):
+    """A `FakeQuery` that answers `.range()` the way PostgREST really does.
+
+    `FakeQuery.range` is a no-op, so a paged read against it looks identical
+    to an unpaged one — which is exactly the bug these tests exist to catch.
+    This one slices, and refuses to return more than `PAGE_CAP` rows in a
+    single response no matter how wide the requested range is: that silent
+    cap is what makes `.limit(20_000)` a lie in production.
+    """
+
+    PAGE_CAP = 1000
+
+    def __init__(self, table, log, rows):
+        super().__init__(table, log, rows)
+        self.ranges: list[tuple[int, int]] = []
+        self._page: list | None = None
+
+    def range(self, start, end):
+        self.ranges.append((start, end))
+        width = min(end - start + 1, self.PAGE_CAP)
+        self._page = (self.rows or [])[start:start + width]
+        return self
+
+    def execute(self):
+        data = self.rows if self._page is None else self._page
+        return type("Result", (), {"data": data, "count": len(data or [])})()
+
+
+class RangeAwareClient(FakeClient):
+    """`FakeClient` with paging teeth, keeping every query it handed out so a
+    test can assert on the `.range()` calls that were actually issued."""
+
+    def __init__(self, rows=None, by_table=None):
+        super().__init__(rows=rows, by_table=by_table)
+        self.queries: dict[str, list[RangeAwareQuery]] = {}
+
+    def table(self, name):
+        query = RangeAwareQuery(name, self.log, self.by_table.get(name, self.rows))
+        self.queries.setdefault(name, []).append(query)
+        return query
 
 
 @pytest.fixture
@@ -373,3 +423,137 @@ def test_band_distribution_counts_keeps_only(monkeypatch):
     assert result["bands"] == {"check": 1}, "discards must not inflate the bands"
     assert result["total"] == 10, "the total still counts everything qualified"
     assert result["keep_rate"] == 0.1
+
+
+# --------------------------------------------------------------------------
+# Truncation — PostgREST's silent 1,000-row ceiling
+#
+# `.limit(20_000)` does not lift it. Every read below used to hand Python a
+# clipped row set and let it compute confident-looking totals over the part
+# that survived. `RangeAwareClient` reproduces the ceiling so a regression
+# back to a single unpaged request fails loudly instead of quietly.
+# --------------------------------------------------------------------------
+
+
+def _analytics_client(leads):
+    """A client whose lead table is `leads` and whose collector tables are
+    empty — `lead_analytics` calls `collector_health`, which reads three
+    other tables and must not fall through to the lead rows."""
+    return RangeAwareClient(by_table={
+        "company_job_leads": leads,
+        "search_locations": [],
+        "target_runs": [],
+        "job_postings": [],
+    })
+
+
+def _lead_row(i):
+    return {
+        "decision": "keep" if i % 4 == 0 else "discard",
+        "confidence_band": "ready",
+        "disposition": "undecided",
+        "service_line": "dental",
+        "created_at": "2026-08-05T00:00:00Z",
+        "posting": {"source": "indeed"},
+    }
+
+
+def test_analytics_counts_every_page_not_just_the_first_thousand(monkeypatch):
+    """The bug that made the analytics page lie.
+
+    With 29k lead rows and a single request, PostgREST returned the newest
+    1,000 — so `total` read exactly 1000 forever, `keep_rate` was the keep
+    ratio of an arbitrary recent window, and the band/disposition/track
+    splits described 3% of the tenant's leads while the page presented them
+    as all of them.
+    """
+    leads = [_lead_row(i) for i in range(2500)]
+    client = _analytics_client(leads)
+    monkeypatch.setattr(lead_store, "_client", lambda: client)
+
+    result = lead_store.lead_analytics("company-1", days=365)
+
+    assert result["total"] == 2500, "a single request would have stopped at 1000"
+    assert result["keep_rate"] == 0.25
+    assert result["bands"] == {"ready": 625}, "bands count keeps, over ALL pages"
+    assert result["dispositions"] == {"undecided": 2500}
+    assert result["tracks"] == {"dental": 2500}
+    assert result["per_day"] == [{"day": "2026-08-05", "total": 2500, "indeed": 2500}]
+
+
+def test_analytics_pages_with_successive_range_calls(monkeypatch):
+    """The mechanism, asserted directly: three requests walking the offsets,
+    stopping on the short read rather than spinning to the limit."""
+    leads = [_lead_row(i) for i in range(2500)]
+    client = _analytics_client(leads)
+    monkeypatch.setattr(lead_store, "_client", lambda: client)
+
+    lead_store.lead_analytics("company-1", days=365)
+
+    ranges = client.queries["company_job_leads"][0].ranges
+    assert ranges == [(0, 999), (1000, 1999), (2000, 2999)]
+
+
+def test_analytics_narrows_the_select_to_the_columns_it_buckets(monkeypatch):
+    """Full coverage is only affordable if the rows are thin. `draft` alone is
+    ~8KB, and the posting body is larger still — pulling either for 29k rows
+    to count dispositions would trade a truncation bug for an egress bill."""
+    client = _analytics_client([])
+    monkeypatch.setattr(lead_store, "_client", lambda: client)
+
+    lead_store.lead_analytics("company-1")
+
+    columns = client.queries["company_job_leads"][0].selected[0]
+    fields = {c.strip() for c in columns.split(",")}
+
+    # `reason` is a distinct column from `reject_reason`, hence the exact
+    # token match rather than a substring check.
+    assert not fields & {"draft", "reason", "*"}
+    for unread in ("description", "posted_at", "practice"):
+        assert unread not in columns, f"{unread} is fetched but never read"
+    assert {"decision", "confidence_band", "disposition", "reject_reason",
+            "service_line", "created_at"} <= fields
+    assert "source" in columns, "the per-day chart facets on the posting source"
+
+
+def test_analytics_pushes_the_days_window_to_the_server(monkeypatch):
+    """`days` used to only slice `per_day` after the fact, so `total` and
+    `keep_rate` were whole-table figures sitting next to a 30-day chart —
+    and the scan was unbounded. A `gte` bounds both."""
+    from datetime import datetime, timezone
+
+    client = _analytics_client([])
+    monkeypatch.setattr(lead_store, "_client", lambda: client)
+
+    lead_store.lead_analytics("company-1", days=7)
+
+    filters = [e for e in client.log if e[0] == "gte" and e[1] == "company_job_leads"]
+    assert filters, "the days window must be a server-side filter"
+    column, value = filters[0][2], filters[0][3]
+    assert column == "created_at"
+    age_days = (datetime.now(timezone.utc) - datetime.fromisoformat(value)).days
+    assert age_days == 7
+
+
+def test_collector_health_pages_the_location_list(monkeypatch):
+    """Latent until national scale, then load-bearing: past 1,000 enabled
+    locations a single request drops the tail, so `locations`/`swept`
+    under-report and the zero-row tripwire stops watching the locations it
+    exists to watch."""
+    locations = [
+        {"id": i, "last_indeed_at": "2026-08-05T10:00:00Z", "last_linkedin_at": None,
+         "indeed_zero_streak": 1, "linkedin_zero_streak": 0}
+        for i in range(1, 1201)
+    ]
+    client = RangeAwareClient(by_table={
+        "search_locations": locations, "target_runs": [], "job_postings": [],
+    })
+    monkeypatch.setattr(lead_store, "_client", lambda: client)
+
+    health = lead_store.collector_health("company-1")
+
+    assert health["locations"] == 1200, "a single request would have seen 1000"
+    assert health["swept"] == 1200
+    assert health["zero_row_locations"] == 1200
+    assert "Indeed" in health["alert"]
+    assert client.queries["search_locations"][0].ranges == [(0, 999), (1000, 1999)]
