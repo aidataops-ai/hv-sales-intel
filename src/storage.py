@@ -142,7 +142,11 @@ def find_duplicate_place_ids(practices: list[Practice]) -> dict[str, str]:
     different place_id.
 
     Prevents Google's parallel listings (same business with two place_ids)
-    from creating duplicate rows. One DB round-trip per search.
+    from creating duplicate rows. One DB round-trip per 500 distinct names —
+    chunked because an unbounded `in_` either blows the URL out or comes back
+    truncated at PostgREST's silent 1,000-row cap, and a truncated answer here
+    means a duplicate place_id is admitted, which is the exact failure this
+    function exists to prevent.
     """
     client = _get_client()
     if not client or not practices:
@@ -151,18 +155,22 @@ def find_duplicate_place_ids(practices: list[Practice]) -> dict[str, str]:
     names = list({p.name for p in practices if p.name})
     if not names:
         return {}
-    try:
-        result = (
-            client.table("practices")
-            .select("place_id,name,address,phone")
-            .in_("name", names)
-            .execute()
-        )
-    except Exception:
-        return {}
+    rows: list[dict] = []
+    CHUNK = 500
+    for i in range(0, len(names), CHUNK):
+        try:
+            result = (
+                client.table("practices")
+                .select("place_id,name,address,phone")
+                .in_("name", names[i:i + CHUNK])
+                .execute()
+            )
+        except Exception:
+            return {}
+        rows.extend(result.data or [])
 
     existing_by_key: dict[tuple, str] = {}
-    for row in (result.data or []):
+    for row in rows:
         key = _dedup_key(row.get("name"), row.get("address"), row.get("phone"))
         # Stable choice if pre-existing dupes share a key: lowest place_id wins.
         prev = existing_by_key.get(key)
@@ -523,35 +531,41 @@ def _ensure_state_rows_for_practices(
 ) -> None:
     """Seed blank company_practice_state rows so newly-upserted practices
     show up in the active tenant's sidebar even before any per-practice
-    action is taken. Idempotent — only inserts missing rows."""
+    action is taken. Idempotent — only inserts missing rows.
+
+    Resolves place_id → practice_id 500 at a time: an unchunked `in_` over a
+    >1000-place upsert came back truncated at PostgREST's silent row cap, so
+    the practices past the cap were never seeded and stayed invisible."""
     if not company_id or not place_ids:
         return
     client = _get_client()
     if not client:
         return
-    # Resolve place_id → practice_id in one round-trip.
-    try:
-        rows = (
-            client.table("practices").select("id,place_id")
-            .in_("place_id", place_ids).execute()
+    payload: list[dict] = []
+    CHUNK = 500
+    for i in range(0, len(place_ids), CHUNK):
+        try:
+            rows = (
+                client.table("practices").select("id,place_id")
+                .in_("place_id", place_ids[i:i + CHUNK]).execute()
+            )
+        except Exception:
+            return
+        payload.extend(
+            {"company_id": company_id, "practice_id": r["id"]}
+            for r in (rows.data or []) if r.get("id")
         )
-    except Exception:
-        return
-    payload = [
-        {"company_id": company_id, "practice_id": r["id"]}
-        for r in (rows.data or [])
-        if r.get("id")
-    ]
     if not payload:
         return
-    try:
-        client.table("company_practice_state").upsert(
-            payload,
-            on_conflict="company_id,practice_id",
-            ignore_duplicates=True,
-        ).execute()
-    except Exception:
-        pass
+    for i in range(0, len(payload), CHUNK):
+        try:
+            client.table("company_practice_state").upsert(
+                payload[i:i + CHUNK],
+                on_conflict="company_id,practice_id",
+                ignore_duplicates=True,
+            ).execute()
+        except Exception:
+            pass
 
 
 def query_practices(
@@ -797,60 +811,96 @@ def increment_export_counts(
 ) -> None:
     """Increment export_count by 1 and stamp who/when on each `place_id`.
 
-    Single SELECT then per-row UPDATE — Supabase-py doesn't expose `+= 1`
-    SQL fragments. Fine at export-batch scale (a few thousand rows,
-    infrequent). Each UPDATE writes `export_count`, `last_exported_at`,
-    and `last_exported_by`; missing columns are dropped via the optional-
-    column retry pattern.
+    Read-then-write, because supabase-py exposes no `+= 1` SQL fragment — but
+    chunked and grouped, because a practices CSV export passes up to 50k ids.
+    Three things were wrong with doing it one row at a time:
+
+      * the read was an unchunked `in_` over every id — a URL long enough to
+        be rejected outright (silent no-op) or, short of that, a response
+        truncated at PostgREST's 1,000-row cap, which quietly broke the
+        `max_exports=0` dedup the counter exists to serve;
+      * every row cost its own UPDATE, plus a `_practice_id_by_place` SELECT
+        and a state upsert inside `_write_per_company_state` — ~3 round trips
+        per row, ~15,000 for one export, which does not fit a serverless
+        invocation;
+      * `practices.id` was right there in the row and thrown away.
+
+    Now: 500 ids per read, `id` selected so the per-row lookup disappears,
+    and one UPDATE per distinct new count value (exports are dominated by
+    rows at count 0, so that is typically one or two). `last_exported_by` and
+    friends are still dropped via the optional-column retry when the deployed
+    schema lacks them.
     """
     if not place_ids:
         return
     client = _get_client()
     if not client:
         return
-    try:
-        existing = (
-            client.table("practices")
-            .select("place_id,export_count")
-            .in_("place_id", place_ids)
-            .execute()
-        )
-    except Exception:
-        return
     now = datetime.now(timezone.utc).isoformat()
-    for row in existing.data or []:
-        next_count = (row.get("export_count") or 0) + 1
-        payload: dict = {
-            "export_count": next_count,
-            "last_exported_at": now,
-        }
-        if user_id:
-            payload["last_exported_by"] = user_id
+    CHUNK = 500
+    for i in range(0, len(place_ids), CHUNK):
+        chunk = place_ids[i:i + CHUNK]
         try:
-            client.table("practices").update(payload).eq(
-                "place_id", row["place_id"]
-            ).execute()
-            # Phase 3 dual-write: mirror to per-company state so Phase 4
-            # can read export_count from there without a backfill scramble.
-            if company_id:
-                _write_per_company_state(
-                    row["place_id"], company_id, payload, touched_by=None,
-                )
-        except Exception as e:
-            msg = str(e)
-            # Drop columns the deployed schema is missing and retry once.
-            missing = [c for c in _OPTIONAL_COLUMNS if c in msg]
-            if not missing:
-                continue
-            retry = {k: v for k, v in payload.items() if k not in missing}
-            if not retry:
-                continue
+            existing = (
+                client.table("practices")
+                .select("id,place_id,export_count")
+                .in_("place_id", chunk)
+                .execute()
+            )
+        except Exception:
+            continue
+        rows_by_count: dict[int, list[dict]] = {}
+        for row in existing.data or []:
+            rows_by_count.setdefault(
+                (row.get("export_count") or 0) + 1, []
+            ).append(row)
+
+        for next_count, rows in rows_by_count.items():
+            payload: dict = {
+                "export_count": next_count,
+                "last_exported_at": now,
+            }
+            if user_id:
+                payload["last_exported_by"] = user_id
+            ids = [r["place_id"] for r in rows]
             try:
-                client.table("practices").update(retry).eq(
-                    "place_id", row["place_id"]
+                client.table("practices").update(payload).in_(
+                    "place_id", ids
                 ).execute()
-            except Exception:
+            except Exception as e:
+                # Drop columns the deployed schema is missing and retry once.
+                # As before, a group that only lands on the retry does NOT get
+                # the per-company mirror — the mirror table has the same
+                # columns, so it would fail the same way.
+                missing = [c for c in _OPTIONAL_COLUMNS if c in str(e)]
+                retry = {k: v for k, v in payload.items() if k not in missing}
+                if not missing or not retry:
+                    continue
+                try:
+                    client.table("practices").update(retry).in_(
+                        "place_id", ids
+                    ).execute()
+                except Exception:
+                    pass
                 continue
+
+            # Phase 3 dual-write: mirror to per-company state so Phase 4 can
+            # read export_count from there without a backfill scramble. One
+            # upsert for the whole group — `practices.id` came back with the
+            # read, so there is nothing left to resolve per row.
+            if company_id:
+                mirror = [
+                    {"company_id": company_id, "practice_id": r["id"], **payload}
+                    for r in rows if r.get("id")
+                ]
+                if mirror:
+                    try:
+                        client.table("company_practice_state").upsert(
+                            mirror, on_conflict="company_id,practice_id",
+                        ).execute()
+                    except Exception:
+                        # Never fail the legacy write because the mirror did.
+                        pass
 
 
 def resolve_user_names(user_ids: list[str]) -> dict[str, str]:

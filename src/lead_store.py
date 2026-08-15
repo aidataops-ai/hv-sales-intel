@@ -211,6 +211,24 @@ def existing_external_ids(source: str, external_ids: list[str]) -> set[str]:
 # ---------------------------------------------------------------------------
 
 
+# Every column the qualify path actually reads off a claimed posting, and
+# nothing else. `lead_qualifier._posting_row` renders title / employer_name /
+# location_raw / board_remote_flag / the three salary columns /
+# service_line_hint / description; `parse_verdict` reads `id` and
+# `service_line_hint`; both callers pass `[p["id"] for p in postings]` to
+# `practice_matcher.link_postings`, which re-selects its own columns. Nothing
+# reads url, city, state, posted_at, source, external_id, first/last_seen_at
+# or the match_* link columns, so `select("*")` was paying for all of them.
+#
+# `description` is the expensive one — the whole reason `job_postings` is a
+# 45 MB table — and it IS needed here, so it is fetched, but only for the
+# `limit` rows that survive the anti-join, never for the scan.
+_QUALIFY_POSTING_COLS = (
+    "id, title, employer_name, location_raw, board_remote_flag, "
+    "salary_min, salary_max, salary_interval, service_line_hint, description"
+)
+
+
 def claim_unqualified(company_id: str, limit: int) -> list[dict]:
     """Postings this tenant has no lead row for yet, newest first.
 
@@ -220,6 +238,14 @@ def claim_unqualified(company_id: str, limit: int) -> list[dict]:
     already paid to qualify, and `unique (company_id, posting_id)` guarantees
     one entry each. If that set outgrows a few tens of thousands, this wants to
     become a database view.
+
+    Two phases, and the split is the point. The anti-join scan pages
+    `select("id")` — in steady state nearly every scanned row is already
+    qualified, so pulling whole rows meant transferring most of a 45 MB table
+    (full `description` bodies included) on every run just to test integers
+    against a Python set. Only the `limit` survivors are then re-fetched with
+    the columns the qualifier and the matcher actually read
+    (`_QUALIFY_POSTING_COLS`). Same rows, same order, ~1/1000th the egress.
     """
     client = _client()
     if not client or not company_id or limit <= 0:
@@ -246,17 +272,19 @@ def claim_unqualified(company_id: str, limit: int) -> list[dict]:
             break
         page += 1
 
-    # Scan newest postings first and stop as soon as the batch is full. The
-    # window is generous because a tenant that has qualified everything recent
-    # would otherwise see only its own already-done rows.
-    candidates: list[dict] = []
+    # Phase 1 — the anti-join. Scan newest postings first and stop as soon as
+    # the batch is full. The window is generous because a tenant that has
+    # qualified everything recent would otherwise see only its own already-done
+    # rows — which is exactly why this scan must stay id-only: the generous
+    # window is the whole table in steady state.
+    claimed: list[int] = []
     scanned = 0
     page = 0
-    while len(candidates) < limit and scanned < limit * 20 + _PAGE:
+    while len(claimed) < limit and scanned < limit * 20 + _PAGE:
         try:
             result = (
                 client.table("job_postings")
-                .select("*")
+                .select("id")
                 .order("id", desc=True)
                 .range(page * _PAGE, page * _PAGE + _PAGE - 1)
                 .execute()
@@ -269,14 +297,42 @@ def claim_unqualified(company_id: str, limit: int) -> list[dict]:
         scanned += len(batch)
         for posting in batch:
             if posting["id"] not in qualified:
-                candidates.append(posting)
-                if len(candidates) >= limit:
+                claimed.append(posting["id"])
+                if len(claimed) >= limit:
                     break
         if len(batch) < _PAGE:
             break
         page += 1
 
-    return candidates
+    if not claimed:
+        return []
+
+    # Phase 2 — hydrate the survivors, and only the survivors. Chunked so a
+    # large `limit` can never blow the URL out; PostgREST does not promise an
+    # order on an `in_` filter, so the sort is restated rather than assumed.
+    CHUNK = 500
+    by_id: dict[int, dict] = {}
+    for i in range(0, len(claimed), CHUNK):
+        try:
+            rows = (
+                client.table("job_postings")
+                .select(_QUALIFY_POSTING_COLS)
+                .in_("id", claimed[i:i + CHUNK])
+                .order("id", desc=True)
+                .execute()
+            ).data or []
+        except Exception as e:
+            log.warning("[leads.claim.hydrate_error] %s: %s",
+                        type(e).__name__, str(e)[:200])
+            break
+        for row in rows:
+            by_id[row["id"]] = row
+
+    # Re-key onto the scan order so callers still see newest-first, whatever
+    # the server returned. A row that vanished between the two phases (the
+    # retention job nulls bodies but never deletes; a manual delete could)
+    # simply isn't claimed this run.
+    return [by_id[pid] for pid in claimed if pid in by_id]
 
 
 def write_verdicts(company_id: str, verdicts: list[dict]) -> int:
@@ -718,8 +774,11 @@ def increment_export_counts(
     """Bump `export_count` and stamp who/when, so a follow-up export with
     `max_exports=0` skips the rows already pulled.
 
-    Read-then-write per row: supabase-py exposes no `+= 1` SQL fragment, and
-    export batches are infrequent enough that it doesn't matter.
+    Read-then-write, because supabase-py exposes no `+= 1` SQL fragment — but
+    grouped, not per row. Every lead sharing a current `export_count` gets the
+    same new value, so the writes collapse to one `update ... in (ids)` per
+    distinct count. Real exports are dominated by rows at count 0, which makes
+    this ~1-2 round trips per 500-row chunk instead of 500.
     """
     client = _client()
     if not client or not lead_ids:
@@ -735,16 +794,21 @@ def increment_export_counts(
             ).data or []
         except Exception:
             continue
+        ids_by_count: dict[int, list[int]] = {}
         for row in existing:
+            ids_by_count.setdefault(
+                (row.get("export_count") or 0) + 1, []
+            ).append(row["id"])
+        for next_count, ids in ids_by_count.items():
             payload: dict[str, Any] = {
-                "export_count": (row.get("export_count") or 0) + 1,
+                "export_count": next_count,
                 "last_exported_at": now,
             }
             if user_id:
                 payload["last_exported_by"] = user_id
             try:
-                client.table("company_job_leads").update(payload).eq(
-                    "id", row["id"]
+                client.table("company_job_leads").update(payload).in_(
+                    "id", ids
                 ).execute()
             except Exception:
                 continue
