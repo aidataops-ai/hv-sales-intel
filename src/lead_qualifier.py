@@ -29,6 +29,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from typing import Any
 
 from src import lead_config, lead_store
 from src.settings import settings
@@ -222,11 +223,37 @@ def parse_verdict(raw: dict, posting: dict, model: str | None) -> dict | None:
 # ---------------------------------------------------------------------------
 
 
+# Batch qualification sends a whole page of postings in one request and can
+# legitimately run for minutes — keep the wide ceiling.
+_OPENAI_TIMEOUT = 300
+
+# One cached client for the process, keyed on the API key so a test that
+# monkeypatches `settings` gets a client built from its own patch rather than
+# one left behind by an earlier test. Building `OpenAI` per batch paid a fresh
+# TCP+TLS handshake and abandoned the connection pool to the GC.
+_client_cache: tuple[Any, Any] | None = None
+
+
 def _client():
+    # The `openai` import stays function-local on purpose: it costs ~88ms at
+    # import time and the qualifier is only reached from the cron path, so
+    # module-scope would tax every serverless cold start including /api/health.
     from openai import OpenAI
+
+    global _client_cache
     if not settings.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is not configured")
-    return OpenAI(api_key=settings.openai_api_key, timeout=300)
+    if _client_cache is not None and _client_cache[0] == settings.openai_api_key:
+        return _client_cache[1]
+    client = OpenAI(api_key=settings.openai_api_key, timeout=_OPENAI_TIMEOUT)
+    _client_cache = (settings.openai_api_key, client)
+    return client
+
+
+def _reset_client() -> None:
+    """Drop the cached client. Test hook — see `tests/conftest.py`."""
+    global _client_cache
+    _client_cache = None
 
 
 def _is_parameter_rejection(message: str) -> str | None:

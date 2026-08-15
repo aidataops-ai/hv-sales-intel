@@ -1,11 +1,43 @@
 import json
 import logging
+from typing import Any
 
 from openai import AsyncOpenAI
 
 from src.settings import settings
 
 log = logging.getLogger("hvsi.scriptgen")
+
+# Interactive path: the user is watching a spinner, so fail fast rather than
+# hang on the SDK's 600s default.
+_OPENAI_TIMEOUT = 60.0
+
+# One cached client for the process. Building `AsyncOpenAI` per call paid a
+# fresh TCP+TLS handshake to api.openai.com every time and abandoned the
+# connection pool to the GC. The cache is a single slot keyed on both the
+# API key and the *class object* currently bound to `AsyncOpenAI`, so a test
+# that patches either `settings` or `AsyncOpenAI` gets a client built from
+# its own patch instead of one left behind by an earlier test.
+_client_cache: tuple[Any, Any, Any] | None = None
+
+
+def _get_client() -> Any:
+    """Return the process-wide AsyncOpenAI client, building it on first use."""
+    global _client_cache
+    cls, api_key = AsyncOpenAI, settings.openai_api_key
+    if _client_cache is not None:
+        cached_cls, cached_key, cached_client = _client_cache
+        if cached_cls is cls and cached_key == api_key:
+            return cached_client
+    client = cls(api_key=api_key, timeout=_OPENAI_TIMEOUT)
+    _client_cache = (cls, api_key, client)
+    return client
+
+
+def _reset_client() -> None:
+    """Drop the cached client. Test hook — see `tests/conftest.py`."""
+    global _client_cache
+    _client_cache = None
 
 SYSTEM_PROMPT = """You are a cold call script writer for ApexVirtuals.
 
@@ -151,7 +183,7 @@ Verbatim Patient Review Excerpts:
 {excerpts_block}
 """
 
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    client = _get_client()
     log.info("[scriptgen.start] practice=%r model=%s contacts=%d",
              name, settings.openai_model, len(website_contacts or []))
     try:

@@ -18,6 +18,37 @@ from src.settings import settings
 
 log = logging.getLogger("hvsi.icp_parser")
 
+# Interactive path: an admin is watching the ICP upload, so fail fast rather
+# than hang on the SDK's 600s default.
+_OPENAI_TIMEOUT = 60.0
+
+# One cached client for the process. Building `AsyncOpenAI` per call paid a
+# fresh TCP+TLS handshake to api.openai.com every time and abandoned the
+# connection pool to the GC. The cache is a single slot keyed on both the
+# API key and the *class object* currently bound to `AsyncOpenAI`, so a test
+# that patches either `settings` or `AsyncOpenAI` gets a client built from
+# its own patch instead of one left behind by an earlier test.
+_client_cache: tuple[Any, Any, Any] | None = None
+
+
+def _get_client() -> Any:
+    """Return the process-wide AsyncOpenAI client, building it on first use."""
+    global _client_cache
+    cls, api_key = AsyncOpenAI, settings.openai_api_key
+    if _client_cache is not None:
+        cached_cls, cached_key, cached_client = _client_cache
+        if cached_cls is cls and cached_key == api_key:
+            return cached_client
+    client = cls(api_key=api_key, timeout=_OPENAI_TIMEOUT)
+    _client_cache = (cls, api_key, client)
+    return client
+
+
+def _reset_client() -> None:
+    """Drop the cached client. Test hook — see `tests/conftest.py`."""
+    global _client_cache
+    _client_cache = None
+
 
 # Strict allowlist for vertical codes — the parser cannot invent new ones.
 VALID_VERTICALS = {
@@ -134,7 +165,7 @@ async def parse_icp_doc(
         log.warning("[icp_parser.no_key] returning skeleton")
         return _validate(_skeleton())
 
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    client = _get_client()
     log.info("[icp_parser.start] model=%s %s",
              settings.openai_model, savings_summary(raw, snippet))
     try:
