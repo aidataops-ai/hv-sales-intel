@@ -3,9 +3,10 @@ from typing import Any
 
 import jwt
 from fastapi import Depends, HTTPException, Request
-from supabase import create_client
+from supabase import ClientOptions, create_client
 
 from src.settings import settings
+from src.storage import POSTGREST_TIMEOUT_SECONDS
 
 _admin_client: Any = None
 
@@ -19,6 +20,12 @@ def get_admin_client():
         _admin_client = create_client(
             settings.supabase_url,
             settings.supabase_service_role_key,
+            # Same 15s PostgREST cap as the data-layer client — the 120s
+            # library default outlives any serverless invocation. (GoTrue
+            # calls are unaffected; its client carries httpx's own default.)
+            options=ClientOptions(
+                postgrest_client_timeout=POSTGREST_TIMEOUT_SECONDS,
+            ),
         )
     return _admin_client
 
