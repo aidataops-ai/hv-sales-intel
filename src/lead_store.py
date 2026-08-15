@@ -90,6 +90,44 @@ LEAD_LIST_SELECT = (
     f"{_POSTING_LIST_COLS}, practice:practices({_PRACTICE_COLS}))"
 )
 
+# The CSV export is a pure Talent-DB mapping: every column below is read by
+# `talentdb.build_fields` (whose keys ARE `talentdb.CSV_COLUMNS`) or by the
+# route's `_posting_from_lead`. Two consequences worth spelling out:
+#
+# - `description` STAYS. It is the CSV's `posting_description` column — the one
+#   heavy column the export genuinely needs. The lead `draft` (up to 8 KB) does
+#   not, and neither do reason / notes / model / the workflow timestamps.
+# - The practice embed shrinks to `place_id`. The export route immediately
+#   re-fetches the full practice rows by place_id (`get_practices_by_place_ids`)
+#   because build_fields needs the analysis/CRM columns the embed never carried
+#   — so every other embedded column was fetched and then thrown away.
+#
+# Filter columns (`export_count`, the posting's `salary_min` / `practice_id`)
+# are deliberately absent: PostgREST filters against the table, not the
+# projection.
+_LEAD_EXPORT_COLS = "id, posting_id, service_line, provider_count"
+_POSTING_EXPORT_COLS = (
+    "source, url, title, employer_name, city, state, posted_at, "
+    "board_remote_flag, description, search_term, search_location, "
+    "service_line_hint, first_seen_at, last_seen_at, "
+    "match_confidence, match_status"
+)
+LEAD_EXPORT_SELECT = (
+    f"{_LEAD_EXPORT_COLS}, posting:job_postings!inner("
+    f"{_POSTING_EXPORT_COLS}, practice:practices(place_id))"
+)
+
+# The same posting columns, fetched directly rather than through a lead — so
+# this one needs the `id` the export reads off the lead's `posting_id`.
+# `newest_posting_for_practice` has two callers with different appetites:
+# `_practice_exported` (every practice-detail load) reads only `id`, while the
+# practice-detail Import Lead button hands the whole row to
+# `talentdb.build_fields`. Their union is what the row must carry. What it
+# drops is what neither reads: `external_id`, `employer_name_norm`,
+# `location_raw`, the salary triple, `practice_id`, `match_method`,
+# `matched_at`.
+_POSTING_TALENTDB_COLS = f"id, {_POSTING_EXPORT_COLS}"
+
 _PAGE = 1000
 
 
@@ -469,12 +507,19 @@ def list_leads(
     offset: int = 0,
     limit: int = 50,
 ) -> tuple[list[dict], int]:
-    """One page of the tenant's feed plus the exact total. `([], 0)` if unset.
+    """One page of the tenant's feed plus a total. `([], 0)` if unset.
 
     Default order is ADR-07's: band first, then posting recency. Anything the
     operator picks instead still breaks ties on recency, because two leads in
     the same band with the same status are otherwise ordered arbitrarily and
     the page would reshuffle between loads.
+
+    `total` is exact on the last page and a planner estimate before it —
+    `count="exact"` re-counted the whole 29k-row join on every page. Callers
+    turn it into `has_more` (`offset + len(rows) < total`), and THAT stays
+    exact: we fetch one row past the page, so "is there another page?" is
+    answered by data and the estimate can only widen a total already known to
+    be short. Paging therefore never stalls on a stale estimate.
     """
     client = _client()
     if not client or not company_id:
@@ -484,7 +529,8 @@ def list_leads(
     column, on_posting = _SORT_COLUMNS.get(sort, _SORT_COLUMNS["band"])
     desc = (direction or "asc").lower() == "desc"
     start = max(0, offset)
-    end = start + max(1, limit) - 1
+    page_size = max(1, limit)
+    probe_end = start + page_size  # .range() is inclusive → page_size + 1 rows
 
     def _ordered(query):
         if on_posting:
@@ -504,17 +550,23 @@ def list_leads(
             _apply_filters(client.table("company_job_leads").select(LEAD_LIST_SELECT),
                            filters=filters)
             .eq("company_id", company_id)
-        ).range(start, end).execute().data or []
+        ).range(start, probe_end).execute().data or []
     except Exception as e:
         log.warning("[leads.list.error] %s: %s", type(e).__name__, str(e)[:250])
         return [], 0
 
-    total = start + len(rows)
+    # Short read → the page ran off the end of the feed, so this total is
+    # exact and the count query is skipped entirely.
+    if len(rows) <= page_size:
+        return [_flatten(r) for r in rows], start + len(rows)
+    rows = rows[:page_size]
+
+    total = start + page_size + 1
     try:
         counted = (
             _apply_filters(
                 client.table("company_job_leads")
-                .select("id, posting:job_postings!inner(id)", count="exact"),
+                .select("id, posting:job_postings!inner(id)", count="planned"),
                 filters=filters,
             )
             .eq("company_id", company_id)
@@ -522,7 +574,7 @@ def list_leads(
             .execute()
         )
         if counted.count is not None:
-            total = counted.count
+            total = max(total, counted.count)
     except Exception:
         # A failed count still leaves a usable page — the pager just can't
         # show a final page number.
@@ -609,13 +661,17 @@ def newest_posting_for_practice(practice_id: int) -> dict | None:
 
     Newest by `posted_at` then `id` — the practice-detail Import Lead button
     resolves `Lead_Type__c` / the `posting_*` fields from this row.
+
+    Selects `_POSTING_TALENTDB_COLS` rather than `*`: this runs on every
+    practice-detail load (via `_practice_exported`, which reads only `id`), so
+    the row it drags back is worth keeping to what its callers read.
     """
     client = _client()
     if not client or not practice_id:
         return None
     try:
         result = (
-            client.table("job_postings").select("*")
+            client.table("job_postings").select(_POSTING_TALENTDB_COLS)
             .eq("practice_id", practice_id)
             .order("posted_at", desc=True, nullsfirst=False)
             .order("id", desc=True)
@@ -736,6 +792,10 @@ def leads_for_export(
       - None → no filter; export every matching row
       - 0    → only never-exported rows (export_count = 0)
       - N    → only rows with export_count <= N
+
+    Reads `LEAD_EXPORT_SELECT`, not the detail view's `LEAD_SELECT`: an export
+    is tens of thousands of rows in one serverless invocation, so the columns
+    the CSV never prints are the ones that decide whether it finishes.
     """
     client = _client()
     if not client or not company_id:
@@ -745,7 +805,7 @@ def leads_for_export(
     page = 0
     while len(rows) < 50_000:
         query = _apply_filters(
-            client.table("company_job_leads").select(LEAD_SELECT),
+            client.table("company_job_leads").select(LEAD_EXPORT_SELECT),
             filters=filters or {},
         ).eq("company_id", company_id)
         if max_exports is not None:

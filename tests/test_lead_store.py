@@ -7,6 +7,8 @@ own half. A regression here is silent — the leads still render correctly, and
 nobody notices until a rep asks where their approvals went.
 """
 
+import re
+
 import pytest
 
 from src import lead_store
@@ -557,3 +559,175 @@ def test_collector_health_pages_the_location_list(monkeypatch):
     assert health["zero_row_locations"] == 1200
     assert "Indeed" in health["alert"]
     assert client.queries["search_locations"][0].ranges == [(0, 999), (1000, 1999)]
+
+
+# --------------------------------------------------------------------------
+# Query diet: which columns each read path asks for, and the feed's pager
+# --------------------------------------------------------------------------
+
+
+def _select_columns(select: str) -> set[str]:
+    """Top-level column names in a PostgREST select string; embeds collapse to
+    their alias, so `posting:job_postings!inner(...)` contributes `posting`."""
+    out: set[str] = set()
+    token: list[str] = []
+    depth = 0
+    for ch in select:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "," and depth == 0:
+            out.add("".join(token).strip())
+            token = []
+            continue
+        if depth == 0 and ch not in "()":
+            token.append(ch)
+    out.add("".join(token).strip())
+    return {c.split(":")[0].strip() for c in out if c.strip()}
+
+
+def test_export_select_leaves_the_draft_behind_but_keeps_the_description():
+    """The export used the detail view's select. `draft` is up to 8 KB a lead
+    and appears in no CSV column; `description` is the CSV's
+    `posting_description` and must survive the diet."""
+    lead_cols = _select_columns(lead_store.LEAD_EXPORT_SELECT)
+    assert "draft" not in lead_cols
+    for workflow_only in ("reason", "notes", "model", "qualified_at",
+                          "last_touched_at", "contacted_at", "reject_reason"):
+        assert workflow_only not in lead_cols
+    assert "description" in lead_store.LEAD_EXPORT_SELECT
+
+
+def test_export_practice_embed_is_only_the_lookup_key():
+    """The export route re-fetches full practice rows by place_id, because the
+    embed never carried the analysis columns the Talent-DB mapping needs — so
+    every other embedded column was fetched and then dropped on the floor."""
+    assert "practice:practices(place_id)" in lead_store.LEAD_EXPORT_SELECT
+    for embedded_only_on_the_feed in ("owner_email", "review_count", "address"):
+        assert embedded_only_on_the_feed not in lead_store.LEAD_EXPORT_SELECT
+
+
+def test_newest_posting_select_covers_every_column_talentdb_reads():
+    """Two callers, two appetites: the practice-detail page reads only `id`,
+    the Import Lead button hands the whole row to `talentdb.build_fields`.
+    Narrowing past the union would silently blank fields on the webhook."""
+    import inspect
+
+    from src import talentdb
+
+    selected = _select_columns(lead_store._POSTING_TALENTDB_COLS)
+    source = inspect.getsource(talentdb.build_fields)
+    read_by_talentdb = set(re.findall(r"pg\.get\(\"(\w+)\"\)", source))
+
+    assert read_by_talentdb <= selected, (
+        f"build_fields reads {sorted(read_by_talentdb - selected)}, "
+        "which newest_posting_for_practice no longer fetches"
+    )
+    assert "id" in selected, "_practice_exported reads posting['id']"
+    for unread in ("external_id", "employer_name_norm", "location_raw",
+                   "salary_min", "match_method", "matched_at"):
+        assert unread not in selected
+
+
+class _FeedQuery:
+    """Records the select + range the feed issues, and honours the range so a
+    limit+1 probe read behaves the way PostgREST would."""
+
+    def __init__(self, rows, call, planned):
+        self._rows = rows
+        self._call = call
+        self._planned = planned
+
+    def eq(self, *a, **k): return self
+    def in_(self, *a, **k): return self
+    def is_(self, *a, **k): return self
+    def or_(self, *a, **k): return self
+    def lte(self, *a, **k): return self
+    def order(self, *a, **k): return self
+
+    @property
+    def not_(self):
+        return self
+
+    def limit(self, n):
+        self._call["limit"] = n
+        return self
+
+    def range(self, start, end):
+        self._call["range"] = (start, end)
+        return self
+
+    def execute(self):
+        if self._call["count"]:
+            return type("R", (), {"data": [], "count": self._planned})()
+        start, end = self._call["range"]
+        return type("R", (), {"data": self._rows[start:end + 1], "count": None})()
+
+
+def _fake_feed(monkeypatch, rows, planned=None):
+    calls: list[dict] = []
+
+    def _table(name):
+        def _select(columns, count=None):
+            call = {"columns": columns, "count": count, "range": None, "limit": None}
+            calls.append(call)
+            return _FeedQuery(rows, call, planned)
+
+        return type("T", (), {"select": staticmethod(_select)})()
+
+    monkeypatch.setattr(
+        lead_store, "_client", lambda: type("C", (), {"table": staticmethod(_table)})()
+    )
+    return calls
+
+
+def _lead_rows(n: int) -> list[dict]:
+    return [{"id": i, "posting": {"city": "Miami"}} for i in range(n)]
+
+
+def test_feed_counts_planned_not_exact(monkeypatch):
+    """`count="exact"` re-counted the whole 29k-row join on every page load,
+    on a shared-CPU instance, to render one number."""
+    calls = _fake_feed(monkeypatch, _lead_rows(80), planned=29_400)
+    rows, total = lead_store.list_leads("company-1", limit=50)
+
+    assert [c["count"] for c in calls if c["count"]] == ["planned"]
+    assert len(rows) == 50
+    assert total == 29_400
+
+
+def test_feed_fetches_one_row_past_the_page_and_never_returns_it(monkeypatch):
+    calls = _fake_feed(monkeypatch, _lead_rows(80), planned=29_400)
+    rows, _ = lead_store.list_leads("company-1", offset=0, limit=50)
+
+    assert calls[0]["range"] == (0, 50), "must fetch limit+1"
+    assert calls[0]["columns"] == lead_store.LEAD_LIST_SELECT
+    assert len(rows) == 50
+
+
+def test_feeds_last_page_is_exact_and_skips_the_count(monkeypatch):
+    calls = _fake_feed(monkeypatch, _lead_rows(12), planned=29_400)
+    rows, total = lead_store.list_leads("company-1", limit=50)
+
+    assert len(rows) == 12
+    assert total == 12, "a short read is the exact total"
+    assert len(calls) == 1, "no count query when the page ran off the end"
+
+
+def test_export_reads_the_export_select_not_the_detail_one(monkeypatch):
+    calls = _fake_feed(monkeypatch, _lead_rows(3))
+    lead_store.leads_for_export("company-1")
+
+    assert calls[0]["columns"] == lead_store.LEAD_EXPORT_SELECT
+    assert calls[0]["columns"] != lead_store.LEAD_SELECT
+
+
+def test_feed_paging_survives_an_estimate_that_undershoots(monkeypatch):
+    """A planner estimate below the rows we can actually see would otherwise
+    make api/index.py's `has_more` false while a page still waits."""
+    _fake_feed(monkeypatch, _lead_rows(80), planned=3)
+    rows, total = lead_store.list_leads("company-1", limit=50)
+
+    assert len(rows) == 50
+    assert total > len(rows)

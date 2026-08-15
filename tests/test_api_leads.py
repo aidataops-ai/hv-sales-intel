@@ -146,6 +146,51 @@ def test_export_row_uses_employer_name_when_no_practice():
     assert "FirstName" not in row
 
 
+def _export_select_parts() -> tuple[list[str], list[str]]:
+    """(lead columns, posting columns) of `LEAD_EXPORT_SELECT`."""
+    head, rest = lead_store.LEAD_EXPORT_SELECT.split(", posting:job_postings!inner(", 1)
+    posting = rest.rsplit(", practice:practices(", 1)[0]
+    return ([c.strip() for c in head.split(",")],
+            [c.strip() for c in posting.split(",")])
+
+
+def test_the_export_select_fills_every_csv_column_it_is_the_source_of():
+    """The export runs on a narrowed select now, and a column dropped from it
+    fails silently — the CSV still has the header, every row is just blank
+    under it. So walk the real path (select → `_flatten` → `_posting_from_lead`
+    → `build_fields`) and assert each posting/lead-sourced column arrives."""
+    from api.index import _posting_from_lead
+    from src import talentdb
+
+    lead_cols, posting_cols = _export_select_parts()
+    row = {c: f"{c}-value" for c in lead_cols}
+    row["service_line"] = "Virtual Dental Assistant"     # a mapped track code
+    row["provider_count"] = 6
+    row["posting"] = {c: f"{c}-value" for c in posting_cols}
+    row["posting"]["practice"] = {"place_id": "ChIJx"}
+
+    flat = lead_store._flatten(row)
+    assert flat["practice"] == {"place_id": "ChIJx"}, "the route looks up on this"
+
+    # practice=None on purpose: this asserts what the LEAD and POSTING columns
+    # alone must produce. The route supplies the full practice separately.
+    fields = talentdb.build_fields(None, _posting_from_lead(flat), flat)
+    for column in ("Company", "LastName", "City", "State", "source",
+                   "No_of_Providers__c", "interested_tracks",
+                   "role_title", "posting_source", "posting_url", "posted_at",
+                   "board_remote", "posting_description", "search_term",
+                   "search_location", "first_seen_at", "last_seen_at",
+                   "match_confidence", "match_status"):
+        assert fields.get(column), f"{column} lost its source column in the export select"
+
+
+def test_the_export_select_does_not_carry_the_draft():
+    """8 KB a lead, in no CSV column. It was the single biggest thing the
+    export dragged out of Supabase."""
+    lead_cols, _ = _export_select_parts()
+    assert "draft" not in lead_cols
+
+
 def test_patch_only_exposes_workflow_fields():
     """The API surface itself must not offer a way to overwrite a verdict."""
     from api.index import PatchLeadRequest

@@ -50,7 +50,43 @@ _JSONB_ANALYSIS_FIELDS = frozenset({
     "pain_points", "sales_angles", "website_contacts", "icp_breakdown",
 })
 
-PROFILE_JOIN_SELECT = "*, last_touched_by_profile:profiles!last_touched_by(name)"
+_PROFILE_EMBED = "last_touched_by_profile:profiles!last_touched_by(name)"
+PROFILE_JOIN_SELECT = f"*, {_PROFILE_EMBED}"
+
+# The list page paints a card (web/components/practice-card.tsx) and a map pin
+# (map-view.tsx) per row, up to 500 rows a page — and it renders none of
+# `call_script`, `email_draft`, `notes`, `website_contacts`,
+# `analysis_input_hash` or `opening_hours`, which `*` shipped on every load.
+# This names what the list provably reads: the card fields (including the
+# analysis text it expands — summary, pain_points, sales_angles,
+# icp_breakdown), the map's lat/lng, and nothing else. Filter and sort columns
+# do NOT need to be selected — PostgREST applies both against the table.
+#
+# The detail route (`get_practice`) and the CSV export (`query_for_export`)
+# keep `PROFILE_JOIN_SELECT`: they need the columns this drops, and they read
+# one row / run rarely.
+_PRACTICE_LIST_COLS = (
+    "place_id, name, address, city, state, phone, website, "
+    "rating, review_count, category, lat, lng, status, lead_score, "
+    "summary, pain_points, sales_angles, "
+    "last_touched_by, last_touched_at"
+)
+
+# Columns later migrations added (`_OPTIONAL_COLUMNS`). `select("*")` absorbed
+# a half-migrated deployment silently; an explicit list naming a missing column
+# 400s the whole page instead. So they live in a second group that the
+# `include_icp=False` retry below drops — same degradation, still a list.
+_PRACTICE_LIST_OPTIONAL_COLS = (
+    "tags, call_count, enrichment_status, icp_breakdown, "
+    "owner_name, owner_email, owner_phone, owner_title, owner_linkedin, "
+    "salesforce_lead_id, salesforce_lead_url, salesforce_owner_name, "
+    "salesforce_synced_at, website_doctor_name, website_doctor_phone"
+)
+
+_PRACTICE_LIST_SELECT = (
+    f"{_PRACTICE_LIST_COLS}, {_PRACTICE_LIST_OPTIONAL_COLS}, {_PROFILE_EMBED}"
+)
+_PRACTICE_LIST_SELECT_CORE = f"{_PRACTICE_LIST_COLS}, {_PROFILE_EMBED}"
 
 
 # Memoized client, mirroring src/auth.py's admin-client pattern. Building a
@@ -636,9 +672,18 @@ def query_practices_page(
 ) -> tuple[list[dict], int]:
     """Server-side filtered + sorted + paginated practice list.
 
-    Returns ``(rows, total)`` where ``total`` is the exact count of rows
-    matching the filters (ignoring pagination), so the caller can drive
-    "load more" / infinite scroll. Returns ``([], 0)`` if unconfigured.
+    Returns ``(rows, total)`` so the caller can drive "load more" / infinite
+    scroll. Returns ``([], 0)`` if unconfigured.
+
+    ``total`` is exact on the last page and a planner estimate before it —
+    ``count="exact"`` made every page pay a full scan of the 23k-row table on
+    a shared-CPU instance. What callers actually derive from it is
+    ``has_more`` (``offset + len(rows) < total``), so the contract this keeps
+    is narrower than "exact" but the one that matters: **``total`` exceeds
+    ``offset + len(rows)`` if and only if another page exists.** We guarantee
+    that by fetching one row past the page and answering the question from
+    data, never from the estimate; the estimate only ever widens a total we
+    already know is short.
 
     Replaces the all-rows ``query_practices`` for the main list view: a single
     ``.range()`` request per page instead of the serial 1000-row loop.
@@ -650,7 +695,8 @@ def query_practices_page(
     col = _SORT_COLUMNS.get(sort, "lead_score")
     desc = (direction or "desc").lower() != "asc"
     start = max(0, offset)
-    end = start + max(1, limit) - 1  # .range() is inclusive
+    page_size = max(1, limit)
+    probe_end = start + page_size  # .range() is inclusive → page_size + 1 rows
 
     def _filtered(q, include_icp: bool):
         """Apply every filter to a query builder. ``include_icp`` lets us retry
@@ -700,31 +746,41 @@ def query_practices_page(
     def _fetch(include_icp: bool):
         sort_col = col if (include_icp or col != "icp_vertical") else "lead_score"
         # Data page: plain select + simple chained .order() calls — NO count on
-        # this query. (count="exact" on an embedded-join select, and a combined
+        # this query. (count on an embedded-join select, and a combined
         # order string, are exactly what was silently failing before and
         # blanking the list.)
-        dq = _filtered(
-            client.table("practices").select(PROFILE_JOIN_SELECT), include_icp
+        select_cols = (
+            _PRACTICE_LIST_SELECT if include_icp else _PRACTICE_LIST_SELECT_CORE
         )
+        dq = _filtered(client.table("practices").select(select_cols), include_icp)
         dq = dq.order(sort_col, desc=desc, nullsfirst=False)
         if sort_col != "place_id":
             dq = dq.order("place_id", desc=False, nullsfirst=False)
-        rows = dq.range(start, end).execute().data or []
+        rows = dq.range(start, probe_end).execute().data or []
 
-        # Total via a separate, embed-free count query — resilient: if counting
-        # fails we still return the page (just with an estimated total).
-        total = start + len(rows)
+        # The probe row answers "is there another page?" from data. Short read
+        # → we ran off the end of the result set, so `start + len(rows)` is the
+        # exact total and no count query is needed at all.
+        if len(rows) <= page_size:
+            return rows, start + len(rows)
+        rows = rows[:page_size]
+
+        # Another page exists, so the total must exceed this one. A separate,
+        # embed-free PLANNED count widens it to something worth displaying —
+        # planned is an EXPLAIN, not a scan. Resilient: if counting fails we
+        # still return the page (just with a floor for a total).
+        total = start + page_size + 1
         try:
             cres = (
                 _filtered(
-                    client.table("practices").select("place_id", count="exact"),
+                    client.table("practices").select("place_id", count="planned"),
                     include_icp,
                 )
                 .limit(1)
                 .execute()
             )
             if cres.count is not None:
-                total = cres.count
+                total = max(total, cres.count)
         except Exception:
             pass
         return rows, total
