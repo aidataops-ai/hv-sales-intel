@@ -110,7 +110,7 @@ export default function SignalsAnalyticsPage() {
                   one value and no comparison to draw. */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <StatTile label="Signals" value={String(data.total)}
-                          hint="Qualified postings for this company" />
+                          hint="Qualified postings, last 30 days" />
                 <StatTile label="Keep rate" value={`${Math.round(data.keep_rate * 100)}%`}
                           hint="Share the qualifier kept" />
                 <StatTile

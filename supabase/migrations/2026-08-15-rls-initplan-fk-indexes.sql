@@ -153,6 +153,13 @@ create index if not exists idx_cps_practice
 create index if not exists idx_cpa_practice
   on company_practice_analyses (practice_id);
 
+-- practices.last_touched_by: originally in the skipped-audit-column list
+-- below, promoted to indexed when GET /api/admin/users switched from a
+-- full-table scan to one HEAD count per profile filtered on this column
+-- (Wave 2) — the index makes those counts index-only scans.
+create index if not exists idx_practices_touched_by
+  on practices (last_touched_by);
+
 -- DELIBERATELY SKIPPED — the user-audit FK columns the advisor also flags:
 --   company_practice_state.assigned_by, .last_touched_by, .last_exported_by
 --   company_job_leads.last_touched_by, .last_exported_by

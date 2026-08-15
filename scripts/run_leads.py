@@ -379,7 +379,7 @@ def summarise(company_id: str) -> None:
     print(f"  kept leads     : {total}")
     print(f"  linked         : {linked}"
           + (f" ({linked / total * 100:.0f}% of kept)" if total else ""))
-    print(f"  all qualified  : {analytics['total']}")
+    print(f"  qualified (30d): {analytics['total']}")
     print(f"  keep rate      : {analytics['keep_rate'] * 100:.0f}%")
     print(f"  bands          : {analytics['bands']}")
     print(f"  tracks         : {analytics['tracks']}")
