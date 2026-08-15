@@ -16,6 +16,31 @@ import {
 } from "@/lib/leads"
 
 /**
+ * How a control tells the page its edit landed.
+ *
+ * `refresh` re-reads the whole config — 4 backend queries, each paying its own
+ * server-side auth round trips — so it is reserved for edits that change the
+ * *shape* of the config (add / delete, where rows appear or vanish and catalog
+ * membership shifts) and for bulk toggles (a partial failure inside a
+ * `Promise.all` leaves an unknown state that only a re-read can reconcile).
+ *
+ * The `splice*` callbacks cover the common case: a single-row PATCH/PUT whose
+ * response already *is* the new row. Flipping one boolean used to cost ~11
+ * round trips; splicing costs the one PATCH. See
+ * docs/refactor/supabase-data-layer.md §4.
+ */
+interface ConfigEdits {
+  refresh: () => Promise<void>
+  spliceTerm: (row: SearchTerm) => void
+  spliceLocation: (row: SearchLocation) => void
+  spliceOverride: (
+    termId: number,
+    locationId: number,
+    row: TargetOverride | null,
+  ) => void
+}
+
+/**
  * Instant Signals — collector config.
  *
  * Edits the live `search_terms` / `search_locations` dimension tables (what
@@ -47,6 +72,45 @@ export default function SignalsConfigPage() {
     setConfig(await getSignalsConfig())
     setLoading(false)
   }, [])
+
+  // `prev.catalog` is passed through untouched, so the catalog-membership
+  // memos in ConfigBody keep their identity and don't recompute on a toggle.
+  const spliceTerm = useCallback((row: SearchTerm) => {
+    setConfig((prev) =>
+      prev
+        ? { ...prev, terms: prev.terms.map((t) => (t.id === row.id ? row : t)) }
+        : prev,
+    )
+  }, [])
+
+  const spliceLocation = useCallback((row: SearchLocation) => {
+    setConfig((prev) =>
+      prev
+        ? {
+            ...prev,
+            locations: prev.locations.map((l) => (l.id === row.id ? row : l)),
+          }
+        : prev,
+    )
+  }, [])
+
+  const spliceOverride = useCallback(
+    (termId: number, locationId: number, row: TargetOverride | null) => {
+      setConfig((prev) => {
+        if (!prev) return prev
+        const rest = prev.overrides.filter(
+          (o) => !(o.term_id === termId && o.location_id === locationId),
+        )
+        return { ...prev, overrides: row ? [...rest, row] : rest }
+      })
+    },
+    [],
+  )
+
+  const edits: ConfigEdits = useMemo(
+    () => ({ refresh, spliceTerm, spliceLocation, spliceOverride }),
+    [refresh, spliceTerm, spliceLocation, spliceOverride],
+  )
 
   useEffect(() => {
     if (!authLoading && user?.role === "admin") refresh()
@@ -84,7 +148,7 @@ export default function SignalsConfigPage() {
           ) : !config ? (
             <Notice>Could not load configuration. Try reloading.</Notice>
           ) : (
-            <ConfigBody config={config} onChanged={refresh} />
+            <ConfigBody config={config} edits={edits} />
           )}
         </div>
       </main>
@@ -94,10 +158,10 @@ export default function SignalsConfigPage() {
 
 function ConfigBody({
   config,
-  onChanged,
+  edits,
 }: {
   config: SignalsConfig
-  onChanged: () => Promise<void>
+  edits: ConfigEdits
 }) {
   // Catalog membership, computed once here rather than per-chip: a row is
   // "in the catalog" if its term/location string still appears in the
@@ -130,19 +194,19 @@ function ConfigBody({
         locations={config.locations}
         catalog={config.catalog}
         catalogLocationSet={catalogLocationSet}
-        onChanged={onChanged}
+        edits={edits}
       />
       <TracksPanel
         terms={config.terms}
         catalog={config.catalog}
         catalogTermSet={catalogTermSet}
-        onChanged={onChanged}
+        edits={edits}
       />
       <OverridesPanel
         overrides={config.overrides}
         terms={config.terms}
         locations={config.locations}
-        onChanged={onChanged}
+        edits={edits}
       />
     </>
   )
@@ -193,12 +257,12 @@ function SweepStatusStrip({ sweep }: { sweep: Record<string, SweepSourceStatus> 
 
 function GeographyPanel({
   locations,
-  onChanged,
+  edits,
   catalog,
   catalogLocationSet,
 }: {
   locations: SearchLocation[]
-  onChanged: () => Promise<void>
+  edits: ConfigEdits
   catalog: SignalsConfig["catalog"]
   catalogLocationSet: Set<string>
 }) {
@@ -234,7 +298,8 @@ function GeographyPanel({
             ]
             const res = await addLocations(rows)
             if (res.ok) {
-              await onChanged()
+              // Rows appear — a shape change, so re-read the config.
+              await edits.refresh()
               setAdding(false)
             }
             return res
@@ -252,7 +317,7 @@ function GeographyPanel({
               catalog.states.find((s) => s.code === state)?.cities ?? []
             }
             catalogLocationSet={catalogLocationSet}
-            onChanged={onChanged}
+            edits={edits}
           />
         ))}
         {Object.keys(byState).length === 0 && (
@@ -267,7 +332,7 @@ function GeographyPanel({
           </div>
           <div className="flex flex-wrap gap-1.5">
             {unadoptedStates.map((s) => (
-              <AdoptStateChip key={s.code} state={s} onChanged={onChanged} />
+              <AdoptStateChip key={s.code} state={s} edits={edits} />
             ))}
           </div>
         </div>
@@ -283,10 +348,10 @@ function GeographyPanel({
  *  invisible until someone notices the text hint in `AddStateForm`. */
 function AdoptStateChip({
   state,
-  onChanged,
+  edits,
 }: {
   state: CatalogState
-  onChanged: () => Promise<void>
+  edits: ConfigEdits
 }) {
   const [busy, setBusy] = useState(false)
   const cityCount = state.cities.length
@@ -300,7 +365,7 @@ function AdoptStateChip({
       ...state.cities.map((c) => ({ location: c, state: state.code, granularity: "city" as const })),
     ]
     await addLocations(rows)
-    await onChanged()
+    await edits.refresh()
     setBusy(false)
   }
 
@@ -329,13 +394,13 @@ function StateRow({
   locations,
   catalogCities,
   catalogLocationSet,
-  onChanged,
+  edits,
 }: {
   state: string
   locations: SearchLocation[]
   catalogCities: string[]
   catalogLocationSet: Set<string>
-  onChanged: () => Promise<void>
+  edits: ConfigEdits
 }) {
   const [addingCity, setAddingCity] = useState(false)
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -356,18 +421,21 @@ function StateRow({
   const addable = catalogCities.filter((c) => !cityNames.has(c))
   const enabledCities = cityLocations.filter((l) => l.enabled).length
 
+  // Bulk toggle keeps the full re-read: one failed PATCH inside the
+  // `Promise.all` would leave the panel disagreeing with the server about
+  // which rows actually flipped, and only a re-read can settle that.
   async function setAll(next: boolean) {
     setBulkBusy(true)
     await Promise.all(
       locations.filter((l) => l.enabled !== next).map((l) => setLocationEnabled(l.id, next)),
     )
-    await onChanged()
+    await edits.refresh()
     setBulkBusy(false)
   }
 
   async function addCity(city: string) {
     const res = await addLocations([{ location: city, state, granularity: "city" }])
-    if (res.ok) await onChanged()
+    if (res.ok) await edits.refresh()
     return res
   }
 
@@ -404,7 +472,7 @@ function StateRow({
               key={loc.id}
               location={loc}
               isCatalog={catalogLocationSet.has(loc.location)}
-              onChanged={onChanged}
+              edits={edits}
             />
           ))}
           {addable.map((city) => (
@@ -445,20 +513,25 @@ function StateRow({
 function LocationChip({
   location,
   isCatalog,
-  onChanged,
+  edits,
 }: {
   location: SearchLocation
   isCatalog: boolean
-  onChanged: () => Promise<void>
+  edits: ConfigEdits
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const label = location.granularity === "state" ? "Statewide" : location.location
 
+  // The PATCH response is the updated row — splice it in rather than re-reading
+  // the whole config to observe one boolean. A null row means the request
+  // failed, and only then do we fall back to a re-read so the chip can't be
+  // left showing a state the server never accepted.
   async function toggle() {
     setBusy(true)
-    await setLocationEnabled(location.id, !location.enabled)
-    await onChanged()
+    const row = await setLocationEnabled(location.id, !location.enabled)
+    if (row) edits.spliceLocation(row)
+    else await edits.refresh()
     setBusy(false)
   }
 
@@ -467,7 +540,8 @@ function LocationChip({
     setError(null)
     const res = await deleteLocation(location.id)
     if (res.ok) {
-      await onChanged()
+      // The row is gone — a shape change, so re-read.
+      await edits.refresh()
     } else {
       setError(res.error)
       setBusy(false)
@@ -634,12 +708,12 @@ function AddStateForm({
 
 function TracksPanel({
   terms,
-  onChanged,
+  edits,
   catalog,
   catalogTermSet,
 }: {
   terms: SearchTerm[]
-  onChanged: () => Promise<void>
+  edits: ConfigEdits
   catalog: SignalsConfig["catalog"]
   catalogTermSet: Set<string>
 }) {
@@ -661,7 +735,8 @@ function TracksPanel({
           onSubmit={async (sl, keywords) => {
             const res = await addTerms(keywords.map((term) => ({ term, service_line: sl })))
             if (res.ok) {
-              await onChanged()
+              // Rows appear — a shape change, so re-read the config.
+              await edits.refresh()
               setAdding(false)
             }
             return res
@@ -676,7 +751,7 @@ function TracksPanel({
             track={track}
             terms={trackTerms}
             catalogTermSet={catalogTermSet}
-            onChanged={onChanged}
+            edits={edits}
           />
         ))}
         {Object.keys(byTrack).length === 0 && (
@@ -691,12 +766,12 @@ function TrackRow({
   track,
   terms,
   catalogTermSet,
-  onChanged,
+  edits,
 }: {
   track: string
   terms: SearchTerm[]
   catalogTermSet: Set<string>
-  onChanged: () => Promise<void>
+  edits: ConfigEdits
 }) {
   const [addingKw, setAddingKw] = useState(false)
   const enabled = terms.some((t) => t.enabled)
@@ -712,7 +787,7 @@ function TrackRow({
                 key={t.id}
                 term={t}
                 isCatalog={catalogTermSet.has(t.term)}
-                onChanged={onChanged}
+                edits={edits}
               />
             ))}
           </div>
@@ -724,7 +799,7 @@ function TrackRow({
           >
             + keyword
           </button>
-          <TrackToggle terms={terms} enabled={enabled} onChanged={onChanged} />
+          <TrackToggle terms={terms} enabled={enabled} edits={edits} />
         </div>
       </div>
 
@@ -733,7 +808,8 @@ function TrackRow({
           onSubmit={async (term) => {
             const res = await addTerms([{ term, service_line: track }])
             if (res.ok) {
-              await onChanged()
+              // A row appears — a shape change, so re-read the config.
+              await edits.refresh()
               setAddingKw(false)
             }
             return res
@@ -752,19 +828,22 @@ function TrackRow({
 function TermPill({
   term,
   isCatalog,
-  onChanged,
+  edits,
 }: {
   term: SearchTerm
   isCatalog: boolean
-  onChanged: () => Promise<void>
+  edits: ConfigEdits
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Splices the PATCH response instead of re-reading the config — see
+  // `LocationChip.toggle` for the null/failure fallback.
   async function toggle() {
     setBusy(true)
-    await setTermEnabled(term.id, !term.enabled)
-    await onChanged()
+    const row = await setTermEnabled(term.id, !term.enabled)
+    if (row) edits.spliceTerm(row)
+    else await edits.refresh()
     setBusy(false)
   }
 
@@ -773,7 +852,8 @@ function TermPill({
     setError(null)
     const res = await deleteTerm(term.id)
     if (res.ok) {
-      await onChanged()
+      // The row is gone — a shape change, so re-read.
+      await edits.refresh()
     } else {
       setError(res.error)
       setBusy(false)
@@ -915,15 +995,17 @@ function AddKeywordForm({
 
 /** Enable/disable every term in a track. Fires one PATCH per term — a track
  *  has a handful of keywords (not the old per-cell fan-out), so this stays a
- *  Promise.all rather than needing a bulk endpoint. */
+ *  Promise.all rather than needing a bulk endpoint. Bulk edits keep the full
+ *  re-read: a partial failure across the batch leaves a state only the server
+ *  can settle. */
 function TrackToggle({
   terms,
   enabled,
-  onChanged,
+  edits,
 }: {
   terms: SearchTerm[]
   enabled: boolean
-  onChanged: () => Promise<void>
+  edits: ConfigEdits
 }) {
   const [busy, setBusy] = useState(false)
   async function toggle() {
@@ -932,7 +1014,7 @@ function TrackToggle({
     await Promise.all(
       terms.filter((t) => t.enabled !== next).map((t) => setTermEnabled(t.id, next)),
     )
-    await onChanged()
+    await edits.refresh()
     setBusy(false)
   }
   return <Toggle on={enabled} busy={busy} onClick={toggle} />
@@ -948,12 +1030,12 @@ function OverridesPanel({
   overrides,
   terms,
   locations,
-  onChanged,
+  edits,
 }: {
   overrides: TargetOverride[]
   terms: SearchTerm[]
   locations: SearchLocation[]
-  onChanged: () => Promise<void>
+  edits: ConfigEdits
 }) {
   // Hooks run before the early return (Rules of Hooks) — cheap even when
   // there is nothing to render, since `overrides` is a handful of rows.
@@ -975,7 +1057,7 @@ function OverridesPanel({
             override={o}
             term={termById.get(o.term_id)}
             location={locationById.get(o.location_id)}
-            onChanged={onChanged}
+            edits={edits}
           />
         ))}
       </ul>
@@ -987,19 +1069,24 @@ function OverrideRow({
   override,
   term,
   location,
-  onChanged,
+  edits,
 }: {
   override: TargetOverride
   term?: SearchTerm
   location?: SearchLocation
-  onChanged: () => Promise<void>
+  edits: ConfigEdits
 }) {
   const [busy, setBusy] = useState(false)
 
+  // A successful unpin returns `override: null` — splice that (drop the row)
+  // rather than re-reading the config. `setOverride` reports success
+  // separately from the row precisely so this can't confuse "unpinned" with
+  // "the request failed"; a failure falls back to a re-read.
   async function unpin() {
     setBusy(true)
-    await setOverride(override.term_id, override.location_id, null)
-    await onChanged()
+    const res = await setOverride(override.term_id, override.location_id, null)
+    if (res.ok) edits.spliceOverride(override.term_id, override.location_id, res.override)
+    else await edits.refresh()
     setBusy(false)
   }
 

@@ -4,50 +4,62 @@ import { useEffect, useRef } from "react"
 import type { Practice } from "./types"
 import { getPractice } from "./api"
 
-const POLL_INTERVAL_MS = 5_000
-const MAX_POLLS = 36 // 36 × 5s = 3 min
+const BASE_INTERVAL_MS = 5_000
+const MAX_INTERVAL_MS = 20_000
+// 5s + 10s + 20s × 8 ≈ 175s — the same ~3 min watch window the old fixed 5s
+// cadence covered, for 10 requests instead of 36.
+const MAX_POLLS = 10
 
 /**
- * While `practice.enrichment_status === 'pending'`, re-fetch the practice
- * every 5 seconds. Calls `onUpdate` whenever the server row differs.
- * Stops on status change or after MAX_POLLS iterations.
+ * While `practice.enrichment_status === 'pending'`, re-fetch the practice on a
+ * backing-off schedule (5s → 10s → 20s, then every 20s) and hand each result
+ * to `onUpdate`. Stops once the status leaves 'pending' or after MAX_POLLS.
+ *
+ * `/api/practices/{id}` is the heaviest detail route, so the cadence matters:
+ * an enriching card used to cost 36 of them. The poll count and the current
+ * delay both live in refs because callers typically pass an inline `onUpdate`,
+ * which re-runs this effect on every render — without the refs the backoff
+ * would reset to 5s each time and never actually back off.
  */
 export function useEnrichmentPoll(
   practice: Practice,
   onUpdate: (next: Practice) => void,
 ) {
   const pollsRef = useRef(0)
+  const delayRef = useRef(BASE_INTERVAL_MS)
 
   useEffect(() => {
     if (practice.enrichment_status !== "pending") {
       pollsRef.current = 0
+      delayRef.current = BASE_INTERVAL_MS
       return
     }
 
     let cancelled = false
-    const handle = window.setInterval(async () => {
-      if (pollsRef.current >= MAX_POLLS) {
-        window.clearInterval(handle)
-        return
-      }
-      pollsRef.current += 1
-      try {
-        const fresh = await getPractice(practice.place_id)
-        if (cancelled) return
-        if (fresh.enrichment_status !== "pending") {
+    let handle = 0
+
+    function schedule() {
+      handle = window.setTimeout(async () => {
+        if (cancelled || pollsRef.current >= MAX_POLLS) return
+        pollsRef.current += 1
+        delayRef.current = Math.min(delayRef.current * 2, MAX_INTERVAL_MS)
+        try {
+          const fresh = await getPractice(practice.place_id)
+          if (cancelled) return
           onUpdate(fresh)
-          window.clearInterval(handle)
-        } else {
-          onUpdate(fresh)
+          if (fresh.enrichment_status !== "pending") return
+        } catch {
+          // swallow — the next tick retries
         }
-      } catch {
-        // swallow — next tick will retry
-      }
-    }, POLL_INTERVAL_MS)
+        if (!cancelled) schedule()
+      }, delayRef.current)
+    }
+
+    schedule()
 
     return () => {
       cancelled = true
-      window.clearInterval(handle)
+      window.clearTimeout(handle)
     }
   }, [practice.place_id, practice.enrichment_status, onUpdate])
 }

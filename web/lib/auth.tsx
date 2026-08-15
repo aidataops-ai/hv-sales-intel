@@ -73,13 +73,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async function hydrate() {
       try {
         if (!API_URL && !IS_PROD) return
-        const res = await fetch(`${API_URL}/api/me`, { credentials: "include" })
+        // Both requests fly at once — each backend call pays its own auth
+        // round trips, so serialising them doubles time-to-first-paint.
+        // `fetchCompanies` never rejects, so it can't short-circuit the
+        // /api/me result; its rows are simply discarded when /api/me fails.
+        const [res, cs] = await Promise.all([
+          fetch(`${API_URL}/api/me`, { credentials: "include" }),
+          fetchCompanies(),
+        ])
         if (cancelled) return
         if (res.ok) {
           setUser(await res.json())
-          // Pull companies in parallel with first paint.
-          const cs = await fetchCompanies()
-          if (!cancelled) setCompanies(cs)
+          setCompanies(cs)
         } else {
           setUser(null)
           setCompanies([])

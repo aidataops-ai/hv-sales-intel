@@ -593,13 +593,23 @@ export async function deleteLocation(id: number): Promise<DeleteDimensionResult>
   }
 }
 
+export type SetOverrideResult =
+  | { ok: true; override: TargetOverride | null }
+  | { ok: false; error: string }
+
 /** Pin or unpin one `(term, location)` cell (admin). `enabled: null` deletes
- *  the pin, returning the cell to `term.enabled AND location.enabled`. */
+ *  the pin, returning the cell to `term.enabled AND location.enabled`.
+ *
+ *  Discriminated like `addTerms`/`deleteTerm` rather than returning a bare
+ *  `TargetOverride | null`: a successful unpin and a failed request both
+ *  produce a null override, and callers that splice the response into local
+ *  state (instead of refetching the whole config) have to tell those apart —
+ *  otherwise a failed unpin silently erases the row from the UI. */
 export async function setOverride(
   termId: number,
   locationId: number,
   enabled: boolean | null,
-): Promise<TargetOverride | null> {
+): Promise<SetOverrideResult> {
   try {
     const data = await leadFetch<{ override: TargetOverride | null }>(
       "/api/admin/leads/overrides",
@@ -609,9 +619,9 @@ export async function setOverride(
         body: JSON.stringify({ term_id: termId, location_id: locationId, enabled }),
       },
     )
-    return data.override
+    return { ok: true, override: data.override ?? null }
   } catch {
-    return null
+    return { ok: false, error: "Could not update the pin." }
   }
 }
 

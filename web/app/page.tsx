@@ -82,21 +82,23 @@ function PageContent() {
   )
 
   // Full reload (page 1 + all map points) for the server-backed list view.
+  //
+  // One request, not two: at offset 0 the map's MAP_POINT_CAP rows are a
+  // strict superset of the sidebar's first PAGE_SIZE rows under identical
+  // filters and sort, so the visible page is just the head of that result.
+  // (Pages past the first still fetch their own slice — see `goToPage`.)
   const reload = useCallback(async () => {
     const reqId = ++reqIdRef.current
     setMode("db")
     setIsLoading(true)
     try {
-      const [list, points] = await Promise.all([
-        listPractices(buildParams(0, PAGE_SIZE)),
-        listPractices(buildParams(0, MAP_POINT_CAP)),
-      ])
+      const res = await listPractices(buildParams(0, MAP_POINT_CAP))
       if (reqId !== reqIdRef.current) return
       setAllResults([])
-      setPractices(list.practices)
-      setTotal(list.total)
+      setPractices(res.practices.slice(0, PAGE_SIZE))
+      setTotal(res.total)
       setPage(1)
-      setMapPoints(points.practices)
+      setMapPoints(res.practices)
     } finally {
       if (reqId === reqIdRef.current) setIsLoading(false)
     }
@@ -161,6 +163,8 @@ function PageContent() {
   )
 
   // Patch a single lead everywhere it appears (visible page, places set, map).
+  // `practices` and `mapPoints` can now share row objects (the page is a slice
+  // of the map result), so the merge must stay copy-on-write — never mutate.
   const patchPractice = useCallback((placeId: string, patch: Partial<Practice>) => {
     const merge = (list: Practice[]) =>
       list.map((p) => (p.place_id === placeId ? { ...p, ...patch } : p))
