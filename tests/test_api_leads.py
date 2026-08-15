@@ -1,5 +1,6 @@
 """Auth, routing and filter plumbing for the operator-facing lead routes."""
 
+import pytest
 from fastapi.testclient import TestClient
 
 from api.index import _lead_filters, app
@@ -196,6 +197,133 @@ def test_patch_only_exposes_workflow_fields():
     from api.index import PatchLeadRequest
 
     assert set(PatchLeadRequest.model_fields) <= lead_store.WORKFLOW_COLUMNS
+
+
+# --------------------------------------------------------------------------
+# PATCH /api/leads/{id} round trips.
+#
+# Was three queries to flip one column: a `get_lead` existence pre-check, an
+# update whose returned row was discarded, and a `get_lead` to build the
+# response. The write is its own existence check, so only the response read
+# survives — and that one stays because both the feed and the detail page
+# splice this row in place of the one they were rendering, which means it has
+# to carry the posting embed a bare lead row can't supply.
+# --------------------------------------------------------------------------
+
+
+def _override_lead_user(company_id: str = "co-1"):
+    from api.index import app
+    from src.auth import get_current_user
+
+    app.dependency_overrides[get_current_user] = lambda: {
+        "company_id": company_id, "id": "u1", "role": "sdr",
+    }
+
+
+@pytest.fixture
+def _clean_overrides():
+    from api.index import app
+    yield
+    app.dependency_overrides.clear()
+
+
+def test_patch_lead_costs_one_write_and_one_read(monkeypatch, _clean_overrides):
+    _override_lead_user()
+    calls: list[str] = []
+    embedded = {"id": 7, "disposition": "approved", "title": "RN",
+                "practice": {"place_id": "ChIJx"}}
+
+    def fake_update(company_id, lead_id, fields, user_id=None):
+        calls.append("update")
+        return {"id": 7, "disposition": "approved"}
+
+    def fake_get(company_id, lead_id):
+        calls.append("get")
+        return embedded
+
+    monkeypatch.setattr(lead_store, "update_lead_workflow", fake_update)
+    monkeypatch.setattr(lead_store, "get_lead", fake_get)
+
+    resp = client.patch("/api/leads/7", json={"disposition": "approved"})
+
+    assert resp.status_code == 200
+    assert calls == ["update", "get"], "no existence pre-check before the write"
+    # The response is the embedded row, not the bare one the update returned —
+    # the UI splices it over a feed row that renders posting columns.
+    assert resp.json()["title"] == "RN"
+
+
+def test_patch_lead_404s_when_the_update_matches_no_row(monkeypatch, _clean_overrides):
+    """A zero-row update IS the 404 — the tenant filter is in the write."""
+    _override_lead_user()
+    reads: list[str] = []
+
+    monkeypatch.setattr(lead_store, "update_lead_workflow",
+                        lambda *a, **k: None)
+    monkeypatch.setattr(lead_store, "get_lead",
+                        lambda *a, **k: reads.append("get"))
+
+    resp = client.patch("/api/leads/999", json={"disposition": "approved"})
+
+    assert resp.status_code == 404
+    assert reads == [], "a failed write must not be followed by a read"
+
+
+def test_patch_lead_still_validates_disposition_before_writing(
+    monkeypatch, _clean_overrides,
+):
+    _override_lead_user()
+    writes: list[str] = []
+    monkeypatch.setattr(lead_store, "update_lead_workflow",
+                        lambda *a, **k: writes.append("update"))
+
+    resp = client.patch("/api/leads/7", json={"disposition": "banana"})
+
+    assert resp.status_code == 400
+    assert writes == []
+
+
+# --------------------------------------------------------------------------
+# POST /api/leads/{id}/import — the posting the lead already embeds.
+# --------------------------------------------------------------------------
+
+
+def test_signal_import_does_not_refetch_the_embedded_posting(
+    monkeypatch, _clean_overrides,
+):
+    """`get_lead`'s LEAD_SELECT embeds the whole posting and `_flatten` lifts
+    it onto the lead, so re-reading `job_postings` was fetching a description
+    the route was already holding."""
+    _override_lead_user()
+
+    def boom(posting_id):
+        raise AssertionError("re-read job_postings despite the embed")
+
+    monkeypatch.setattr(lead_store, "get_posting", boom)
+    monkeypatch.setattr(lead_store, "get_lead", lambda c, i: {
+        "id": 7, "posting_id": 5567, "source": "indeed", "title": "RN",
+        "description": "full body", "posting_created_at": "2026-08-02T06:00:00Z",
+        "practice": {"place_id": "ChIJx"},
+    })
+    monkeypatch.setattr("api.index.get_practice", lambda p: {"id": 1, "name": "Acme"})
+    monkeypatch.setattr(lead_store, "mark_lead_exported", lambda c, i: None)
+
+    sent: dict = {}
+
+    async def fake_import(practice, posting, lead):
+        sent["posting"] = posting
+        return {"ok": True, "status": "created"}
+
+    monkeypatch.setattr("src.talentdb.import_lead", fake_import)
+
+    resp = client.post("/api/leads/7/import")
+
+    assert resp.status_code == 200
+    # The reconstruction hands talentdb the keys under the names it reads,
+    # including the `first_seen_at` that `_flatten` renamed.
+    assert sent["posting"]["description"] == "full body"
+    assert sent["posting"]["first_seen_at"] == "2026-08-02T06:00:00Z"
+    assert sent["posting"]["id"] == 5567
 
 
 def test_the_feed_defaults_to_keeps_only():

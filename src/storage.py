@@ -268,13 +268,24 @@ def upsert_practices(
     practices: list[Practice],
     touched_by: str | None = None,
     company_id: str | None = None,
-) -> int:
-    """Upsert practices. Returns count. Stamps attribution when touched_by set.
+) -> list[dict]:
+    """Upsert practices. Returns the upserted rows. Stamps attribution when
+    touched_by set.
 
     Only core Google Places fields + attribution are written. Every other
     column is owned by a downstream write path (analyze, call log, enrich,
     email, etc.) and would be clobbered by sending None here when a search
     hits an already-worked row.
+
+    The rows come back from the write itself — PostgREST returns the updated
+    representation — so a caller that needs the fresh record does not pay a
+    re-fetch for it. They carry every column (including the ones this write
+    deliberately left alone), but NOT the profile join:
+    `last_touched_by_name` is a read-time join, so it is present and `None`
+    here. A caller that renders it either stamps the acting user's name (it
+    just became the toucher) or re-reads through `get_practice`.
+
+    Callers wanting the old count take `len()` of the result.
 
     Defense in depth: if PostgREST rejects a column that doesn't exist on
     the deployed schema (half-applied migrations), retry without that
@@ -282,7 +293,7 @@ def upsert_practices(
     """
     client = _get_client()
     if not client or not practices:
-        return 0
+        return []
     # Every non-Google-Places field. (last_touched_by_name is derived from a
     # read-time join, not a stored column.)
     preserved = {
@@ -369,7 +380,7 @@ def upsert_practices(
         [p.place_id for p in practices if p.place_id],
     )
 
-    return len(result.data) if result.data else 0
+    return [_flatten_attribution(r) for r in (result.data or [])]
 
 
 # PostgREST has a default `db-max-rows` cap (1000 on hosted Supabase) that
@@ -414,7 +425,15 @@ def _paginated_query(builder, limit: int) -> list[dict]:
 
 
 def _practice_id_by_place(place_id: str) -> int | None:
-    """Look up `practices.id` (bigint) given a `place_id` (text)."""
+    """Look up `practices.id` (bigint) given a `place_id` (text).
+
+    Every per-company mirror below needs this id, so a single write path used
+    to pay for it two or three times over (update + tag union, each resolving
+    it again). The mirrors now take an optional `practice_id`: callers that
+    already hold the practice row — which is most of them, since they had to
+    read or write it to get here — hand the id down instead of re-resolving
+    it. `_resolve_practice_id` is the one place that decision is made.
+    """
     if not place_id:
         return None
     client = _get_client()
@@ -430,6 +449,20 @@ def _practice_id_by_place(place_id: str) -> int | None:
     if not result or not result.data:
         return None
     return result.data["id"]
+
+
+def _resolve_practice_id(place_id: str | None, practice_id: int | None) -> int | None:
+    """The practice id a per-company mirror should write against.
+
+    A caller-supplied id wins and costs nothing; otherwise fall back to the
+    lookup. Keeping this in one function means "did we already know this?"
+    is answered identically by every mirror.
+    """
+    if practice_id:
+        return practice_id
+    if not place_id:
+        return None
+    return _practice_id_by_place(place_id)
 
 
 def _coerce_jsonb(value):
@@ -492,10 +525,11 @@ def _write_per_company_state(
     company_id: str | None,
     state_fields: dict,
     touched_by: str | None,
+    practice_id: int | None = None,
 ) -> None:
-    if not place_id or not company_id or not state_fields:
+    if not company_id or not state_fields:
         return
-    pid = _practice_id_by_place(place_id)
+    pid = _resolve_practice_id(place_id, practice_id)
     if not pid:
         return
     payload = {**state_fields}
@@ -509,10 +543,11 @@ def _write_per_company_analyses(
     place_id: str | None,
     company_id: str | None,
     analysis_fields: dict,
+    practice_id: int | None = None,
 ) -> None:
-    if not place_id or not company_id or not analysis_fields:
+    if not company_id or not analysis_fields:
         return
-    pid = _practice_id_by_place(place_id)
+    pid = _resolve_practice_id(place_id, practice_id)
     if not pid:
         return
     # Coerce JSON-string fields into structured jsonb.
@@ -529,11 +564,12 @@ def _add_tags_per_company(
     place_id: str | None,
     company_id: str | None,
     new_tags: list[str],
+    practice_id: int | None = None,
 ) -> None:
     """Dedup-merge tags onto company_practice_state for (company, practice)."""
-    if not place_id or not company_id or not new_tags:
+    if not company_id or not new_tags:
         return
-    pid = _practice_id_by_place(place_id)
+    pid = _resolve_practice_id(place_id, practice_id)
     if not pid:
         return
     client = _get_client()
@@ -1010,6 +1046,7 @@ def update_practice_analysis(
     analysis: dict,
     touched_by: str | None = None,
     company_id: str | None = None,
+    practice_id: int | None = None,
 ) -> dict | None:
     """Update Phase 2 analysis fields. Stamps attribution when touched_by set.
 
@@ -1030,9 +1067,13 @@ def update_practice_analysis(
         # Split: most analysis dict keys are analysis; status (auto-advance) is state.
         analysis_part = {k: v for k, v in analysis.items() if k in _ANALYSIS_FIELDS}
         state_part = {k: v for k, v in analysis.items() if k in _STATE_FIELDS}
-        _write_per_company_analyses(place_id, company_id, analysis_part)
+        # The UPDATE returned the row; its id saves both mirrors a lookup.
+        pid = practice_id or (result or {}).get("id")
+        _write_per_company_analyses(place_id, company_id, analysis_part,
+                                    practice_id=pid)
         if state_part:
-            _write_per_company_state(place_id, company_id, state_part, touched_by)
+            _write_per_company_state(place_id, company_id, state_part, touched_by,
+                                     practice_id=pid)
 
     return result
 
@@ -1042,6 +1083,7 @@ def update_practice_fields(
     fields: dict,
     touched_by: str | None = None,
     company_id: str | None = None,
+    practice_id: int | None = None,
 ) -> dict | None:
     """Update arbitrary fields. Stamps attribution when touched_by set.
 
@@ -1051,6 +1093,10 @@ def update_practice_fields(
     Phase 3 dual-write: when company_id is set, splits the dict by
     category (state vs analysis vs other) and upserts into the matching
     per-company table(s). `tags` is routed through the tag-union helper.
+
+    Pass `practice_id` when the caller already holds the practice row: a dict
+    touching state AND analysis AND tags otherwise re-resolves the same
+    place_id → id three times over, on top of whatever the route already read.
     """
     result = _update_with_optional_retry(
         place_id,
@@ -1059,14 +1105,73 @@ def update_practice_fields(
 
     if company_id:
         state, analysis, new_tags = _split_fields_for_dual_write(fields)
+        # The UPDATE just handed the row back — its id is the one the mirrors
+        # need, so even a caller that knew nothing going in pays no lookup.
+        pid = practice_id or (result or {}).get("id")
         if state:
-            _write_per_company_state(place_id, company_id, state, touched_by)
+            _write_per_company_state(place_id, company_id, state, touched_by,
+                                     practice_id=pid)
         if analysis:
-            _write_per_company_analyses(place_id, company_id, analysis)
+            _write_per_company_analyses(place_id, company_id, analysis,
+                                        practice_id=pid)
         if new_tags:
-            _add_tags_per_company(place_id, company_id, new_tags)
+            _add_tags_per_company(place_id, company_id, new_tags, practice_id=pid)
 
     return result
+
+
+# The per-message half of an `email_messages` row — everything that varies
+# within one batch. `practice_id`, `user_id` and `direction` are the same for
+# every message a single write inserts, so they are arguments instead.
+_EMAIL_MESSAGE_FIELDS = ("subject", "body", "message_id", "in_reply_to", "error")
+
+
+def insert_email_messages(
+    practice_id: int,
+    user_id: str | None,
+    direction: str,
+    messages: list[dict],
+    company_id: str | None = None,
+) -> list[dict]:
+    """Insert a batch of email messages. Returns the inserted rows.
+
+    Each entry in `messages` carries the per-message fields
+    (`_EMAIL_MESSAGE_FIELDS`); anything else in it is ignored, so a caller can
+    hand over the raw reply dicts it already has.
+
+    ONE insert per table regardless of batch size — a reply poll that found
+    four new messages used to pay eight round trips, an insert plus a mirror
+    insert per reply.
+
+    Phase 3 dual-write, semantics unchanged from the single-row helper: the
+    legacy `email_messages` write is the source of truth and is left to raise,
+    while the `company_email_messages` mirror is fail-soft. Phase 4 swaps the
+    reads; until then a mirror failure must never lose a real message.
+    """
+    client = _get_client()
+    if not client or not messages:
+        return []
+    rows = [
+        {
+            "practice_id": practice_id,
+            "user_id": user_id,
+            "direction": direction,
+            **{k: m.get(k) for k in _EMAIL_MESSAGE_FIELDS},
+        }
+        for m in messages
+    ]
+    result = client.table("email_messages").insert(rows).execute()
+    inserted = result.data or []
+
+    if company_id and practice_id:
+        try:
+            client.table("company_email_messages").insert(
+                [{**row, "company_id": company_id} for row in rows]
+            ).execute()
+        except Exception:
+            pass
+
+    return inserted
 
 
 def insert_email_message(
@@ -1085,31 +1190,17 @@ def insert_email_message(
     Phase 3 dual-write: when company_id is set, also mirrors into
     company_email_messages so Phase 4 can swap reads cleanly.
     """
-    client = _get_client()
-    if not client:
-        return None
-    row = {
-        "practice_id": practice_id,
-        "user_id": user_id,
-        "direction": direction,
-        "subject": subject,
-        "body": body,
-        "message_id": message_id,
-        "in_reply_to": in_reply_to,
-        "error": error,
-    }
-    result = client.table("email_messages").insert(row).execute()
-    inserted = result.data[0] if result.data else None
-
-    if company_id and practice_id:
-        try:
-            client.table("company_email_messages").insert(
-                {**row, "company_id": company_id}
-            ).execute()
-        except Exception:
-            pass
-
-    return inserted
+    inserted = insert_email_messages(
+        practice_id,
+        user_id,
+        direction,
+        [{
+            "subject": subject, "body": body, "message_id": message_id,
+            "in_reply_to": in_reply_to, "error": error,
+        }],
+        company_id=company_id,
+    )
+    return inserted[0] if inserted else None
 
 
 def list_email_messages(practice_id: int) -> list[dict]:
@@ -1194,6 +1285,7 @@ def add_tags(
     place_id: str,
     new_tags: list[str],
     company_id: str | None = None,
+    practice_id: int | None = None,
 ) -> None:
     """Append tags to a practice's tags array, deduped. No-op if list empty.
 
@@ -1203,6 +1295,13 @@ def add_tags(
 
     Phase 3 dual-write: when company_id is set, also unions the same tags
     into company_practice_state for (company_id, practice_id).
+
+    Pass `practice_id` when the caller holds the practice row. Every route
+    that tags does so right after reading or writing the practice, so the
+    mirror's place_id → id lookup is pure duplication — and this runs from
+    ~8 mutation endpoints. Failing that, the read below now carries `id`
+    alongside `tags`: same query, same cost, and the mirror never has to ask
+    for it separately.
     """
     if not new_tags:
         return
@@ -1211,21 +1310,24 @@ def add_tags(
         return
     try:
         result = (
-            client.table("practices").select("tags")
+            client.table("practices").select("id,tags")
             .eq("place_id", place_id).maybe_single().execute()
         )
     except Exception:
         return
     if result is None:
         return
-    existing = (result.data or {}).get("tags") or []
+    row = result.data or {}
+    practice_id = practice_id or row.get("id")
+    existing = row.get("tags") or []
     merged = sorted(set(existing) | set(new_tags))
     if sorted(existing) != merged:
         client.table("practices").update({"tags": merged}).eq("place_id", place_id).execute()
 
     # Mirror to per-company state (handles its own dedup separately).
     if company_id:
-        _add_tags_per_company(place_id, company_id, new_tags)
+        _add_tags_per_company(place_id, company_id, new_tags,
+                              practice_id=practice_id)
 
 
 def list_outbound_message_ids(practice_id: int) -> list[str]:

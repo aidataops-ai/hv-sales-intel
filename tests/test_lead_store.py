@@ -218,6 +218,35 @@ def test_workflow_write_records_who_touched_it(fake):
     assert payload["last_touched_at"]
 
 
+def test_workflow_write_returns_the_row_the_update_produced(monkeypatch):
+    """PostgREST hands back the updated representation, so re-reading the row
+    to answer with it was a round trip spent on data already in hand."""
+    row = {"id": 7, "disposition": "approved", "company_id": "company-1"}
+    client = FakeClient(rows=[row])
+    monkeypatch.setattr(lead_store, "_client", lambda: client)
+
+    result = lead_store.update_lead_workflow(
+        "company-1", 7, {"disposition": "approved"},
+    )
+
+    assert result == row
+    assert [e[0] for e in client.log] == ["update"], "the update was the only write"
+    # No follow-up read: the row came off the write itself.
+    assert not [e for e in client.log if e[0] == "select"]
+
+
+def test_workflow_write_returns_none_when_the_update_matches_nothing(monkeypatch):
+    """A zero-row UPDATE is the 404: the `company_id` filter makes "no such
+    lead" and "another tenant's lead" the same answer, and the route turns
+    this into a 404 without a separate existence check."""
+    client = FakeClient(rows=[])
+    monkeypatch.setattr(lead_store, "_client", lambda: client)
+
+    assert lead_store.update_lead_workflow(
+        "company-1", 999, {"disposition": "approved"},
+    ) is None
+
+
 # --------------------------------------------------------------------------
 # Bands (ADR-07)
 # --------------------------------------------------------------------------
@@ -608,10 +637,10 @@ def test_export_practice_embed_is_only_the_lookup_key():
         assert embedded_only_on_the_feed not in lead_store.LEAD_EXPORT_SELECT
 
 
-def test_newest_posting_select_covers_every_column_talentdb_reads():
-    """Two callers, two appetites: the practice-detail page reads only `id`,
-    the Import Lead button hands the whole row to `talentdb.build_fields`.
-    Narrowing past the union would silently blank fields on the webhook."""
+def test_get_posting_select_covers_every_column_talentdb_reads():
+    """`get_posting` has exactly one job — feeding `talentdb.build_fields` on
+    the practice-detail Import Lead push. Narrowing past what build_fields
+    reads would silently blank fields on the webhook."""
     import inspect
 
     from src import talentdb
@@ -622,9 +651,9 @@ def test_newest_posting_select_covers_every_column_talentdb_reads():
 
     assert read_by_talentdb <= selected, (
         f"build_fields reads {sorted(read_by_talentdb - selected)}, "
-        "which newest_posting_for_practice no longer fetches"
+        "which get_posting no longer fetches"
     )
-    assert "id" in selected, "_practice_exported reads posting['id']"
+    assert "id" in selected, "the export path reads posting['id']"
     for unread in ("external_id", "employer_name_norm", "location_raw",
                    "salary_min", "match_method", "matched_at"):
         assert unread not in selected
@@ -731,3 +760,123 @@ def test_feed_paging_survives_an_estimate_that_undershoots(monkeypatch):
 
     assert len(rows) == 50
     assert total > len(rows)
+
+
+# --------------------------------------------------------------------------
+# newest_lead_for_practice — the practice-detail chain, collapsed into one
+# query. This ran on every practice-detail load as
+# `newest_posting_for_practice` -> `find_lead_by_posting`: two sequential
+# round trips, the first of which dragged back a full job description to read
+# one integer off it.
+# --------------------------------------------------------------------------
+
+
+class _RecordingPostingQuery:
+    """Records the select, filters, ordering and limit of the one query
+    `newest_lead_for_practice` issues."""
+
+    def __init__(self, rows, call):
+        self._rows = rows
+        self._call = call
+
+    def select(self, columns, **kwargs):
+        self._call["columns"] = columns
+        return self
+
+    def eq(self, column, value):
+        self._call.setdefault("eq", []).append((column, value))
+        return self
+
+    def order(self, column, **kwargs):
+        self._call.setdefault("order", []).append((column, kwargs.get("desc", False)))
+        return self
+
+    def limit(self, n):
+        self._call["limit"] = n
+        return self
+
+    def execute(self):
+        return type("R", (), {"data": self._rows})()
+
+
+def _fake_posting_lookup(monkeypatch, rows):
+    call: dict = {}
+
+    class _Client:
+        def table(self, name):
+            call["table"] = name
+            return _RecordingPostingQuery(rows, call)
+
+    monkeypatch.setattr(lead_store, "_client", lambda: _Client())
+    return call
+
+
+def test_newest_lead_for_practice_reads_postings_in_one_query(monkeypatch):
+    """The top-level table is `job_postings`, so `practice_id`, the ordering
+    and the limit all pick THE SAME posting the old two-step did — the newest
+    one linked to the practice, whether or not this tenant ever qualified it.
+    Joining from the leads side instead would silently pick the newest posting
+    that happens to have a lead row, and the detail page's "Exported" badge
+    would stop agreeing with what Import Lead actually sends.
+    """
+    call = _fake_posting_lookup(monkeypatch, [
+        {"id": 42, "lead": [{"id": 9, "talentdb_exported_at": "2026-08-01T00:00:00Z"}]},
+    ])
+
+    found = lead_store.newest_lead_for_practice("company-1", 7)
+
+    assert call["table"] == "job_postings"
+    assert ("practice_id", 7) in call["eq"]
+    # The lead is scoped by a filter on the EMBED, not on the posting.
+    assert ("lead.company_id", "company-1") in call["eq"]
+    assert call["order"] == [("posted_at", True), ("id", True)]
+    assert call["limit"] == 1
+    assert found == {
+        "posting_id": 42,
+        "lead": {"id": 9, "talentdb_exported_at": "2026-08-01T00:00:00Z"},
+    }
+
+
+def test_newest_lead_for_practice_does_not_fetch_the_description(monkeypatch):
+    """This runs on every practice-detail load and its caller reads one
+    marker off the lead — dragging a full posting body back for that is the
+    overfetch the single-query shape exists to remove."""
+    call = _fake_posting_lookup(monkeypatch, [{"id": 42, "lead": []}])
+    lead_store.newest_lead_for_practice("company-1", 7)
+
+    assert "description" not in call["columns"]
+    assert call["columns"].startswith("id,"), "the posting half is the id alone"
+
+
+def test_newest_lead_for_practice_reports_a_posting_with_no_lead(monkeypatch):
+    """Postings are shared across tenants while leads are per-company, so a
+    posting this tenant never qualified has no lead row. That is a real
+    answer — the practice is sendable — not a miss."""
+    call = _fake_posting_lookup(monkeypatch, [{"id": 42, "lead": []}])
+    assert lead_store.newest_lead_for_practice("company-1", 7) == {
+        "posting_id": 42, "lead": None,
+    }
+    assert call["limit"] == 1
+
+
+def test_newest_lead_for_practice_returns_none_for_an_unlinked_practice(monkeypatch):
+    _fake_posting_lookup(monkeypatch, [])
+    assert lead_store.newest_lead_for_practice("company-1", 7) is None
+
+
+def test_newest_lead_for_practice_accepts_a_to_one_embed(monkeypatch):
+    """A to-many embed answers with a list, but tolerate a dict in case
+    PostgREST resolves the relationship as to-one on some deployment."""
+    _fake_posting_lookup(monkeypatch, [{"id": 42, "lead": {"id": 9}}])
+    assert lead_store.newest_lead_for_practice("company-1", 7) == {
+        "posting_id": 42, "lead": {"id": 9},
+    }
+
+
+def test_newest_lead_for_practice_carries_what_the_export_reads(monkeypatch):
+    """The embed must cover the dedup marker plus the two qualifier fields
+    `talentdb.build_fields` maps off the lead — otherwise the practice-detail
+    push silently drops provider count and track."""
+    selected = _select_columns(lead_store._LEAD_EXPORT_MARKER_COLS)
+    assert {"id", "talentdb_exported_at", "provider_count",
+            "service_line"} <= selected

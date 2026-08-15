@@ -119,11 +119,11 @@ LEAD_EXPORT_SELECT = (
 
 # The same posting columns, fetched directly rather than through a lead — so
 # this one needs the `id` the export reads off the lead's `posting_id`.
-# `newest_posting_for_practice` has two callers with different appetites:
-# `_practice_exported` (every practice-detail load) reads only `id`, while the
-# practice-detail Import Lead button hands the whole row to
-# `talentdb.build_fields`. Their union is what the row must carry. What it
-# drops is what neither reads: `external_id`, `employer_name_norm`,
+# `get_posting` is the only reader, and it exists for exactly one job: the
+# practice-detail Import Lead button, which hands the row to
+# `talentdb.build_fields`. So this list is "what build_fields reads", and the
+# test in tests/test_lead_store.py holds it to that. What it drops is what
+# build_fields never touches: `external_id`, `employer_name_norm`,
 # `location_raw`, the salary triple, `practice_id`, `match_method`,
 # `matched_at`.
 _POSTING_TALENTDB_COLS = f"id, {_POSTING_EXPORT_COLS}"
@@ -612,6 +612,17 @@ def update_lead_workflow(
 
     `last_touched_by`/`last_touched_at` are stamped from the write rather than
     trusted from the client, so the history reflects who actually touched it.
+
+    Returns the row the UPDATE itself returned — PostgREST hands back the
+    updated representation, so there is no reason to read it again. `None`
+    means the write matched no row: either the lead doesn't exist or it
+    belongs to another tenant (the `company_id` filter is what makes those
+    the same case), which is why the caller answers it with a 404. A write
+    that raised is logged above and also reports `None`.
+
+    Note the returned row is the RAW lead — no posting/practice embed. A
+    caller that has to render the lead still needs one `get_lead`; a caller
+    that only needs to know the write landed does not.
     """
     client = _client()
     if not client or not company_id:
@@ -626,14 +637,15 @@ def update_lead_workflow(
         payload["last_touched_at"] = _now()
 
     try:
-        (
+        result = (
             client.table("company_job_leads").update(payload)
             .eq("company_id", company_id).eq("id", lead_id).execute()
         )
     except Exception as e:
         log.warning("[leads.update.error] %s: %s", type(e).__name__, str(e)[:250])
         return None
-    return get_lead(company_id, lead_id)
+    rows = result.data or []
+    return rows[0] if rows else None
 
 
 # ---------------------------------------------------------------------------
@@ -642,13 +654,24 @@ def update_lead_workflow(
 
 
 def get_posting(posting_id: int) -> dict | None:
-    """Fetch a single raw posting row (shared across tenants)."""
+    """Fetch one raw posting row (shared across tenants) for the Talent-DB push.
+
+    Selects `_POSTING_TALENTDB_COLS`, not `*`: the only caller hands this row
+    straight to `talentdb.build_fields`, and that column list IS what
+    build_fields reads — `description` included, since the webhook's
+    `posting_description` is the one heavy column the export genuinely needs.
+
+    Read only when a practice-initiated export is actually going to send.
+    `newest_lead_for_practice` answers the dedup question first, and it carries
+    the id this takes — so a practice-detail page load, or a click on an
+    already-exported practice, never reaches this at all.
+    """
     client = _client()
     if not client or not posting_id:
         return None
     try:
         result = (
-            client.table("job_postings").select("*")
+            client.table("job_postings").select(_POSTING_TALENTDB_COLS)
             .eq("id", posting_id).maybe_single().execute()
         )
     except Exception:
@@ -656,52 +679,71 @@ def get_posting(posting_id: int) -> dict | None:
     return result.data if result and result.data else None
 
 
-def newest_posting_for_practice(practice_id: int) -> dict | None:
-    """The most recent job posting linked to a practice, or None if unlinked.
+# What a practice-initiated Talent-DB export reads off the lead: the dedup
+# marker plus the two qualifier fields `talentdb.build_fields` maps
+# (`No_of_Providers__c` and the track).
+_LEAD_EXPORT_MARKER_COLS = "id, talentdb_exported_at, provider_count, service_line"
 
-    Newest by `posted_at` then `id` — the practice-detail Import Lead button
-    resolves `Lead_Type__c` / the `posting_*` fields from this row.
 
-    Selects `_POSTING_TALENTDB_COLS` rather than `*`: this runs on every
-    practice-detail load (via `_practice_exported`, which reads only `id`), so
-    the row it drags back is worth keeping to what its callers read.
+def newest_lead_for_practice(company_id: str, practice_id: int) -> dict | None:
+    """The practice's newest linked posting and this tenant's lead for it — in
+    ONE query. `None` when the practice has no linked posting at all.
+
+    Returns `{"posting_id": int, "lead": dict | None}`. A `lead` of `None` is a
+    real answer, not a miss: postings are shared across tenants (ADR-04) while
+    leads are per-company, so a posting this tenant never qualified has no lead
+    row and nothing to dedup against.
+
+    Replaces the `newest_posting_for_practice` → `find_lead_by_posting` pair,
+    which cost two sequential round trips on every practice-detail load. The
+    shape matters:
+
+    - The top-level table is `job_postings`, so `practice_id`, the ordering and
+      the `limit(1)` all apply to the postings — this picks the SAME posting
+      the old two-step did, rather than the newest posting that happens to have
+      a lead row. Keeping that identical is what stops the detail page's
+      "Exported" badge drifting from what Import Lead would actually send.
+    - The lead is a to-many embed WITHOUT `!inner`, so `lead.company_id`
+      filters the embedded rows rather than the top-level ones (an `!inner`
+      embed here would drop practices whose newest posting this tenant never
+      qualified). `unique (company_id, posting_id)` makes the list 0 or 1 long.
+    - Both halves of that syntax are already load-bearing in production here:
+      `_apply_filters` filters on `posting.city` / `posting.practice_id`
+      through an embed on every signals page load. Ordering stays on a
+      top-level column, so this needs no embedded-order support at all.
+
+    Selects the posting `id` only. The export path re-reads the full row via
+    `get_posting` when it actually sends; the detail page never needs the
+    description it used to drag back on every load.
     """
     client = _client()
-    if not client or not practice_id:
+    if not client or not company_id or not practice_id:
         return None
     try:
         result = (
-            client.table("job_postings").select(_POSTING_TALENTDB_COLS)
+            client.table("job_postings")
+            .select(f"id, lead:company_job_leads({_LEAD_EXPORT_MARKER_COLS})")
             .eq("practice_id", practice_id)
+            .eq("lead.company_id", company_id)
             .order("posted_at", desc=True, nullsfirst=False)
             .order("id", desc=True)
-            .limit(1).execute()
+            .limit(1)
+            .execute()
         )
-    except Exception:
+    except Exception as e:
+        log.warning("[leads.newest_for_practice.error] %s: %s",
+                    type(e).__name__, str(e)[:200])
         return None
     rows = result.data or []
-    return rows[0] if rows else None
-
-
-def find_lead_by_posting(company_id: str, posting_id: int) -> dict | None:
-    """The (company, posting) lead row for a posting, if one exists.
-
-    Carries the export marker (dedup) plus the qualifier fields the Talent-DB
-    payload needs (`provider_count`, `service_line`) so the practice-initiated
-    import matches the signals path."""
-    client = _client()
-    if not client or not company_id or not posting_id:
+    if not rows:
         return None
-    try:
-        result = (
-            client.table("company_job_leads")
-            .select("id, talentdb_exported_at, provider_count, service_line")
-            .eq("company_id", company_id).eq("posting_id", posting_id)
-            .maybe_single().execute()
-        )
-    except Exception:
-        return None
-    return result.data if result and result.data else None
+    row = rows[0]
+    # A to-many embed answers with a list; tolerate a dict in case PostgREST
+    # resolves the relationship as to-one on some deployment.
+    embedded = row.get("lead")
+    if isinstance(embedded, list):
+        embedded = embedded[0] if embedded else None
+    return {"posting_id": row.get("id"), "lead": embedded or None}
 
 
 def mark_lead_exported(company_id: str, lead_id: int) -> None:

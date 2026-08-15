@@ -245,6 +245,157 @@ def test_add_terms_makes_one_upsert_call_for_a_valid_batch(monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# sweep_status — accepts locations the caller already read.
+# --------------------------------------------------------------------------
+
+
+def test_sweep_status_uses_prefetched_locations_without_a_query(monkeypatch):
+    """The config route reads every dimension through `list_config` and then
+    asks for sweep coverage, which is computed from the same
+    `search_locations` rows. Passing them in is what stops the page load
+    selecting that table twice."""
+    def boom():
+        raise AssertionError("sweep_status queried despite being handed rows")
+
+    monkeypatch.setattr("src.storage._get_client", boom)
+
+    status = lead_targets.sweep_status("co", locations=[
+        {"id": 1, "granularity": "state", "enabled": True,
+         "last_indeed_at": None, "indeed_zero_streak": 0},
+    ])
+    assert status["indeed"]["enabled_locations"] == 1
+    assert status["indeed"]["never_swept"] == 1
+
+
+def test_sweep_status_filters_disabled_rows_out_of_prefetched_locations(monkeypatch):
+    """`list_config` returns disabled rows too — the page renders them as
+    switched off — but coverage is only ever measured against the rows the
+    collector actually sweeps, which is what the DB query's `enabled` filter
+    used to guarantee."""
+    monkeypatch.setattr(
+        "src.storage._get_client",
+        lambda: (_ for _ in ()).throw(AssertionError("should not query")),
+    )
+
+    status = lead_targets.sweep_status("co", locations=[
+        {"id": 1, "granularity": "state", "enabled": True,
+         "last_indeed_at": None, "indeed_zero_streak": 0},
+        {"id": 2, "granularity": "city", "enabled": False,
+         "last_indeed_at": None, "indeed_zero_streak": 0},
+    ])
+    assert status["indeed"]["enabled_locations"] == 1
+
+
+def test_sweep_status_still_queries_when_given_nothing(monkeypatch):
+    """The standalone call path is unchanged — `locations=None` means "read
+    them yourself", and an explicitly empty list is not the same thing."""
+    rows = [{"id": 1, "granularity": "state", "enabled": True,
+             "last_indeed_at": None, "indeed_zero_streak": 0}]
+    monkeypatch.setattr("src.storage._get_client", lambda: _FakeSelectClient(rows))
+
+    assert lead_targets.sweep_status("co")["indeed"]["enabled_locations"] == 1
+
+
+# --------------------------------------------------------------------------
+# set_terms_enabled / set_locations_enabled — the bulk toggles behind the
+# config page's state switches. One UPDATE ... WHERE company_id = ? AND id IN
+# (...), replacing a PATCH per row.
+# --------------------------------------------------------------------------
+
+
+class _FakeBulkUpdateClient:
+    """Records the table, payload and filters of a bulk `.update()`, and
+    answers with `rows`."""
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.table_name = None
+        self.payload = None
+        self.eq_calls: list[tuple] = []
+        self.in_calls: list[tuple] = []
+
+    def table(self, name):
+        self.table_name = name
+        return self
+
+    def update(self, payload, **kwargs):
+        self.payload = payload
+        return self
+
+    def eq(self, column, value):
+        self.eq_calls.append((column, value))
+        return self
+
+    def in_(self, column, values):
+        self.in_calls.append((column, list(values)))
+        return self
+
+    def execute(self):
+        return type("R", (), {"data": self.rows})()
+
+
+def test_set_terms_enabled_issues_one_tenant_scoped_update(monkeypatch):
+    """The scope filter is what stops a caller flipping another tenant's rows
+    by guessing ids — it lives in the UPDATE, not in a pre-check."""
+    rows = [{"id": i, "term": "RN", "enabled": False} for i in (1, 2, 3)]
+    client = _FakeBulkUpdateClient(rows)
+    monkeypatch.setattr("src.storage._get_client", lambda: client)
+
+    result = lead_targets.set_terms_enabled("co", [1, 2, 3], False)
+
+    assert result == rows
+    assert client.table_name == "search_terms"
+    assert client.payload == {"enabled": False}
+    assert ("company_id", "co") in client.eq_calls
+    assert client.in_calls == [("id", [1, 2, 3])]
+
+
+def test_set_locations_enabled_issues_one_tenant_scoped_update(monkeypatch):
+    rows = [{"id": 7, "location": "Tampa, FL", "enabled": True}]
+    client = _FakeBulkUpdateClient(rows)
+    monkeypatch.setattr("src.storage._get_client", lambda: client)
+
+    result = lead_targets.set_locations_enabled("co", [7], True)
+
+    assert result == rows
+    assert client.table_name == "search_locations"
+    assert client.payload == {"enabled": True}
+    assert ("company_id", "co") in client.eq_calls
+    assert client.in_calls == [("id", [7])]
+
+
+def test_bulk_toggles_flip_the_whole_batch_in_one_call(monkeypatch):
+    """Enabling a state is ~64 city rows plus its statewide row. One UPDATE,
+    not 65 — that fan-out was the reason this exists."""
+    ids = list(range(1, 66))
+    client = _FakeBulkUpdateClient([{"id": i, "enabled": True} for i in ids])
+    monkeypatch.setattr("src.storage._get_client", lambda: client)
+
+    assert len(lead_targets.set_locations_enabled("co", ids, True)) == 65
+    assert len(client.in_calls) == 1
+
+
+@pytest.mark.parametrize("ids", [[], None])
+def test_bulk_toggles_skip_the_write_for_an_empty_id_list(monkeypatch, ids):
+    client = _FakeBulkUpdateClient([])
+    monkeypatch.setattr("src.storage._get_client", lambda: client)
+
+    assert lead_targets.set_terms_enabled("co", ids, True) == []
+    assert client.payload is None, "an empty batch must not issue an UPDATE"
+
+
+def test_bulk_toggles_refuse_an_empty_company(monkeypatch):
+    """No tenant means no scope filter — the UPDATE would hit every row in
+    the table, so it must not run at all."""
+    client = _FakeBulkUpdateClient([])
+    monkeypatch.setattr("src.storage._get_client", lambda: client)
+
+    assert lead_targets.set_terms_enabled("", [1], True) == []
+    assert lead_targets.set_locations_enabled("", [1], True) == []
+    assert client.payload is None
+
+
+# --------------------------------------------------------------------------
 # delete_term / delete_location — hard delete for hand-added rows, refused
 # for catalog rows (Phase 5). ensure_targets diff-seeds unconditionally now
 # (Phase 4), so a deleted catalog row would just be resurrected next run —

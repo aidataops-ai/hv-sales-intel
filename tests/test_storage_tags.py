@@ -49,3 +49,50 @@ def test_add_tags_noop_when_no_new_tags():
 def test_add_tags_skips_when_client_unconfigured():
     with patch("src.storage._get_client", return_value=None):
         add_tags("place-1", ["RESEARCHED"])  # must not raise
+
+
+# --------------------------------------------------------------------------
+# The per-company mirror's practice id. `add_tags` runs from ~8 mutation
+# endpoints, and the mirror used to re-resolve `place_id -> id` every time
+# even though the caller — and this function's own read — already had it.
+# --------------------------------------------------------------------------
+
+
+def test_add_tags_reads_the_id_alongside_the_tags():
+    """Same query, one more column: the mirror never has to ask separately."""
+    fake = _fake_client_with_existing_tags(["RESEARCHED"])
+    with patch("src.storage._get_client", return_value=fake):
+        add_tags("place-1", ["SCRIPT_READY"])
+    assert fake.table.return_value.select.call_args.args[0] == "id,tags"
+
+
+def test_add_tags_mirrors_against_the_id_from_its_own_read():
+    fake = _fake_client_with_existing_tags(["RESEARCHED"])
+    fake.table.return_value.select.return_value.eq.return_value.maybe_single \
+        .return_value.execute.return_value.data = {"id": 42, "tags": ["RESEARCHED"]}
+
+    def boom(place_id):
+        raise AssertionError("re-resolved an id the tags read already carried")
+
+    with patch("src.storage._get_client", return_value=fake), \
+         patch("src.storage._practice_id_by_place", side_effect=boom), \
+         patch("src.storage._per_company_upsert") as mirror:
+        add_tags("place-1", ["SCRIPT_READY"], company_id="co-1")
+
+    assert mirror.call_args.args[2] == 42
+
+
+def test_add_tags_prefers_an_id_the_caller_already_holds():
+    """Every route that tags does so right after reading or writing the
+    practice, so the id is normally in hand before we get here."""
+    fake = _fake_client_with_existing_tags(["RESEARCHED"])
+
+    def boom(place_id):
+        raise AssertionError("looked up an id the caller supplied")
+
+    with patch("src.storage._get_client", return_value=fake), \
+         patch("src.storage._practice_id_by_place", side_effect=boom), \
+         patch("src.storage._per_company_upsert") as mirror:
+        add_tags("place-1", ["SCRIPT_READY"], company_id="co-1", practice_id=99)
+
+    assert mirror.call_args.args[2] == 99

@@ -36,6 +36,81 @@ def test_update_practice_fields_no_stamp_when_touched_by_none():
     assert "last_touched_at" not in call_args
 
 
+def test_update_practice_fields_mirrors_against_the_id_the_update_returned():
+    """The UPDATE hands the row back, so the per-company mirrors get the
+    practice id for free — the `place_id -> id` select they used to run
+    (once per mirror, up to three per write) is pure duplication."""
+    client, table = _mock_supabase_update_returning({"id": 42, "place_id": "p1"})
+
+    def boom(place_id):
+        raise AssertionError("re-resolved a practice id the update already gave us")
+
+    with patch("src.storage._get_client", return_value=client), \
+         patch("src.storage._practice_id_by_place", side_effect=boom), \
+         patch("src.storage._per_company_upsert") as mirror:
+        update_practice_fields("p1", {"status": "CONTACTED"},
+                               touched_by="user-1", company_id="co-1")
+
+    assert mirror.call_args.args[2] == 42, "mirror wrote against the returned id"
+
+
+def test_update_practice_fields_prefers_an_id_the_caller_already_holds():
+    client, _ = _mock_supabase_update_returning({"id": 42, "place_id": "p1"})
+
+    def boom(place_id):
+        raise AssertionError("looked up an id the caller supplied")
+
+    with patch("src.storage._get_client", return_value=client), \
+         patch("src.storage._practice_id_by_place", side_effect=boom), \
+         patch("src.storage._per_company_upsert") as mirror:
+        update_practice_fields("p1", {"status": "CONTACTED"},
+                               touched_by="user-1", company_id="co-1",
+                               practice_id=99)
+
+    assert mirror.call_args.args[2] == 99
+
+
+# ------------------------- upsert returns its rows --------------------------
+
+
+def _mock_supabase_upsert_returning(rows):
+    client = MagicMock()
+    table = MagicMock()
+    table.upsert.return_value = table
+    table.select.return_value = table
+    table.in_.return_value = table
+    table.execute.return_value = MagicMock(data=rows)
+    client.table.return_value = table
+    return client, table
+
+
+def test_upsert_practices_returns_the_rows_it_wrote():
+    """PostgREST returns the stored representation, so the analyze/rescan
+    routes can answer from the write instead of re-reading the practice."""
+    from src.models import Practice
+
+    client, _ = _mock_supabase_upsert_returning(
+        [{"id": 7, "place_id": "p1", "name": "Acme"}]
+    )
+    with patch("src.storage._get_client", return_value=client):
+        rows = storage.upsert_practices([Practice(place_id="p1", name="Acme")])
+
+    assert rows[0]["id"] == 7
+    # `last_touched_by_name` is a read-time join, absent from a written row —
+    # present as None so the shape matches what readers expect.
+    assert rows[0]["last_touched_by_name"] is None
+
+
+def test_upsert_practices_returns_an_empty_list_when_there_is_nothing_to_write():
+    """Callers take `len()` of this for the old count, so it must be a list
+    on every path — including the unconfigured one."""
+    with patch("src.storage._get_client", return_value=None):
+        assert storage.upsert_practices([]) == []
+    client, _ = _mock_supabase_upsert_returning([])
+    with patch("src.storage._get_client", return_value=client):
+        assert storage.upsert_practices([]) == []
+
+
 # --------------------------- client memoization -----------------------------
 
 

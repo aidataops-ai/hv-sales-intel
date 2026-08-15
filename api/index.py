@@ -73,6 +73,23 @@ def _attach_lead_url(practice: dict | None) -> dict | None:
     if not practice.get("salesforce_lead_url") and practice.get("salesforce_lead_id"):
         practice["salesforce_lead_url"] = lead_view_url(practice["salesforce_lead_id"])
     return practice
+
+
+def _with_actor_name(practice: dict, user: dict) -> dict:
+    """Fill in `last_touched_by_name` on a row that came back from a write.
+
+    `last_touched_by_name` is a read-time join on `profiles`, so a row returned
+    by an UPDATE or UPSERT never carries it — but the write that produced the
+    row also stamped `last_touched_by` with the acting user, so the name the
+    join would resolve is the one already in hand. Filling it here is what
+    lets those routes answer from the write instead of re-reading the practice
+    purely to pick up one joined column the detail page renders.
+    """
+    if not practice:
+        return practice
+    if not practice.get("last_touched_by_name"):
+        practice["last_touched_by_name"] = user.get("name")
+    return practice
 from src.clay import trigger_enrichment
 from src.email_gen import generate_email_draft
 from src.email_poll import poll_replies
@@ -87,8 +104,10 @@ from src.storage import (
     find_duplicate_place_ids,
     get_cached_search,
     get_practice,
+    get_practices_by_place_ids,
     increment_export_counts,
     insert_email_message,
+    insert_email_messages,
     list_email_messages,
     list_outbound_message_ids,
     query_for_export,
@@ -560,8 +579,10 @@ async def send_email_endpoint(
     fields: dict = {}
     if _should_auto_advance(current_status, "CONTACTED"):
         fields["status"] = "CONTACTED"
-    update_practice_fields(place_id, fields, touched_by=user["id"], company_id=user["company_id"])
-    add_tags(place_id, ["CONTACTED"], company_id=user["company_id"])
+    update_practice_fields(place_id, fields, touched_by=user["id"],
+                           company_id=user["company_id"], practice_id=practice["id"])
+    add_tags(place_id, ["CONTACTED"], company_id=user["company_id"],
+             practice_id=practice["id"])
 
     return row
 
@@ -608,35 +629,32 @@ async def poll_email_replies_endpoint(
     existing = list_email_messages(practice["id"])
     existing_ids = {m.get("message_id") for m in existing if m.get("message_id")}
 
-    new_rows: list[dict] = []
-    for reply in replies:
-        if reply["message_id"] in existing_ids:
-            continue
-        inserted = insert_email_message(
-            practice_id=practice["id"],
-            user_id=None,
-            direction="in",
-            subject=reply.get("subject"),
-            body=reply.get("body"),
-            message_id=reply.get("message_id"),
-            in_reply_to=reply.get("in_reply_to"),
-            error=None,
-            company_id=user["company_id"],
-        )
-        if inserted:
-            new_rows.append(inserted)
+    # One insert for the whole batch (per table), not one per reply.
+    fresh = [r for r in replies if r["message_id"] not in existing_ids]
+    new_rows = insert_email_messages(
+        practice_id=practice["id"],
+        user_id=None,
+        direction="in",
+        messages=fresh,
+        company_id=user["company_id"],
+    ) if fresh else []
 
     if new_rows:
         current_status = practice.get("status", "NEW")
         fields: dict = {}
         if _should_auto_advance(current_status, "FOLLOW UP"):
             fields["status"] = "FOLLOW UP"
-        update_practice_fields(place_id, fields, touched_by=user["id"], company_id=user["company_id"])
-        add_tags(place_id, ["REPLIED"], company_id=user["company_id"])
+        update_practice_fields(place_id, fields, touched_by=user["id"],
+                               company_id=user["company_id"],
+                               practice_id=practice["id"])
+        add_tags(place_id, ["REPLIED"], company_id=user["company_id"],
+                 practice_id=practice["id"])
 
     return {
+        # The thread we just read plus what we just wrote — re-reading the
+        # table to count rows we already hold is a round trip for arithmetic.
         "new_messages": new_rows,
-        "total": len(list_email_messages(practice["id"])),
+        "total": len(existing) + len(new_rows),
     }
 
 
@@ -665,8 +683,10 @@ def mark_email_replied_endpoint(
     fields: dict = {}
     if _should_auto_advance(current_status, "FOLLOW UP"):
         fields["status"] = "FOLLOW UP"
-    update_practice_fields(place_id, fields, touched_by=user["id"], company_id=user["company_id"])
-    add_tags(place_id, ["REPLIED"], company_id=user["company_id"])
+    update_practice_fields(place_id, fields, touched_by=user["id"],
+                           company_id=user["company_id"], practice_id=practice["id"])
+    add_tags(place_id, ["REPLIED"], company_id=user["company_id"],
+             practice_id=practice["id"])
 
     return row
 
@@ -686,6 +706,30 @@ def health():
 def me(user: dict = Depends(get_current_user)):
     from src.auth import is_bootstrap_admin
     return {**user, "is_bootstrap_admin": is_bootstrap_admin(user)}
+
+
+@app.get("/api/session")
+def session(user: dict = Depends(get_current_user)):
+    """Everything the app shell needs to boot, in one request.
+
+    `/api/me`, `/api/me/companies` and `/api/me/credits` are three requests
+    that every page load makes before it can render anything — and each one
+    separately pays `get_current_user`'s auth round trips, so the shell was
+    spending roughly three times the auth cost to answer three questions
+    about the same already-resolved user. This resolves the user once and
+    answers all three.
+
+    The keys carry the other routes' bodies verbatim (they call the same
+    helpers), so a client can migrate one field at a time. Those three routes
+    stay exactly as they are — the frontend moves over separately.
+    """
+    from src.auth import is_bootstrap_admin
+
+    return {
+        "user": {**user, "is_bootstrap_admin": is_bootstrap_admin(user)},
+        "companies": _my_companies(user),
+        "credits": _my_credits(user),
+    }
 
 
 class ChangePasswordRequest(BaseModel):
@@ -853,9 +897,9 @@ def _has_icp_defined(icp_parsed) -> bool:
     return bool(icp_parsed.get("verticals_in_scope"))
 
 
-@app.get("/api/me/companies")
-def list_my_companies(user: dict = Depends(get_current_user)):
-    """List every company the current user is a member of."""
+def _my_companies(user: dict) -> dict:
+    """The `GET /api/me/companies` body. Extracted so `/api/session` returns
+    the identical shape rather than a second implementation of it."""
     client = get_admin_client()
     try:
         result = (
@@ -886,6 +930,12 @@ def list_my_companies(user: dict = Depends(get_current_user)):
     return {"companies": out, "current_company_id": user.get("company_id")}
 
 
+@app.get("/api/me/companies")
+def list_my_companies(user: dict = Depends(get_current_user)):
+    """List every company the current user is a member of."""
+    return _my_companies(user)
+
+
 # ---------------------------------------------------------------------------
 # Credits — balance, transactions, top-ups.
 # ---------------------------------------------------------------------------
@@ -897,6 +947,11 @@ def my_credits(user: dict = Depends(get_current_user)):
     company. Every authenticated user can read their own tenant's
     balance (so the topbar pill works for SDRs, not just admins).
     """
+    return _my_credits(user)
+
+
+def _my_credits(user: dict) -> dict:
+    """The `GET /api/me/credits` body — shared with `/api/session`."""
     company_id = user.get("company_id")
     if not company_id:
         return {"balance": 0, "purchased": 0, "consumed": 0, "transactions": []}
@@ -1603,9 +1658,14 @@ async def search(body: SearchRequest, user: dict = Depends(get_current_user)):
     # Re-fetch relevant practices from DB so the response carries joined
     # attribution (last_touched_by_name). Irrelevant ones never enter the DB
     # — we return their in-memory dump so the UI can show + grey them out.
+    #
+    # ONE batched read, not one `get_practice` per result: a Places page is up
+    # to 20 rows and Bulk Scan runs this ~60 times a sweep, so the per-row loop
+    # was ~1,200 avoidable selects (each its own TLS handshake) per scan.
+    rows_by_place = get_practices_by_place_ids([p.place_id for p in relevant])
     enriched: list[dict] = []
     for p in relevant:
-        row = get_practice(p.place_id)
+        row = rows_by_place.get(p.place_id)
         enriched.append(_attach_lead_url(row) if row else p.model_dump())
     for p in irrelevant:
         enriched.append(p.model_dump())
@@ -1615,7 +1675,7 @@ async def search(body: SearchRequest, user: dict = Depends(get_current_user)):
     return {
         "practices": enriched,
         "count": len(practices),
-        "upserted": upserted,
+        "upserted": len(upserted),
     }
 
 
@@ -1627,15 +1687,18 @@ def _practice_exported(company_id: str, practice_id: int | None) -> bool:
     practice-detail Import Lead button can render 'Exported' after a reload
     instead of reverting to its default state. A practice with no linked posting
     is never deduped (always sendable), so it reports False.
+
+    ONE query: `newest_lead_for_practice` answers "newest posting + this
+    tenant's lead for it" in a single embed. This runs on every practice-detail
+    load, and it used to be two sequential round trips whose first one dragged
+    back a full job description to read one integer off it.
     """
     from src import lead_store
 
     if not practice_id:
         return False
-    posting = lead_store.newest_posting_for_practice(practice_id)
-    if not posting:
-        return False
-    lead_row = lead_store.find_lead_by_posting(company_id, posting["id"])
+    found = lead_store.newest_lead_for_practice(company_id, practice_id)
+    lead_row = (found or {}).get("lead")
     return bool(lead_row and lead_row.get("talentdb_exported_at"))
 
 
@@ -1676,8 +1739,15 @@ async def analyze(
             user_id=user.get("id"),
         )
         if refreshed:
-            upsert_practices([refreshed], touched_by=user["id"], company_id=user["company_id"])
-            current_record = get_practice(place_id) or refreshed.model_dump()
+            # The upsert returns the stored row — no re-read. `last_touched_by`
+            # was just stamped with this user, so the name the join would have
+            # resolved is the one we already have.
+            rows = upsert_practices(
+                [refreshed], touched_by=user["id"], company_id=user["company_id"],
+            )
+            current_record = (
+                _with_actor_name(rows[0], user) if rows else refreshed.model_dump()
+            )
 
     if current_record:
         name = current_record["name"]
@@ -1765,8 +1835,10 @@ async def analyze(
         if _should_auto_advance(current_status, "RESEARCHED"):
             analysis["status"] = "RESEARCHED"
 
-    updated = update_practice_analysis(place_id, analysis, touched_by=user["id"], company_id=user["company_id"])
-    add_tags(place_id, ["RESEARCHED"], company_id=user["company_id"])
+    updated = update_practice_analysis(place_id, analysis, touched_by=user["id"],
+                                       company_id=user["company_id"])
+    add_tags(place_id, ["RESEARCHED"], company_id=user["company_id"],
+             practice_id=(updated or current_record or {}).get("id"))
     if updated:
         return updated
 
@@ -1790,8 +1862,12 @@ async def rescan_practice(place_id: str, user: dict = Depends(get_current_user))
     if not refreshed:
         return existing
 
-    upsert_practices([refreshed], touched_by=user["id"], company_id=user["company_id"])
-    return get_practice(place_id) or refreshed.model_dump()
+    # The upsert hands back the stored row, so the old `get_practice` right
+    # after it was re-reading a row we were already holding.
+    rows = upsert_practices(
+        [refreshed], touched_by=user["id"], company_id=user["company_id"],
+    )
+    return _with_actor_name(rows[0], user) if rows else refreshed.model_dump()
 
 
 @app.get("/api/practices/{place_id}/script")
@@ -1811,12 +1887,17 @@ async def get_script(place_id: str, user: dict = Depends(get_current_user)):
             detail={"error": "INSUFFICIENT_CREDITS", "action": "call_script"},
         )
 
-    update_practice_fields(place_id, {"call_script": json.dumps(script)}, touched_by=user["id"], company_id=user["company_id"])
-    add_tags(place_id, ["SCRIPT_READY"], company_id=user["company_id"])
+    update_practice_fields(place_id, {"call_script": json.dumps(script)},
+                           touched_by=user["id"], company_id=user["company_id"],
+                           practice_id=practice["id"])
+    add_tags(place_id, ["SCRIPT_READY"], company_id=user["company_id"],
+             practice_id=practice["id"])
 
     current_status = practice.get("status", "NEW")
     if _should_auto_advance(current_status, "SCRIPT READY"):
-        update_practice_fields(place_id, {"status": "SCRIPT READY"}, touched_by=user["id"], company_id=user["company_id"])
+        update_practice_fields(place_id, {"status": "SCRIPT READY"},
+                               touched_by=user["id"], company_id=user["company_id"],
+                               practice_id=practice["id"])
 
     return script
 
@@ -1835,8 +1916,11 @@ async def regenerate_script_endpoint(place_id: str, user: dict = Depends(get_cur
             detail={"error": "INSUFFICIENT_CREDITS", "action": "call_script"},
         )
 
-    update_practice_fields(place_id, {"call_script": json.dumps(script)}, touched_by=user["id"], company_id=user["company_id"])
-    add_tags(place_id, ["SCRIPT_READY"], company_id=user["company_id"])
+    update_practice_fields(place_id, {"call_script": json.dumps(script)},
+                           touched_by=user["id"], company_id=user["company_id"],
+                           practice_id=practice["id"])
+    add_tags(place_id, ["SCRIPT_READY"], company_id=user["company_id"],
+             practice_id=practice["id"])
     return script
 
 
@@ -1939,7 +2023,8 @@ async def patch_practice(
         "CLOSED LOST": "CLOSED_LOST",
     }
     if body.status and body.status in STATUS_TAG_MAP:
-        add_tags(place_id, [STATUS_TAG_MAP[body.status]], company_id=user["company_id"])
+        add_tags(place_id, [STATUS_TAG_MAP[body.status]],
+                 company_id=user["company_id"], practice_id=updated.get("id"))
 
     # If notes changed AND practice has a Salesforce Lead, push the notes
     # into the Lead's Call_Notes__c field (overwriting). Fail-soft: log
@@ -1989,7 +2074,8 @@ async def call_log_endpoint(
     except LookupError:
         log.warning("[api.call_log.404] place_id=%s", place_id)
         raise HTTPException(404, "Practice not found")
-    add_tags(place_id, ["CONTACTED"], company_id=user["company_id"])
+    add_tags(place_id, ["CONTACTED"], company_id=user["company_id"],
+             practice_id=practice.get("id"))
     log.info(
         "[api.call_log.response] place_id=%s call_count=%s lead_id=%s warning=%s",
         place_id, practice.get("call_count"),
@@ -2063,18 +2149,27 @@ async def import_lead_practice_endpoint(
     company_id = user["company_id"]
     posting = None
     lead_row = None
+    posting_id = None
     pid = practice.get("id")
     if pid:
-        posting = lead_store.newest_posting_for_practice(pid)
-    if posting:
-        lead_row = lead_store.find_lead_by_posting(company_id, posting["id"])
-        if lead_row and lead_row.get("talentdb_exported_at"):
-            log.info("[api.import_lead.skip] place_id=%s already_exported", place_id)
-            return {"talentdb_status": "already_exported", "talentdb_warning": None,
-                    "local_entity_id": None}
+        # Same single-query helper the detail page's `exported` flag uses, so
+        # the badge and this guard can never disagree about which posting is
+        # "the newest one".
+        found = lead_store.newest_lead_for_practice(company_id, pid)
+        if found:
+            posting_id = found["posting_id"]
+            lead_row = found["lead"]
+    if lead_row and lead_row.get("talentdb_exported_at"):
+        log.info("[api.import_lead.skip] place_id=%s already_exported", place_id)
+        return {"talentdb_status": "already_exported", "talentdb_warning": None,
+                "local_entity_id": None}
+    # Only now is the full posting worth reading: the helper above carries the
+    # id, and the export is the one path that needs `description`.
+    if posting_id:
+        posting = lead_store.get_posting(posting_id)
 
     log.info("[api.import_lead] place_id=%s user=%s posting=%s",
-             place_id, user.get("email"), posting["id"] if posting else None)
+             place_id, user.get("email"), posting_id)
     result = await talentdb.import_lead(practice, posting, lead_row)
     if result.get("ok") and lead_row:
         lead_store.mark_lead_exported(company_id, lead_row["id"])
@@ -2126,6 +2221,7 @@ async def enrich_endpoint(
         final = update_practice_fields(
             place_id, {"enrichment_status": "failed"},
             touched_by=None, company_id=user["company_id"],
+            practice_id=existing.get("id"),
         )
         return {"practice": final, "clay_warning": f"Enrichment trigger failed: {e}"}
 
@@ -2135,6 +2231,7 @@ async def enrich_endpoint(
     updated = update_practice_fields(
         place_id, {"enrichment_status": "pending"},
         touched_by=None, company_id=user["company_id"],
+        practice_id=existing.get("id"),
     )
     return {"practice": updated, "clay_warning": None}
 
@@ -2775,6 +2872,11 @@ class ToggleEnabledRequest(BaseModel):
     enabled: bool
 
 
+class BulkToggleEnabledRequest(BaseModel):
+    ids: list[int]
+    enabled: bool
+
+
 class SetOverrideRequest(BaseModel):
     term_id: int
     location_id: int
@@ -2804,7 +2906,12 @@ def get_leads_config(admin: dict = Depends(require_admin)):
         "terms": dims["terms"],
         "locations": dims["locations"],
         "overrides": dims["overrides"],
-        "sweep": lead_targets.sweep_status(admin["company_id"]),
+        # Hand `sweep_status` the rows we just read — it computes coverage from
+        # `search_locations` and would otherwise select the same table twice
+        # per page load. It filters `enabled` itself.
+        "sweep": lead_targets.sweep_status(
+            admin["company_id"], locations=dims["locations"],
+        ),
     }
 
 
@@ -2837,6 +2944,44 @@ def add_leads_locations(body: AddLocationsRequest, admin: dict = Depends(require
     except lead_targets.TargetValidationError as e:
         raise HTTPException(400, str(e))
     return result
+
+
+# Route order matters, same trap as `/api/leads/export.csv` below: the literal
+# `/bulk` paths must be declared BEFORE their `/{id}` siblings, or FastAPI
+# matches the parameter route first and rejects "bulk" as a non-integer id.
+
+
+@app.patch("/api/admin/leads/terms/bulk")
+def bulk_toggle_leads_terms(
+    body: BulkToggleEnabledRequest, admin: dict = Depends(require_admin),
+):
+    """Enable or disable many terms in ONE update.
+
+    The config page's state-level switches used to fan out a PATCH per row —
+    ~64 requests to enable a state, each paying its own auth round trips. Ids
+    that aren't this tenant's are silently absent from `updated` rather than
+    erroring: the tenant filter is in the UPDATE itself, so a caller can
+    neither read nor write another tenant's rows by guessing ids.
+    """
+    return {
+        "updated": lead_targets.set_terms_enabled(
+            admin["company_id"], body.ids, body.enabled,
+        )
+    }
+
+
+@app.patch("/api/admin/leads/locations/bulk")
+def bulk_toggle_leads_locations(
+    body: BulkToggleEnabledRequest, admin: dict = Depends(require_admin),
+):
+    """Enable or disable many locations in ONE update. Same contract as the
+    terms sibling — and the one that pays off most, since a state is dozens of
+    city rows plus its statewide row."""
+    return {
+        "updated": lead_targets.set_locations_enabled(
+            admin["company_id"], body.ids, body.enabled,
+        )
+    }
 
 
 @app.patch("/api/admin/leads/terms/{term_id}")
@@ -2921,11 +3066,18 @@ def set_leads_override(body: SetOverrideRequest, admin: dict = Depends(require_a
 # CSV column order — kept in sync with the export endpoint below.
 # The posting facts an operator acts on, then the outreach contact columns.
 def _posting_from_lead(lead: dict) -> dict:
-    """Reconstruct a posting dict from a flattened export lead.
+    """Reconstruct a posting dict from a flattened lead.
 
-    `leads_for_export` lifts the posting's columns onto the lead (renaming
-    `first_seen_at` → `posting_created_at` and dropping the posting `id`), so
-    talentdb's builders — which expect a raw posting dict — get their keys back.
+    `lead_store._flatten` lifts the embedded posting's columns onto the lead
+    (renaming `first_seen_at` → `posting_created_at` and dropping the posting
+    `id`), so talentdb's builders — which expect a raw posting dict — get their
+    keys back. That rename is the whole reason this is not just `lead`: pass
+    the flattened row straight through and `first_seen_at` silently vanishes
+    from the payload.
+
+    Two callers, both reading a lead whose posting came back embedded: the CSV
+    export (`LEAD_EXPORT_SELECT`) and the signals Import Lead button
+    (`LEAD_SELECT`). Neither needs to re-read `job_postings`.
     """
     return {
         "id": lead.get("posting_id"),
@@ -3156,21 +3308,30 @@ def patch_lead_endpoint(
     Only the three fields above are accepted, and `lead_store` strips anything
     outside `WORKFLOW_COLUMNS` again before writing — an operator action must
     never rewrite the reason the lead was surfaced.
+
+    Two round trips, not three. The write is its own existence check — an
+    UPDATE filtered on `(company_id, id)` that matches nothing is exactly the
+    404 the pre-check used to make a separate query for — so the only read
+    left is the one that shapes the response: both the feed and the detail
+    page splice this row in place of the one they were rendering, and those
+    rows carry the posting embed (title, employer, city, posted_at) that a
+    bare `company_job_leads` row has no way to supply.
     """
     if body.disposition and body.disposition not in lead_store.LEAD_DISPOSITIONS:
         raise HTTPException(
             400,
             f"disposition must be one of: {', '.join(lead_store.LEAD_DISPOSITIONS)}",
         )
-    if not lead_store.get_lead(user["company_id"], lead_id):
-        raise HTTPException(404, "Lead not found")
 
     fields = body.model_dump(exclude_unset=True)
-    updated = lead_store.update_lead_workflow(
+    if not lead_store.update_lead_workflow(
         user["company_id"], lead_id, fields, user_id=user.get("id"),
-    )
+    ):
+        raise HTTPException(404, "Lead not found")
+
+    updated = lead_store.get_lead(user["company_id"], lead_id)
     if not updated:
-        raise HTTPException(500, "Lead update failed")
+        raise HTTPException(404, "Lead not found")
     return updated
 
 
@@ -3195,7 +3356,12 @@ async def import_lead_signal_endpoint(
         return {"talentdb_status": "already_exported", "talentdb_warning": None,
                 "local_entity_id": None}
 
-    posting = lead_store.get_posting(lead.get("posting_id"))
+    # No posting fetch: `get_lead`'s LEAD_SELECT already embeds the whole
+    # posting and `_flatten` lifted it onto the lead. `_posting_from_lead`
+    # hands talentdb's builders the keys back under the names they expect —
+    # which is the reason it exists, and why re-reading `job_postings` here
+    # was pure duplication (description included).
+    posting = _posting_from_lead(lead)
     practice = None
     place_id = (lead.get("practice") or {}).get("place_id")
     if place_id:

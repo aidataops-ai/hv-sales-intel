@@ -347,6 +347,60 @@ def set_term_enabled(company_id: str, term_id: int, enabled: bool) -> dict | Non
     return rows[0] if rows else None
 
 
+def set_terms_enabled(
+    company_id: str, term_ids: list[int], enabled: bool,
+) -> list[dict]:
+    """Flip many terms at once, scoped to the tenant. Returns the updated rows.
+
+    One UPDATE ... WHERE id IN (...) rather than a PATCH per row: enabling a
+    track from the config page fans out across every term in it, and the page
+    was paying a request — and its auth round trips — for each one.
+
+    Ids that don't exist, or belong to another tenant, are simply absent from
+    the result; the `company_id` filter is what makes those the same case, so
+    a caller cannot flip another tenant's rows by guessing ids.
+    """
+    return _set_enabled_bulk("search_terms", company_id, term_ids, enabled)
+
+
+def set_locations_enabled(
+    company_id: str, location_ids: list[int], enabled: bool,
+) -> list[dict]:
+    """Flip many locations at once, scoped to the tenant. Returns the updated
+    rows. Same shape and scoping as `set_terms_enabled` — this is the one that
+    matters most in practice, since enabling a state is ~64 city rows.
+    """
+    return _set_enabled_bulk("search_locations", company_id, location_ids, enabled)
+
+
+def _set_enabled_bulk(
+    table: str, company_id: str, ids: list[int], enabled: bool,
+) -> list[dict]:
+    """The shared body of the two bulk toggles: one tenant-scoped UPDATE."""
+    from src.storage import _get_client
+
+    client = _get_client()
+    clean = [int(i) for i in (ids or []) if i]
+    if not client or not company_id or not clean:
+        return []
+    try:
+        result = (
+            client.table(table)
+            .update({"enabled": bool(enabled)})
+            .eq("company_id", company_id)
+            .in_("id", clean)
+            .execute()
+        )
+    except Exception as e:
+        log.warning("[leads.set_enabled_bulk.error] table=%s %s: %s",
+                    table, type(e).__name__, str(e)[:200])
+        return []
+    rows = result.data or []
+    log.info("[leads.set_enabled_bulk] table=%s company=%s requested=%d updated=%d "
+             "enabled=%s", table, company_id, len(clean), len(rows), bool(enabled))
+    return rows
+
+
 def delete_term(company_id: str, term_id: int) -> dict | None:
     """Hard-delete one hand-added term, scoped to the tenant. Returns the
     deleted row, or `None` if it didn't exist (a stray id / another tenant's).
@@ -877,7 +931,7 @@ def build_claim_rows(location: dict, terms: list[dict], overrides: dict[tuple[in
     return rows
 
 
-def sweep_status(company_id: str) -> dict:
+def sweep_status(company_id: str, locations: list[dict] | None = None) -> dict:
     """Per-source sweep period, coverage, and cursor age — raw numbers for
     the config page's sweep status strip (plan §5) and for tuning
     `lead_*_stale_hours` via env once real data exists.
@@ -885,24 +939,42 @@ def sweep_status(company_id: str) -> dict:
     One select of the tenant's enabled locations (~100-200 dimension rows at
     production scale), computed in Python — cheap enough not to need a DB
     aggregate.
+
+    `locations` skips that select for a caller that just read the same rows:
+    the config route fetches every dimension through `list_config` and then
+    called here, paying for `search_locations` twice per page load. Pass
+    `list_config`'s `locations` — this filters `enabled` itself, because
+    `list_config` deliberately returns disabled rows too (the page renders
+    them as switched-off), while coverage is only ever measured against the
+    rows the collector actually sweeps.
+
+    Everything read below (`granularity`, `last_*_at`, `*_zero_streak`) is a
+    real column and `list_config` selects `*`, so the pre-fetched rows carry
+    the same fields this query would have.
     """
     from src.settings import settings
     from src.storage import _get_client
 
-    client = _get_client()
-    if not client or not company_id:
+    if not company_id:
         return {}
-    try:
-        locations = (
-            client.table("search_locations")
-            .select("*")
-            .eq("company_id", company_id)
-            .eq("enabled", True)
-            .execute()
-        ).data or []
-    except Exception as e:
-        log.warning("[leads.sweep_status.error] %s: %s", type(e).__name__, str(e)[:200])
-        return {}
+    if locations is not None:
+        locations = [l for l in locations if l.get("enabled")]
+    else:
+        client = _get_client()
+        if not client:
+            return {}
+        try:
+            locations = (
+                client.table("search_locations")
+                .select("*")
+                .eq("company_id", company_id)
+                .eq("enabled", True)
+                .execute()
+            ).data or []
+        except Exception as e:
+            log.warning("[leads.sweep_status.error] %s: %s",
+                        type(e).__name__, str(e)[:200])
+            return {}
 
     now = datetime.now(timezone.utc)
     status: dict[str, dict] = {}
