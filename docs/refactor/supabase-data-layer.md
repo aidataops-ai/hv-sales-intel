@@ -289,3 +289,32 @@ reads move up into Phase 2, and the auth fix is stateless-first.
 Verification gates per phase: `pytest` (baseline: 20 pre-existing failures
 in auth/call_log/enrich/practices families), `npm run build`, and a
 before/after round-trip trace of the three §6 pages.
+
+## 8. Execution: parallel subtask waves (started 2026-08-15)
+
+Implementation runs as parallel agent sessions, each in an isolated
+worktree off `staging`, partitioned by **file ownership** (not by phase)
+so concurrent diffs never contend for the same regions. The orchestrator
+reviews each diff, merges to `staging`, and re-runs the gates between
+waves. Migrations are files only — nothing is applied to the live DB
+without an explicit go.
+
+**Wave 1 (all independent, in flight):**
+| Task | Owns |
+|---|---|
+| Client singleton + 15s timeout | `storage._get_client`, `api` anon client |
+| Auth stateless fast path (def, merged query, local JWT verify) | `src/auth.py`, settings field |
+| OpenAI client caching + timeouts | analyzer / email_gen / icp_parser / scriptgen / lead_qualifier |
+| Posting-description retention migration | new SQL file |
+| RLS initplan + FK index migration | new SQL file |
+| Frontend quick wins (parallel auth, dedup practices query, splice-not-refetch, poll backoff) | `web/` only |
+
+**Wave 2 (after Wave 1 merges; overlapping files, split by function):**
+truncation fixes (`lead_analytics`, admin usage/users, export counts
+chunk+bulk, dup checks) · egress hogs (`claim_unqualified` id-scan or
+anti-join RPC, matcher server-side city filter) · column diet + planned
+counts + facets aggregate.
+
+**Wave 3:** round-trip consolidation (api route reshapes, `add_tags` RPC,
+practice-detail join, session endpoint, bulk toggle route + frontend
+wiring).
