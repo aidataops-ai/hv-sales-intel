@@ -80,8 +80,47 @@ def _client():
     return _get_client()
 
 
+def city_spellings(label: str | None) -> set[str]:
+    """Raw `practices.city` spellings that would fold to `city_key(label)`.
+
+    `city_key` is a *fold* — it lowercases, strips every non-alphanumeric and
+    unifies St./Saint and Ft./Fort — so it cannot be sent to PostgREST, which
+    only does exact matching. This reverses the fold into the literal
+    spellings Places and the job boards plausibly stored, so the server-side
+    `in_` filter stays a SUPERSET of what the Python fold accepts: the
+    variants that actually differ between the two sources (case, the two
+    abbreviations, and hyphen-vs-space in 'Winston-Salem').
+
+    Being a fold, it is not fully reversible — a practice stored with some
+    other punctuation ('O Fallon' for "O'Fallon") folds to the same key but is
+    not enumerated here, so it would not be loaded. The consequence is a
+    MISSED link, never a wrong one: the posting falls to unmatched, and the
+    matcher is idempotent, so re-running fixes it. Add the variant here rather
+    than widening the filter if that is ever observed.
+    """
+    label = (label or "").strip()
+    if not label:
+        return set()
+    forms = {label, label.title()}
+    for form in list(forms):
+        # `\bSt\b\.?` and not `\bSt\.?\b`: after a literal '.' the next char
+        # is a space, and two non-word characters have no boundary between
+        # them, so the trailing \b would never fire.
+        forms.add(re.sub(r"\bSt\b\.?", "Saint", form))
+        forms.add(re.sub(r"\bSaint\b", "St.", form))
+        forms.add(re.sub(r"\bFt\b\.?", "Fort", form))
+        forms.add(re.sub(r"\bFort\b", "Ft.", form))
+    # 'Winston-Salem' vs 'Winston Salem': the fold strips the hyphen, exact
+    # matching does not. Abbreviated forms are skipped — 'St.-Petersburg' is
+    # not a spelling anything stores.
+    for form in [f for f in forms if "." not in f]:
+        forms.add(form.replace("-", " "))
+        forms.add(form.replace(" ", "-"))
+    return {f for f in forms if f}
+
+
 def load_practices_by_city(
-    client, only_cities: set[str] | None = None,
+    client, only_city_labels: set[str] | None = None,
 ) -> tuple[dict, dict]:
     """Service-line-tagged practices, indexed two ways. Each record:
     (practice_id, norm_name, name, service_line).
@@ -94,37 +133,69 @@ def load_practices_by_city(
         scope by. `link_postings` caps anything found this way at 'review'.
 
     One DB pass builds both from the same rows, so a state-less posting's
-    fallback costs nothing extra. `only_cities` restricts the load to a set
-    of city_keys (city-only — the practice's state isn't known until the row
-    loads) — the cron passes just the batch's cities so it never pages the
-    whole 20k-row universe.
+    fallback costs nothing extra.
+
+    `only_city_labels` is the set of RAW city labels off the postings being
+    matched (not folded `city_key`s — the fold is not expressible in
+    PostgREST). It is pushed into the query as `in_("city", ...)` over
+    `city_spellings` of each label, so the cron transfers only the cities its
+    batch touched instead of streaming the whole ~23 MB service-line-tagged
+    bank and discarding 99% of it in Python. `city_key` still filters what
+    survives, so the server filter only ever has to be a superset.
+
+    Filtering is on CITY ALONE, deliberately, even though `by_location` keys
+    on city+state: the posting's state scopes the *lookup*, but a practice's
+    state isn't known until its row arrives, and `by_city` must stay complete
+    for every loaded city or the NULL-state fallback path would silently lose
+    candidates. `only_city_labels=None` keeps the full-scan path that
+    `scripts/link_postings.py` uses for its bulk pass.
     """
     by_location: dict[str, list] = defaultdict(list)
     by_city: dict[str, list] = defaultdict(list)
-    page, size = 0, 1000
-    while True:
-        rows = (
-            client.table("practices")
-            .select("id,name,city,state,service_line")
-            .not_.is_("service_line", "null")
-            .range(page * size, (page + 1) * size - 1)
-            .execute().data
+
+    wanted: set[str] | None = None
+    label_batches: list[list[str] | None] = [None]
+    if only_city_labels is not None:
+        wanted = {city_key(c) for c in only_city_labels}
+        wanted.discard("")
+        # A set, not a list: two labels can share a spelling ('St. Petersburg'
+        # and 'Saint Petersburg' generate the same variants), and a literal
+        # repeated across two chunks would load its rows twice.
+        spellings = sorted(
+            {s for label in only_city_labels for s in city_spellings(label)}
         )
-        if not rows:
-            break
-        for r in rows:
-            ck = city_key(r.get("city"))
-            if only_cities is not None and ck not in only_cities:
-                continue
-            nn = normalise_employer(r.get("name"))
-            if not nn:
-                continue
-            record = (r["id"], nn, r.get("name"), r.get("service_line"))
-            by_city[ck].append(record)
-            by_location[location_key(r.get("city"), r.get("state"))].append(record)
-        if len(rows) < size:
-            break
-        page += 1
+        if not spellings:
+            return by_location, by_city
+        # Chunked so a wide batch cannot blow the request URL out. 200 labels
+        # is ~4 KB of query string, well inside every proxy's line limit.
+        label_batches = [spellings[i:i + 200] for i in range(0, len(spellings), 200)]
+
+    for labels in label_batches:
+        page, size = 0, 1000
+        while True:
+            q = (
+                client.table("practices")
+                .select("id,name,city,state,service_line")
+                .not_.is_("service_line", "null")
+            )
+            if labels is not None:
+                q = q.in_("city", labels)
+            rows = q.range(page * size, (page + 1) * size - 1).execute().data
+            if not rows:
+                break
+            for r in rows:
+                ck = city_key(r.get("city"))
+                if wanted is not None and ck not in wanted:
+                    continue
+                nn = normalise_employer(r.get("name"))
+                if not nn:
+                    continue
+                record = (r["id"], nn, r.get("name"), r.get("service_line"))
+                by_city[ck].append(record)
+                by_location[location_key(r.get("city"), r.get("state"))].append(record)
+            if len(rows) < size:
+                break
+            page += 1
     return by_location, by_city
 
 
@@ -194,10 +265,18 @@ def link_postings(
     if not postings:
         return {"candidates": 0, "auto": 0, "review": 0, "linked": 0, "cleared": 0}
 
-    # Load only the practices in the cities these postings live in — the cron
-    # scope stays cheap, the full pass loads (almost) everything anyway.
-    cities = {city_key(p.get("city")) for p in postings}
-    by_location, by_city = load_practices_by_city(client, only_cities=cities)
+    # The cron scope loads only the practices in the cities its batch touched,
+    # server-side (raw labels, not `city_key`s — PostgREST cannot run the
+    # fold; see `load_practices_by_city`). The full pass takes the unfiltered
+    # scan instead: its posting set spans essentially every city in the
+    # universe, so an `in_` list of that many labels would be a worse query
+    # than the single sequential read it replaces. Either way the index is
+    # keyed, so a posting only ever looks up its own city.
+    cities = (
+        None if posting_ids is None
+        else {p["city"] for p in postings if p.get("city")}
+    )
+    by_location, by_city = load_practices_by_city(client, only_city_labels=cities)
 
     matches: list[tuple] = []    # (posting_id, practice_id, conf, status)
     unmatched: list[int] = []
@@ -237,19 +316,33 @@ def link_postings(
         return stats
 
     now = datetime.now(timezone.utc).isoformat()
+    # Postings that resolved to the same practice at the same score and status
+    # get byte-identical payloads — several openings at one employer is the
+    # normal case, not the exception — so group and write them together,
+    # mirroring the chunked clear path below. One UPDATE per posting was the
+    # qualify cron's biggest write cost.
+    ids_by_payload: dict[tuple, list[int]] = {}
     for posting_id, practice_id, conf, status in matches:
-        try:
-            client.table("job_postings").update({
-                "practice_id": practice_id,
-                "match_confidence": conf,
-                "match_status": status,
-                "match_method": METHOD,
-                "matched_at": now,
-            }).eq("id", posting_id).execute()
-            stats["linked"] += 1
-        except Exception as e:
-            log.warning("[leads.match.write] posting=%s %s: %s",
-                        posting_id, type(e).__name__, str(e)[:160])
+        ids_by_payload.setdefault((practice_id, conf, status), []).append(posting_id)
+
+    for (practice_id, conf, status), ids in ids_by_payload.items():
+        payload = {
+            "practice_id": practice_id,
+            "match_confidence": conf,
+            "match_status": status,
+            "match_method": METHOD,
+            "matched_at": now,
+        }
+        for i in range(0, len(ids), 200):
+            chunk = ids[i:i + 200]
+            try:
+                client.table("job_postings").update(payload).in_(
+                    "id", chunk
+                ).execute()
+                stats["linked"] += len(chunk)
+            except Exception as e:
+                log.warning("[leads.match.write] postings=%d %s: %s",
+                            len(chunk), type(e).__name__, str(e)[:160])
 
     # Clear any prior name_city_v1 link (within this scope) that no longer
     # qualifies, so the relation never goes stale after a re-match.
