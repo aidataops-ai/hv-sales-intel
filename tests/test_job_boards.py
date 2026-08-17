@@ -204,3 +204,136 @@ def test_rows_match_the_job_postings_columns():
     }
     for row in _normalised():
         assert set(row) == expected
+
+
+# --------------------------- remote flag ------------------------------
+#
+# JobSpy 1.1.82 keyword-matches "remote" anywhere in the description, so
+# Indeed's own "Work Remotely: No" template produces is_remote=True. The
+# fixture is the verbatim stored description of posting 1137 (signal 57),
+# the measured case study; docs/specs/2026-08-17-remote-flag-hotfix.md.
+
+SIGNAL_57_DESCRIPTION = (
+    pathlib.Path(__file__).parent / "fixtures" / "indeed_posting_1137_description.txt"
+).read_text()
+
+SIGNAL_57_JOB = {
+    "title": "Medical Front Office Receptionist",
+    "attributes": [{"label": a} for a in (
+        "Full-time", "401(k)", "Dental insurance", "Health insurance",
+        "Life insurance", "Paid time off", "Vision insurance",
+        "Pulmonology", "Sleep Medicine",
+    )],
+    "location": {"formatted": {"long": "Jacksonville, FL, US"}},
+}
+
+
+def test_patch_targets_still_exist_in_jobspy():
+    """A jobspy upgrade that moves these names would silently un-patch us."""
+    import jobspy.indeed
+    import jobspy.linkedin
+
+    assert callable(jobspy.indeed.is_job_remote)
+    assert callable(jobspy.linkedin.is_job_remote)
+
+
+def test_upstream_jobspy_still_has_the_bug_and_the_patch_fixes_it():
+    """If upstream ever fixes the substring match, this fails and the whole
+    patch layer can come out (see the spec's Upstream section)."""
+    from jobspy.indeed.util import is_job_remote as upstream
+
+    assert upstream(SIGNAL_57_JOB, SIGNAL_57_DESCRIPTION) is True
+    assert job_boards._patched_indeed_is_remote(SIGNAL_57_JOB, SIGNAL_57_DESCRIPTION) is False
+
+
+def test_explicit_template_beats_even_a_remote_attribute():
+    job = dict(SIGNAL_57_JOB, attributes=SIGNAL_57_JOB["attributes"] + [{"label": "Remote"}])
+    assert job_boards._patched_indeed_is_remote(job, SIGNAL_57_DESCRIPTION) is False
+
+
+def test_patched_indeed_keeps_genuinely_remote_postings():
+    plain = {"title": "Medical Biller", "attributes": [], "location": {"formatted": {"long": "Miami, FL"}}}
+    assert job_boards._patched_indeed_is_remote(
+        dict(plain, location={"formatted": {"long": "Remote"}}), "Schedules patients.") is True
+    assert job_boards._patched_indeed_is_remote(
+        dict(plain, attributes=[{"label": "Remote"}]), "Schedules patients.") is True
+    assert job_boards._patched_indeed_is_remote(plain, "This is a fully remote position.") is True
+    assert job_boards._patched_indeed_is_remote(plain, "**Work Remotely**\n* Yes") is True
+    assert job_boards._patched_indeed_is_remote(
+        dict(plain, title="Remote Medical Scheduler"), "Schedules patients.") is True
+
+
+def test_patched_indeed_rejects_lookalike_remote_mentions():
+    plain = {"title": "Medical Biller", "attributes": [], "location": {"formatted": {"long": "Miami, FL"}}}
+    assert job_boards._patched_indeed_is_remote(
+        plain, "Our practice offers remote patient monitoring to patients.") is False
+    assert job_boards._patched_indeed_is_remote(
+        plain, "Please note this is not a remote position.") is False
+    assert job_boards._patched_indeed_is_remote(
+        dict(plain, title="Remote Patient Monitoring Coordinator"), "Runs our RPM program in office.") is False
+
+
+def test_patched_linkedin_matches_its_signature():
+    """LinkedIn passes (title, description, location); description is None
+    while `linkedin_fetch_description` stays off."""
+    assert job_boards._patched_linkedin_is_remote("Remote Receptionist (PRN)", None, "Waynesboro, TN") is True
+    assert job_boards._patched_linkedin_is_remote("Billing Specialist", None, "Clearwater, FL, US") is False
+    assert job_boards._patched_linkedin_is_remote("Remote Patient Monitoring Nurse", None, "Tampa, FL") is False
+
+
+def test_patch_application_is_idempotent():
+    import jobspy.indeed
+    import jobspy.linkedin
+
+    job_boards._patch_jobspy_remote_flags()
+    once = (jobspy.indeed.is_job_remote, jobspy.linkedin.is_job_remote)
+    job_boards._patch_jobspy_remote_flags()
+    assert (jobspy.indeed.is_job_remote, jobspy.linkedin.is_job_remote) == once
+    assert jobspy.indeed.is_job_remote._hvsi_patched
+    assert jobspy.linkedin.is_job_remote._hvsi_patched
+
+
+def test_normalise_row_overrides_a_false_board_flag():
+    row = job_boards.normalise_row(
+        "indeed",
+        {"title": "Medical Front Office Receptionist",
+         "company": "Respiratory Critical Care and Sleep Medicine Associates, Inc.",
+         "job_url": "https://www.indeed.com/viewjob?jk=06e883132e9a8d46",
+         "is_remote": True,
+         "description": SIGNAL_57_DESCRIPTION},
+    )
+    assert row["board_remote_flag"] is False
+
+
+def test_normalise_row_keeps_a_true_board_flag_without_contradiction():
+    row = job_boards.normalise_row(
+        "indeed",
+        {"title": "Remote Medical Biller", "company": "Bay Family Medicine",
+         "job_url": "https://www.indeed.com/viewjob?jk=0123456789abcdef",
+         "is_remote": True,
+         "description": "This is a fully remote position."},
+    )
+    assert row["board_remote_flag"] is True
+
+
+def test_extract_work_arrangement_reads_the_markdown_mangled_template():
+    assert job_boards.extract_work_arrangement(SIGNAL_57_DESCRIPTION) == (
+        "Work Remotely: No | Work Location: In person"
+    )
+    assert job_boards.extract_work_arrangement(
+        "Great team.\n\nWork Location: Hybrid remote in Miami, FL 33101"
+    ) == "Work Location: Hybrid remote in Miami, FL 33101"
+    assert job_boards.extract_work_arrangement("No template here.") is None
+
+
+def test_capped_description_keeps_the_work_arrangement_lines():
+    cap = lead_config.options()["description_max_chars"]
+    long_desc = ("Busy practice. " * ((cap // 15) + 20)).strip() + "\n\nWork Location: In person"
+    row = job_boards.normalise_row(
+        "indeed",
+        {"title": "Front Desk", "company": "Bay Family Medicine",
+         "job_url": "https://www.indeed.com/viewjob?jk=fedcba9876543210",
+         "description": long_desc},
+    )
+    assert len(row["description"]) <= cap
+    assert row["description"].endswith("Work Location: In person")
