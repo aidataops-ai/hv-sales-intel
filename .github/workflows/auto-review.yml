@@ -1,0 +1,21 @@
+name: Auto Review
+
+# The trigger half: on every new PR, post a @claude comment so claude.yml
+# picks it up and reviews. Must use a PAT — a comment posted by the default
+# GITHUB_TOKEN cannot trigger another workflow (GitHub anti-recursion rule).
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, reopened]
+
+jobs:
+  trigger-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment @claude on PR
+        env:
+          GH_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --repo ${{ github.repository }} \
+            --body "@claude review this PR"
