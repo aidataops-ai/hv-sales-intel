@@ -42,6 +42,162 @@ _SUFFIX = re.compile(
 _PUNCT = re.compile(r"[^a-z0-9\s]")
 _SPACE = re.compile(r"\s+")
 
+# JobSpy 1.1.82 decides `is_remote` by substring-matching "remote" anywhere in
+# the description, so Indeed's own "Work Remotely: No" template flags a posting
+# remote (67 provable false positives as of 2026-08-17; signal 57 was the case
+# study — docs/specs/2026-08-17-remote-flag-hotfix.md). Corrected in three
+# layers below: `_patch_jobspy_remote_flags` swaps both boards' classifiers at
+# scrape time, `normalise_row` re-checks the full pre-truncation description,
+# and `_capped_description` keeps the decisive template lines — which Indeed
+# renders at the very end, past the storage cap for a third of postings —
+# inside what gets stored.
+#
+# The separators allow up to 10 non-word chars because the HTML→markdown
+# conversion renders the template heading as "**Work Remotely**\n* No".
+_ONSITE_MARKERS = re.compile(
+    r"work\s+remotely[\W_]{0,10}no\b"
+    r"|work\s+location[\W_]{0,10}in[\s-]?person"
+    r"|\bno\s+remote\b|\bnot\s+(?:a\s+)?remote\b",
+    re.IGNORECASE,
+)
+_POSITIVE_REMOTE = re.compile(
+    r"\b(?:fully|100%)\s*remote\b"
+    r"|\bremote\s+(?:position|role|job|opportunity|work|only)\b"
+    r"|\bwork\s+from\s+home\b|\bwfh\b|\btelecommut"
+    r"|work\s+remotely[\W_]{0,10}yes\b",
+    re.IGNORECASE,
+)
+# "Remote Patient Monitoring Coordinator" names a service line, not a work mode.
+_TITLE_REMOTE = re.compile(
+    r"\bremote\b(?!\s+patient\s+monitoring)|\bwork\s+from\s+home\b|\bwfh\b",
+    re.IGNORECASE,
+)
+_REMOTE_KEYWORDS = ("remote", "work from home", "wfh")
+
+_WORK_REMOTELY = re.compile(r"work\s+remotely[\W_]{0,10}(yes|no)\b", re.IGNORECASE)
+_WORK_LOCATION = re.compile(r"work\s+location[\W_]{0,10}([^\n]{1,60})", re.IGNORECASE)
+
+
+def extract_work_arrangement(description: str | None) -> str | None:
+    """Pull Indeed's work-arrangement template answers out of a description.
+
+    "Work Remotely: No" / "Work Location: In person / Hybrid remote in …" are
+    the employer's explicit answers from the posting form — the decisive
+    work-mode evidence — and they sit exactly where both the storage cap and
+    the qualifier's head excerpt cut. Returned canonicalised ("Work Remotely:
+    No | Work Location: In person") for re-appending wherever they'd be lost.
+    """
+    if not description:
+        return None
+    parts = []
+    m = _WORK_REMOTELY.search(description)
+    if m:
+        parts.append(f"Work Remotely: {m.group(1).capitalize()}")
+    m = _WORK_LOCATION.search(description)
+    if m:
+        value = m.group(1).strip().strip("*").strip()
+        if value:
+            parts.append(f"Work Location: {value}")
+    return " | ".join(parts) or None
+
+
+def _patched_indeed_is_remote(job: dict, description: str) -> bool:
+    """Strict replacement for `jobspy.indeed.is_job_remote`.
+
+    The employer's explicit template answer beats everything; after that,
+    Indeed's structured attributes, the location, and the title are the
+    affirmative evidence. Bare "remote" substrings in the description no
+    longer count — that substring match is the upstream bug.
+    """
+    desc = description or ""
+    if _ONSITE_MARKERS.search(desc):
+        return False
+    in_attributes = any(
+        keyword in (attr.get("label") or "").lower()
+        for attr in (job.get("attributes") or [])
+        for keyword in _REMOTE_KEYWORDS
+    )
+    location = ((job.get("location") or {}).get("formatted") or {}).get("long") or ""
+    in_location = any(keyword in location.lower() for keyword in _REMOTE_KEYWORDS)
+    in_title = bool(_TITLE_REMOTE.search(job.get("title") or ""))
+    return in_attributes or in_location or in_title or bool(_POSITIVE_REMOTE.search(desc))
+
+
+def _patched_linkedin_is_remote(title, description, location) -> bool:
+    """Strict replacement for `jobspy.linkedin.is_job_remote` (its signature).
+
+    LinkedIn descriptions are only present when `linkedin_fetch_description`
+    is on (it is off today), so in practice this tightens the title/location
+    match; the description clauses matter the day fetching is enabled.
+    """
+    desc = description or ""
+    if _ONSITE_MARKERS.search(desc):
+        return False
+    loc = location.display_location() if hasattr(location, "display_location") else str(location or "")
+    in_location = any(keyword in loc.lower() for keyword in _REMOTE_KEYWORDS)
+    in_title = bool(_TITLE_REMOTE.search(str(title or "")))
+    return in_location or in_title or bool(_POSITIVE_REMOTE.search(desc))
+
+
+def _patch_jobspy_remote_flags() -> None:
+    """Swap both boards' `is_job_remote` for the strict versions, idempotently.
+
+    The patch targets are the names bound in `jobspy.indeed` and
+    `jobspy.linkedin` — the call sites import the function by name, so
+    patching the `util` modules they came from would miss them. Each wrapper
+    also runs the original and logs a shadow line on disagreement, so the
+    rollout can be reviewed from normal run logs (zero extra board traffic).
+    """
+    import jobspy.indeed
+    import jobspy.linkedin
+
+    if getattr(jobspy.indeed.is_job_remote, "_hvsi_patched", False):
+        return
+
+    orig_indeed = jobspy.indeed.is_job_remote
+    orig_linkedin = jobspy.linkedin.is_job_remote
+
+    def indeed_wrapper(job, description):
+        verdict = _patched_indeed_is_remote(job, description)
+        try:
+            upstream = orig_indeed(job, description)
+        except Exception:
+            upstream = verdict
+        if upstream != verdict:
+            log.info("[leads.remote_flag.shadow] source=indeed old=%s new=%s title=%r",
+                     upstream, verdict, (job.get("title") or "")[:80])
+        return verdict
+
+    def linkedin_wrapper(title, description, location):
+        verdict = _patched_linkedin_is_remote(title, description, location)
+        try:
+            upstream = orig_linkedin(title, description, location)
+        except Exception:
+            upstream = verdict
+        if upstream != verdict:
+            log.info("[leads.remote_flag.shadow] source=linkedin old=%s new=%s title=%r",
+                     upstream, verdict, str(title)[:80])
+        return verdict
+
+    indeed_wrapper._hvsi_patched = True
+    linkedin_wrapper._hvsi_patched = True
+    jobspy.indeed.is_job_remote = indeed_wrapper
+    jobspy.linkedin.is_job_remote = linkedin_wrapper
+
+
+def _capped_description(description: str, max_chars: int) -> str | None:
+    """Truncate to the storage cap without losing the work-arrangement lines."""
+    if not description:
+        return None
+    if len(description) <= max_chars:
+        return description
+    head = description[:max_chars]
+    arrangement = extract_work_arrangement(description)
+    if not arrangement or extract_work_arrangement(head) == arrangement:
+        return head
+    suffix = f"\n{arrangement}"
+    return description[: max_chars - len(suffix)].rstrip() + suffix
+
 
 def normalise_employer(name: str | None) -> str | None:
     """Fold an employer name to a comparable key.
@@ -180,6 +336,10 @@ def normalise_row(source: str, row: dict, target: dict | None = None) -> dict | 
     city, state = split_location(location_raw)
     remote_flag = row.get("is_remote")
     description = _clean(row.get("description"))
+    # Re-checked here on the full pre-truncation text so the flag is right
+    # even on a code path where `_patch_jobspy_remote_flags` never ran.
+    if remote_flag and description and _ONSITE_MARKERS.search(description):
+        remote_flag = False
 
     return {
         "source": source,
@@ -198,7 +358,7 @@ def normalise_row(source: str, row: dict, target: dict | None = None) -> dict | 
         "salary_max": _number(row.get("max_amount")),
         "salary_interval": _clean(row.get("interval")) or None,
         "board_remote_flag": bool(remote_flag) if remote_flag is not None else None,
-        "description": description[: opts["description_max_chars"]] or None,
+        "description": _capped_description(description, opts["description_max_chars"]),
         "search_term": target.get("term"),
         "search_location": target.get("location"),
         "service_line_hint": target.get("service_line"),
@@ -222,6 +382,8 @@ def search_jobs(
     LinkedIn down (ADR-02).
     """
     from jobspy import scrape_jobs
+
+    _patch_jobspy_remote_flags()
 
     params = lead_config.search_params()
     sources = list(sources or lead_config.enabled_sources())

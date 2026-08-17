@@ -10,13 +10,15 @@ The second test is not optional. Without it the qualifier keeps clinical roles
 at genuinely independent practices: employer right, lead unusable.
 
 The prompt below is ported from the evaluation prototype essentially verbatim.
-It has been through two revisions driven by *measured* failures — an earlier
+It has been through three revisions driven by *measured* failures — an earlier
 version that said "guess the work mode, defaulting to onsite" returned onsite
-for almost everything including postings explicitly flagged remote, and an
+for almost everything including postings explicitly flagged remote, an
 earlier version without TEST 2 kept dental hygienist roles at perfect-fit
-practices. Reword it from the ADR prose and those regressions come back. It is
-kept verbatim from hv-collector — company name included — so the measured
-behaviour is preserved exactly.
+practices, and a version that treated remote_flag as proof, which ratified
+JobSpy's keyword false positives ("Work Remotely: No" contains "remote";
+signal 57, docs/specs/2026-08-17-remote-flag-hotfix.md). Reword it from the
+ADR prose and those regressions come back. It is otherwise kept verbatim from
+hv-collector — company name included — so the measured behaviour is preserved.
 
 The model's field names (`practice_type`, `role_remotable`) are kept exactly as
 measured and mapped onto the `company_job_leads` columns in `parse_verdict`,
@@ -31,7 +33,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from src import lead_config, lead_store
+from src import job_boards, lead_config, lead_store
 from src.settings import settings
 
 log = logging.getLogger("hvsi.leads.qualifier")
@@ -59,6 +61,12 @@ def _posting_row(index: int, posting: dict) -> str:
         .replace("\n", " ")
         .replace('"', "'")[:excerpt_len]
     )
+    # Indeed renders the work-arrangement template at the end of the
+    # description — past the head excerpt — so the one decisive work-mode
+    # line is appended explicitly rather than widening the whole window.
+    arrangement = job_boards.extract_work_arrangement(posting.get("description"))
+    if arrangement and arrangement not in snippet:
+        snippet = f"{snippet} [{arrangement}]"
     salary_min = posting.get("salary_min")
     salary = (
         f"${salary_min:.0f}-{(posting.get('salary_max') or salary_min):.0f} "
@@ -103,7 +111,7 @@ For EACH posting produce an object with:
 - "external_id": the id exactly as given
 - "decision": "keep" or "discard"
 - "service_line": for KEEP, EXACTLY one of: {lines}. For discard, null.
-- "work_mode": "onsite", "remote", or "hybrid". Determine this from EVIDENCE, not assumption: if remote_flag=true, or the title/snippet says remote / work from home / telecommute, answer "remote". If it says hybrid, answer "hybrid". Only answer "onsite" when there is no remote or hybrid signal.
+- "work_mode": "onsite", "remote", or "hybrid". Determine this from EVIDENCE, not assumption: remote_flag is a board-derived hint with known false positives, not proof — an explicit statement in the snippet (e.g. "Work Remotely: No", "Work Location: In person") ALWAYS overrides it. If the title/snippet affirms remote / work from home / telecommute, or remote_flag=true stands uncontradicted, answer "remote". If the evidence says hybrid (e.g. "Work Location: Hybrid remote"), answer "hybrid". Only answer "onsite" when there is no remote or hybrid signal.
 - "role_remotable": true or false — does this role pass TEST 2?
 - "practice_type": one of "independent","group","system","dso","vet","agency","nonhealthcare"
 - "provider_count": integer estimate of providers, or null

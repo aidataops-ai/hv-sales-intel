@@ -345,3 +345,21 @@ def test_verdicts_are_matched_back_by_the_posting_id(monkeypatch, model_field):
     verdicts, stats = lead_qualifier.qualify_batch([_posting(id=1)])
     assert [v["posting_id"] for v in verdicts] == [1]
     assert stats["missing"] == 0
+
+
+def test_prompt_demotes_the_remote_flag_to_a_hint():
+    """2026-08-17 hotfix: remote_flag ratified JobSpy keyword false positives
+    ("Work Remotely: No" contains "remote") until the prompt stopped treating
+    it as proof. The pinned ADR-08 strings above must survive alongside this —
+    demoting the flag must not resurrect the default-onsite regression."""
+    prompt = lead_qualifier.build_prompt([_posting()])
+    assert "known false positives" in prompt
+    assert "ALWAYS overrides" in prompt
+
+
+def test_snippet_carries_the_work_arrangement_template():
+    """The template sits past the head excerpt; without the appended line the
+    model physically cannot see the evidence the work_mode call needs."""
+    description = ("Busy practice front desk. " * 20) + "\n* **Work Remotely**\n* No\n\nWork Location: In person"
+    prompt = lead_qualifier.build_prompt([_posting(description=description)])
+    assert "[Work Remotely: No | Work Location: In person]" in prompt
