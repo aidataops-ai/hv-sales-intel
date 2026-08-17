@@ -37,9 +37,9 @@ def _reset_client() -> None:
     _client_cache = None
 
 
-SYSTEM_PROMPT = """You are a cold outreach email writer for ApexVirtuals, a healthcare staffing and talent acquisition company.
+SYSTEM_PROMPT = """You are a cold outreach email writer for Health & Virtuals, a healthcare staffing and talent acquisition company.
 
-Given information about a healthcare practice (name, category, analysis summary, pain points, sales angles), write a short personalized cold email (80-140 words) to the practice from a ApexVirtuals rep.
+Given information about a healthcare practice (name, category, analysis summary, pain points, sales angles), write a short personalized cold email (80-140 words) to the practice from a Health & Virtuals rep.
 
 Reference ONE specific pain point and ONE specific sales angle from the analysis. End with a clear ask: a 15-minute call.
 
@@ -49,7 +49,7 @@ Return ONLY valid JSON with this exact structure, no other text:
   "body": "the email body as plain text with paragraph breaks as \\n\\n"
 }
 
-Tone: warm, direct, not pushy. First person ("I", "we at ApexVirtuals")."""
+Tone: warm, direct, not pushy. First person ("I", "we at Health & Virtuals")."""
 
 
 async def generate_email_draft(
@@ -113,7 +113,7 @@ def _mock_draft(name: str, category: str | None) -> dict:
         "subject": f"Staffing support for {name}",
         "body": (
             f"Hi there,\n\n"
-            f"I'm reaching out from ApexVirtuals — we specialize in staffing "
+            f"I'm reaching out from Health & Virtuals — we specialize in staffing "
             f"for {cat} practices. I noticed {name} could benefit from front-desk "
             f"or admin support, and wanted to introduce myself.\n\n"
             f"We place pre-vetted healthcare staff (front desk, medical assistants, "
@@ -123,6 +123,6 @@ def _mock_draft(name: str, category: str | None) -> dict:
             f"a fit for your practice?\n\n"
             f"Best,\n"
             f"[Your Name]\n"
-            f"ApexVirtuals"
+            f"Health & Virtuals"
         ),
     }

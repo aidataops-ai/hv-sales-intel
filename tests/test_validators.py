@@ -6,15 +6,15 @@ from src.validators import validate_email, validate_password
 # ---------- email ----------
 
 def test_validate_email_accepts_basic_company_address():
-    validate_email("sarah@apexvirtuals.com")
+    validate_email("sarah@healthandvirtuals.com")
 
 
 def test_validate_email_accepts_dots_and_plus():
-    validate_email("sarah.khan+team@apexvirtuals.com")
+    validate_email("sarah.khan+team@healthandvirtuals.com")
 
 
 def test_validate_email_accepts_uppercase_local_part():
-    validate_email("Sarah.Khan@apexvirtuals.com")
+    validate_email("Sarah.Khan@healthandvirtuals.com")
 
 
 def test_validate_email_accepts_any_domain():
@@ -22,17 +22,17 @@ def test_validate_email_accepts_any_domain():
     # address must be accepted regardless of domain.
     validate_email("sarah@anywhere.com")
     validate_email("sarah@example.org")
-    validate_email("sarah@apexvirtuals.com")
+    validate_email("sarah@healthandvirtuals.com")
 
 
 def test_validate_email_rejects_missing_at():
     with pytest.raises(ValueError, match="format"):
-        validate_email("sarahapexvirtuals.com")
+        validate_email("sarahhealthandvirtuals.com")
 
 
 def test_validate_email_rejects_double_dash_anywhere():
     with pytest.raises(ValueError, match="--"):
-        validate_email("sarah--khan@apexvirtuals.com")
+        validate_email("sarah--khan@healthandvirtuals.com")
 
 
 def test_validate_email_rejects_empty_string():
@@ -42,7 +42,7 @@ def test_validate_email_rejects_empty_string():
 
 def test_validate_email_rejects_malformed_tld():
     with pytest.raises(ValueError, match="format"):
-        validate_email("sarah@apexvirtuals.")
+        validate_email("sarah@healthandvirtuals.")
 
 
 # ---------- password ----------
@@ -89,21 +89,21 @@ from src.auth import is_bootstrap_admin
 
 
 def test_is_bootstrap_admin_matches_email_case_insensitive():
-    user = {"email": "Admin@ApexVirtuals.com"}
+    user = {"email": "Admin@HealthAndVirtuals.com"}
     with patch("src.auth.settings") as s:
-        s.bootstrap_admin_email = "admin@apexvirtuals.com"
+        s.bootstrap_admin_email = "admin@healthandvirtuals.com"
         assert is_bootstrap_admin(user) is True
 
 
 def test_is_bootstrap_admin_returns_false_for_non_bootstrap():
-    user = {"email": "other@apexvirtuals.com"}
+    user = {"email": "other@healthandvirtuals.com"}
     with patch("src.auth.settings") as s:
-        s.bootstrap_admin_email = "admin@apexvirtuals.com"
+        s.bootstrap_admin_email = "admin@healthandvirtuals.com"
         assert is_bootstrap_admin(user) is False
 
 
 def test_is_bootstrap_admin_returns_false_when_setting_empty():
-    user = {"email": "admin@apexvirtuals.com"}
+    user = {"email": "admin@healthandvirtuals.com"}
     with patch("src.auth.settings") as s:
         s.bootstrap_admin_email = ""
         assert is_bootstrap_admin(user) is False
@@ -111,5 +111,5 @@ def test_is_bootstrap_admin_returns_false_when_setting_empty():
 
 def test_is_bootstrap_admin_handles_user_without_email():
     with patch("src.auth.settings") as s:
-        s.bootstrap_admin_email = "admin@apexvirtuals.com"
+        s.bootstrap_admin_email = "admin@healthandvirtuals.com"
         assert is_bootstrap_admin({}) is False

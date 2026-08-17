@@ -135,7 +135,7 @@ export default function CallPrepPage() {
             Back to Map
           </button>
           <span className="font-serif text-lg font-bold text-teal-700 dark:text-teal-400 tracking-tight">
-            Apex&amp;Virtuals
+            Health &amp; Virtuals
           </span>
         </div>
         <div className="flex items-center gap-3">

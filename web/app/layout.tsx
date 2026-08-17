@@ -16,8 +16,8 @@ const jakarta = Plus_Jakarta_Sans({
 })
 
 export const metadata: Metadata = {
-  title: "Apex Sales Intel",
-  description: "Account discovery for Apex&Virtuals",
+  title: "H&V Sales Intel",
+  description: "Account discovery for Health & Virtuals",
 }
 
 // Set the theme class before paint to avoid a flash of the wrong theme.

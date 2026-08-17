@@ -39,7 +39,7 @@ def _reset_client() -> None:
     global _client_cache
     _client_cache = None
 
-SYSTEM_PROMPT = """You are a cold call script writer for ApexVirtuals.
+SYSTEM_PROMPT = """You are a cold call script writer for Health & Virtuals.
 
 The lead has already been analyzed. The user prompt below contains the
 analyzer's output for THIS specific practice — pain_points,
@@ -90,7 +90,7 @@ content for the section but never substitute generic filler):
    - Name EACH sales_angle and tie it explicitly to the matching
      pain_point. Example: "Your reviews mention long phone-hold
      times — our Virtual Scheduler picks up within two rings."
-   - Mention ApexVirtuals by name once.
+   - Mention Health & Virtuals by name once.
    - If the decision-maker's title is "Owner & Lead Dentist" or
      similar, tailor the framing to that role.
 
@@ -116,7 +116,7 @@ content for the section but never substitute generic filler):
      the follow-up to that exact address.
 
 GLOBAL RULES:
-- Use the rep's perspective ("I", "we at ApexVirtuals").
+- Use the rep's perspective ("I", "we at Health & Virtuals").
 - Names + phone numbers + emails from website_contacts MUST be
   copied verbatim — do not paraphrase or invent.
 - If pain_points / sales_angles are empty arrays, say so honestly
@@ -269,7 +269,7 @@ def _mock_script(
     elif website_doctor_name:
         doctor_greeting = f"Hi, may I speak with {website_doctor_name}?"
     else:
-        doctor_greeting = f"Hi, this is [Your Name] calling from ApexVirtuals about {name}."
+        doctor_greeting = f"Hi, this is [Your Name] calling from Health & Virtuals about {name}."
 
     # Build an "other contacts on file" line for the rep's reference.
     secondary_lines = []
@@ -294,7 +294,7 @@ def _mock_script(
                 "title": "Opening",
                 "icon": "phone",
                 "content": (
-                    f"{doctor_greeting} I'm reaching out because ApexVirtuals "
+                    f"{doctor_greeting} I'm reaching out because Health & Virtuals "
                     f"helps {cat_label} practices{city_phrase} with staffing solutions. "
                     f"Do you have a quick moment?{other_contacts_line}"
                 ),
@@ -313,7 +313,7 @@ def _mock_script(
                 "title": "Pitch",
                 "icon": "target",
                 "content": (
-                    f"At ApexVirtuals, we provide pre-vetted front desk staff, medical "
+                    f"At Health & Virtuals, we provide pre-vetted front desk staff, medical "
                     f"assistants, and administrative support specifically for practices like "
                     f"{name}. We handle recruiting, screening, and onboarding so you can focus "
                     "on patient care."
