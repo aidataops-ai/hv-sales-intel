@@ -35,7 +35,7 @@ function LoginForm() {
       className="w-full max-w-sm space-y-4 bg-white/80 dark:bg-night-800 p-8 rounded-2xl shadow-lg backdrop-blur"
     >
       <h1 className="font-serif text-2xl font-bold text-teal-700 dark:text-teal-400">Sign in</h1>
-      <p className="text-sm text-gray-500 dark:text-gray-400">Apex Sales Intel</p>
+      <p className="text-sm text-gray-500 dark:text-gray-400">H&amp;V Sales Intel</p>
 
       <div>
         <label className="block text-xs font-medium text-gray-600 dark:text-[#d9d9d9] mb-1">Email</label>

@@ -1,4 +1,4 @@
-# Apex Sales Intel — Solution Brief
+# H&V Sales Intel — Solution Brief
 
 **What it is.** A map-driven, multi-tenant lead-intelligence workbench. Any company signs up, uploads their Ideal Customer Profile in plain text, and immediately gets a personalized lead list — discovered, AI-scored, and worked through a CRM pipeline. The AI does the heavy lifting on research, call prep, first-touch drafting, and per-tenant scoring.
 

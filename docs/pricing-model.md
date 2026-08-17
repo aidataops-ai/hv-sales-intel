@@ -1,9 +1,9 @@
-# Apex Sales Intel — Pricing & Profitability Model
+# H&V Sales Intel — Pricing & Profitability Model
 
 **Status:** Strategy doc, not yet implemented in code.
 **Last updated:** 2026-05-25
 
-This document captures the pricing thesis for Apex Sales Intel. It pairs with `src/usage.py` (which records the variable costs that the unit economics below are derived from) and the `/admin/usage` dashboard.
+This document captures the pricing thesis for H&V Sales Intel. It pairs with `src/usage.py` (which records the variable costs that the unit economics below are derived from) and the `/admin/usage` dashboard.
 
 ---
 

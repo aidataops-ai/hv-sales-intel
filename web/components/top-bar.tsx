@@ -41,7 +41,7 @@ export default function TopBar({
     <header className="fixed top-0 left-0 right-0 z-20 h-14 flex items-center justify-between px-4 bg-white/70 dark:bg-night-800 backdrop-blur-md border-b border-gray-200/50 dark:border-white/10">
       <div className="flex items-center gap-2">
         <span className="font-serif text-lg font-bold text-teal-700 dark:text-teal-400 tracking-tight">
-          Apex&amp;Virtuals
+          Health &amp; Virtuals
         </span>
         <span className="text-xs text-gray-400 dark:text-gray-500 font-medium">Sales Intel</span>
       </div>
