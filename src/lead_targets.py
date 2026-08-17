@@ -270,6 +270,10 @@ def add_terms(company_id: str, rows: list[dict]) -> dict[str, int]:
     request instead of a half-applied add. One upsert call with
     `ignore_duplicates` handles existing pairs — no chunking or dedup
     pre-read needed at ~21 rows (contrast the old matrix's 200-row chunking).
+
+    `inserted` counts rows Postgres actually wrote: `ignore_duplicates=True`
+    is `ON CONFLICT DO NOTHING RETURNING *`, so a row that already existed
+    never reaches RETURNING (see `seed_search_targets`).
     """
     cleaned = [_clean_term_row(company_id, r) for r in rows]
     if not cleaned:
@@ -283,10 +287,10 @@ def add_terms(company_id: str, rows: list[dict]) -> dict[str, int]:
 
     inserted = 0
     try:
-        client.table("search_terms").upsert(
+        result = client.table("search_terms").upsert(
             cleaned, on_conflict="company_id,term", ignore_duplicates=True
         ).execute()
-        inserted = len(cleaned)
+        inserted = len(result.data or [])
     except Exception as e:
         log.warning("[leads.add_terms.error] %s: %s", type(e).__name__, str(e)[:200])
 
@@ -310,10 +314,10 @@ def add_locations(company_id: str, rows: list[dict]) -> dict[str, int]:
 
     inserted = 0
     try:
-        client.table("search_locations").upsert(
+        result = client.table("search_locations").upsert(
             cleaned, on_conflict="company_id,location", ignore_duplicates=True
         ).execute()
-        inserted = len(cleaned)
+        inserted = len(result.data or [])
     except Exception as e:
         log.warning("[leads.add_locations.error] %s: %s", type(e).__name__, str(e)[:200])
 

@@ -1,8 +1,10 @@
 import json
 import re
+import threading
 from datetime import datetime, timezone
 from typing import Any
 
+import httpx
 from supabase import ClientOptions, create_client
 
 from src.models import Practice
@@ -97,6 +99,11 @@ _PRACTICE_LIST_SELECT_CORE = f"{_PRACTICE_LIST_COLS}, {_PROFILE_EMBED}"
 # a new client rather than a stale one bound to the old creds.
 _client: Any = None
 _client_creds: tuple[str, str] | None = None
+# Sync route handlers run in FastAPI's threadpool, so several can reach the
+# check-then-set below at once and each build a client — one pool per racer,
+# which is what the memoization exists to prevent. Only construction takes
+# the lock; the already-cached path stays an unlocked read.
+_client_lock = threading.Lock()
 
 
 def _get_client():
@@ -120,14 +127,16 @@ def _get_client():
     # ever memoized alongside the exact creds that produced it.
     creds = (url, key)
     if _client is None or _client_creds != creds:
-        _client = create_client(
-            url,
-            key,
-            options=ClientOptions(
-                postgrest_client_timeout=POSTGREST_TIMEOUT_SECONDS,
-            ),
-        )
-        _client_creds = creds
+        with _client_lock:
+            if _client is None or _client_creds != creds:
+                _client = create_client(
+                    url,
+                    key,
+                    options=ClientOptions(
+                        postgrest_client_timeout=POSTGREST_TIMEOUT_SECONDS,
+                    ),
+                )
+                _client_creds = creds
     return _client
 
 
@@ -823,6 +832,13 @@ def query_practices_page(
 
     try:
         rows, total = _fetch(include_icp=True)
+    except httpx.TimeoutException:
+        # The 15s `POSTGREST_TIMEOUT_SECONDS` cap fired. Out before the
+        # missing-column heuristic below, which reads the exception's text:
+        # a timeout is not a half-migrated deployment, and retrying it
+        # without the icp_* columns would only stall for a second 15s.
+        # It propagates — the route layer is where a status code belongs.
+        raise
     except Exception as exc:
         if any(c in str(exc) for c in _OPTIONAL_COLUMNS):
             rows, total = _fetch(include_icp=False)

@@ -166,14 +166,34 @@ export function filterParams(
   return out
 }
 
+/**
+ * The one response check every path in this module has to agree on: a 401 is
+ * an expired session, and the only useful answer is the login page.
+ *
+ * It lives outside `leadFetch` because the mutations below deliberately don't
+ * go through it — they need the server's own `detail` string, which `leadFetch`
+ * throws away — and without this they surfaced a bare "Failed (401)" that no
+ * operator can act on, while the JSON readers on the same page redirected.
+ *
+ * Returns true once it has taken over navigation, so callers can bail out.
+ * No-ops on the server, where there is no location to send anyone to.
+ */
+function redirectOn401(res: Response): boolean {
+  if (res.status !== 401 || typeof window === "undefined") return false
+  const redirect = encodeURIComponent(window.location.pathname)
+  window.location.href = `/login?redirect=${redirect}`
+  return true
+}
+
+/** What a mutation reports while `redirectOn401` is already navigating away.
+ *  Nobody reads it — the page is leaving — but the caller's result shape still
+ *  needs an error string, and "Failed (401)" misdescribes what happened. */
+const SESSION_EXPIRED = "Session expired — signing in again."
+
 async function leadFetch<T>(path: string, init?: RequestInit): Promise<T> {
   if (!API_URL && !IS_PROD) throw new Error("NO_API")
   const res = await fetch(`${API_URL}${path}`, { ...init, credentials: "include" })
-  if (res.status === 401 && typeof window !== "undefined") {
-    const redirect = encodeURIComponent(window.location.pathname)
-    window.location.href = `/login?redirect=${redirect}`
-    throw new Error("API 401")
-  }
+  if (redirectOn401(res)) throw new Error("API 401")
   if (!res.ok) throw new Error(`API ${res.status}`)
   return res.json()
 }
@@ -284,6 +304,7 @@ export async function retriggerLeads(): Promise<RetriggerResult> {
       method: "POST",
       credentials: "include",
     })
+    if (redirectOn401(res)) return { ok: false, error: SESSION_EXPIRED }
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
       return { ok: false, error: body.detail || `Failed (${res.status})` }
@@ -304,6 +325,7 @@ export async function getPipelineState(): Promise<PipelineState | null> {
     const res = await fetch(`${API_URL}/api/admin/leads/pipeline`, {
       credentials: "include",
     })
+    if (redirectOn401(res)) return null
     if (!res.ok) return null
     const body = await res.json()
     return body.state === "paused" ? "paused" : "active"
@@ -326,6 +348,7 @@ export async function togglePipeline(
       method: "POST",
       credentials: "include",
     })
+    if (redirectOn401(res)) return { ok: false, error: SESSION_EXPIRED }
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
       return { ok: false, error: body.detail || `Failed (${res.status})` }
@@ -490,6 +513,7 @@ export async function addTerms(rows: NewTermRow[]): Promise<AddDimensionResult> 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rows }),
     })
+    if (redirectOn401(res)) return { ok: false, error: SESSION_EXPIRED }
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
       return { ok: false, error: body.detail || `Failed (${res.status})` }
@@ -511,6 +535,7 @@ export async function addLocations(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ rows }),
     })
+    if (redirectOn401(res)) return { ok: false, error: SESSION_EXPIRED }
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
       return { ok: false, error: body.detail || `Failed (${res.status})` }
@@ -600,6 +625,7 @@ export async function deleteTerm(id: number): Promise<DeleteDimensionResult> {
       method: "DELETE",
       credentials: "include",
     })
+    if (redirectOn401(res)) return { ok: false, error: SESSION_EXPIRED }
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
       return { ok: false, error: body.detail || `Failed (${res.status})` }
@@ -634,6 +660,7 @@ export async function deleteLocation(id: number): Promise<DeleteDimensionResult>
       method: "DELETE",
       credentials: "include",
     })
+    if (redirectOn401(res)) return { ok: false, error: SESSION_EXPIRED }
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
       return { ok: false, error: body.detail || `Failed (${res.status})` }

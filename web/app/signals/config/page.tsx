@@ -409,7 +409,7 @@ function StateRow({
   edits: ConfigEdits
 }) {
   const [addingCity, setAddingCity] = useState(false)
-  const [bulkBusy, setBulkBusy] = useState(false)
+  const group = useGroupEdits()
 
   // Statewide first, then cities alphabetically.
   const sorted = useMemo(
@@ -434,16 +434,20 @@ function StateRow({
   // actually flipped. A single tenant-scoped UPDATE answers with the rows it
   // changed, so the common case splices; the re-read is now only for the one
   // case that is still ambiguous (see below).
+  //
+  // Runs through `group.runBulk`, which parks every chip in this state for the
+  // duration — a chip clicked mid-flight would PATCH a row this batch is
+  // already rewriting.
   async function setAll(next: boolean) {
     const ids = locations.filter((l) => l.enabled !== next).map((l) => l.id)
     if (ids.length === 0) return
-    setBulkBusy(true)
-    const rows = await setLocationsEnabledBulk(ids, next)
-    // A short answer means some ids didn't update (stray or another
-    // tenant's); the server is the only one who knows the true state.
-    if (rows && rows.length === ids.length) edits.spliceLocations(rows)
-    else await edits.refresh()
-    setBulkBusy(false)
+    await group.runBulk(async () => {
+      const rows = await setLocationsEnabledBulk(ids, next)
+      // A short answer means some ids didn't update (stray or another
+      // tenant's); the server is the only one who knows the true state.
+      if (rows && rows.length === ids.length) edits.spliceLocations(rows)
+      else await edits.refresh()
+    })
   }
 
   async function addCity(city: string) {
@@ -460,16 +464,16 @@ function StateRow({
           {cityLocations.length === 1 ? "city" : "cities"} on
         </span>
         <div className="flex items-center gap-2 text-[11px]">
-          {bulkBusy && <Loader2 className="w-3 h-3 animate-spin text-gray-400" />}
+          {group.bulkBusy && <Loader2 className="w-3 h-3 animate-spin text-gray-400" />}
           <button
-            disabled={bulkBusy}
+            disabled={group.bulkDisabled}
             onClick={() => setAll(true)}
             className="text-teal-700 dark:text-teal-400 hover:underline disabled:opacity-50"
           >
             Enable all
           </button>
           <button
-            disabled={bulkBusy}
+            disabled={group.bulkDisabled}
             onClick={() => setAll(false)}
             className="text-gray-500 dark:text-gray-400 hover:underline disabled:opacity-50"
           >
@@ -485,6 +489,8 @@ function StateRow({
               key={loc.id}
               location={loc}
               isCatalog={catalogLocationSet.has(loc.location)}
+              disabled={group.rowsDisabled}
+              runEdit={group.runRow}
               edits={edits}
             />
           ))}
@@ -526,10 +532,15 @@ function StateRow({
 function LocationChip({
   location,
   isCatalog,
+  disabled,
+  runEdit,
   edits,
 }: {
   location: SearchLocation
   isCatalog: boolean
+  /** True while this state's bulk toggle is in flight — see `useGroupEdits`. */
+  disabled: boolean
+  runEdit: GroupEdits["runRow"]
   edits: ConfigEdits
 }) {
   const [busy, setBusy] = useState(false)
@@ -542,23 +553,27 @@ function LocationChip({
   // left showing a state the server never accepted.
   async function toggle() {
     setBusy(true)
-    const row = await setLocationEnabled(location.id, !location.enabled)
-    if (row) edits.spliceLocations([row])
-    else await edits.refresh()
+    await runEdit(async () => {
+      const row = await setLocationEnabled(location.id, !location.enabled)
+      if (row) edits.spliceLocations([row])
+      else await edits.refresh()
+    })
     setBusy(false)
   }
 
   async function remove() {
     setBusy(true)
     setError(null)
-    const res = await deleteLocation(location.id)
-    if (res.ok) {
-      // The row is gone — a shape change, so re-read.
-      await edits.refresh()
-    } else {
-      setError(res.error)
-      setBusy(false)
-    }
+    await runEdit(async () => {
+      const res = await deleteLocation(location.id)
+      if (res.ok) {
+        // The row is gone — a shape change, so re-read.
+        await edits.refresh()
+      } else {
+        setError(res.error)
+        setBusy(false)
+      }
+    })
   }
 
   return (
@@ -571,11 +586,13 @@ function LocationChip({
     >
       <button
         onClick={toggle}
-        disabled={busy}
+        disabled={busy || disabled}
         title={
-          isCatalog
-            ? `${label} — from the checked-in catalog; disable instead of removing`
-            : `${label} — click to ${location.enabled ? "disable" : "enable"}`
+          disabled
+            ? `${label} — waiting on this state's bulk change`
+            : isCatalog
+              ? `${label} — from the checked-in catalog; disable instead of removing`
+              : `${label} — click to ${location.enabled ? "disable" : "enable"}`
         }
         className={`disabled:opacity-50 ${!location.enabled ? "line-through decoration-gray-300" : ""}`}
       >
@@ -585,7 +602,7 @@ function LocationChip({
       {!isCatalog && (
         <button
           onClick={remove}
-          disabled={busy}
+          disabled={busy || disabled}
           title="Remove — not in the config catalog"
           className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition disabled:opacity-50"
         >
@@ -787,7 +804,14 @@ function TrackRow({
   edits: ConfigEdits
 }) {
   const [addingKw, setAddingKw] = useState(false)
-  const enabled = terms.some((t) => t.enabled)
+  const group = useGroupEdits()
+
+  // Three states, not two: a track with some keywords on and some off used to
+  // render identically to a fully enabled one, so disabling a single keyword
+  // left the track toggle claiming everything was still on.
+  const enabledCount = terms.filter((t) => t.enabled).length
+  const toggleState: ToggleState =
+    enabledCount === 0 ? "off" : enabledCount === terms.length ? "on" : "mixed"
 
   return (
     <div className="py-3">
@@ -800,6 +824,8 @@ function TrackRow({
                 key={t.id}
                 term={t}
                 isCatalog={catalogTermSet.has(t.term)}
+                disabled={group.rowsDisabled}
+                runEdit={group.runRow}
                 edits={edits}
               />
             ))}
@@ -812,7 +838,7 @@ function TrackRow({
           >
             + keyword
           </button>
-          <TrackToggle terms={terms} enabled={enabled} edits={edits} />
+          <TrackToggle terms={terms} state={toggleState} group={group} edits={edits} />
         </div>
       </div>
 
@@ -841,36 +867,46 @@ function TrackRow({
 function TermPill({
   term,
   isCatalog,
+  disabled,
+  runEdit,
   edits,
 }: {
   term: SearchTerm
   isCatalog: boolean
+  /** True while this track's toggle is in flight — see `useGroupEdits`. */
+  disabled: boolean
+  runEdit: GroupEdits["runRow"]
   edits: ConfigEdits
 }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   // Splices the PATCH response instead of re-reading the config — see
-  // `LocationChip.toggle` for the null/failure fallback.
+  // `LocationChip.toggle` for the null/failure fallback and for why the edit
+  // runs through the track's `runEdit`.
   async function toggle() {
     setBusy(true)
-    const row = await setTermEnabled(term.id, !term.enabled)
-    if (row) edits.spliceTerms([row])
-    else await edits.refresh()
+    await runEdit(async () => {
+      const row = await setTermEnabled(term.id, !term.enabled)
+      if (row) edits.spliceTerms([row])
+      else await edits.refresh()
+    })
     setBusy(false)
   }
 
   async function remove() {
     setBusy(true)
     setError(null)
-    const res = await deleteTerm(term.id)
-    if (res.ok) {
-      // The row is gone — a shape change, so re-read.
-      await edits.refresh()
-    } else {
-      setError(res.error)
-      setBusy(false)
-    }
+    await runEdit(async () => {
+      const res = await deleteTerm(term.id)
+      if (res.ok) {
+        // The row is gone — a shape change, so re-read.
+        await edits.refresh()
+      } else {
+        setError(res.error)
+        setBusy(false)
+      }
+    })
   }
 
   return (
@@ -883,11 +919,13 @@ function TermPill({
     >
       <button
         onClick={toggle}
-        disabled={busy}
+        disabled={busy || disabled}
         title={
-          isCatalog
-            ? `${term.term} — from the checked-in catalog; disable instead of removing`
-            : `${term.term} — click to ${term.enabled ? "disable" : "enable"}`
+          disabled
+            ? `${term.term} — waiting on this track's toggle`
+            : isCatalog
+              ? `${term.term} — from the checked-in catalog; disable instead of removing`
+              : `${term.term} — click to ${term.enabled ? "disable" : "enable"}`
         }
         className={`disabled:opacity-50 ${!term.enabled ? "line-through decoration-gray-300" : ""}`}
       >
@@ -897,7 +935,7 @@ function TermPill({
       {!isCatalog && (
         <button
           onClick={remove}
-          disabled={busy}
+          disabled={busy || disabled}
           title="Remove — not in the config catalog"
           className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-gray-400 hover:text-red-600 dark:hover:text-red-400 transition disabled:opacity-50"
         >
@@ -1011,25 +1049,35 @@ function AddKeywordForm({
  *  for why a short answer falls back to the full re-read. */
 function TrackToggle({
   terms,
-  enabled,
+  state,
+  group,
   edits,
 }: {
   terms: SearchTerm[]
-  enabled: boolean
+  state: ToggleState
+  group: GroupEdits
   edits: ConfigEdits
 }) {
-  const [busy, setBusy] = useState(false)
   async function toggle() {
-    const next = !enabled
+    // Unchanged from when this read a bare boolean: anything short of fully
+    // off turns the track off, so a mixed track disables rather than fills in.
+    const next = state === "off"
     const ids = terms.filter((t) => t.enabled !== next).map((t) => t.id)
     if (ids.length === 0) return
-    setBusy(true)
-    const rows = await setTermsEnabledBulk(ids, next)
-    if (rows && rows.length === ids.length) edits.spliceTerms(rows)
-    else await edits.refresh()
-    setBusy(false)
+    await group.runBulk(async () => {
+      const rows = await setTermsEnabledBulk(ids, next)
+      if (rows && rows.length === ids.length) edits.spliceTerms(rows)
+      else await edits.refresh()
+    })
   }
-  return <Toggle on={enabled} busy={busy} onClick={toggle} />
+  return (
+    <Toggle
+      state={state}
+      busy={group.bulkBusy}
+      disabled={group.bulkDisabled}
+      onClick={toggle}
+    />
+  )
 }
 
 // ---------------------------------------------------------------------------
@@ -1133,24 +1181,59 @@ function OverrideRow({
 // Shared bits
 // ---------------------------------------------------------------------------
 
-function Toggle({ on, busy, onClick }: { on: boolean; busy: boolean; onClick: () => void }) {
+/** What a group of rows adds up to. `mixed` is the state a plain boolean
+ *  couldn't express — some rows on, some off — which rendered as fully on. */
+type ToggleState = "on" | "off" | "mixed"
+
+/** `role="checkbox"` rather than `switch`: ARIA only allows `aria-checked`
+ *  to be `mixed` on a checkbox, and mixed is exactly the state this has to
+ *  announce. Visually it stays a switch — the knob parks half-way with a dash
+ *  through it over a faded track, so a partly-enabled group reads as partial
+ *  at a glance, not as on. */
+function Toggle({
+  state,
+  busy,
+  disabled,
+  onClick,
+}: {
+  state: ToggleState
+  busy: boolean
+  disabled: boolean
+  onClick: () => void
+}) {
+  const on = state === "on"
+  const mixed = state === "mixed"
   return (
     <button
       onClick={onClick}
-      disabled={busy}
+      disabled={busy || disabled}
+      role="checkbox"
+      aria-checked={mixed ? "mixed" : on}
       className={`relative inline-flex h-5 w-9 items-center rounded-full transition disabled:opacity-50 ${
-        on ? "bg-teal-600" : "bg-gray-300 dark:bg-white/15"
+        on
+          ? "bg-teal-600"
+          : mixed
+            ? "bg-teal-600/40"
+            : "bg-gray-300 dark:bg-white/15"
       }`}
-      title={on ? "Enabled — click to disable" : "Disabled — click to enable"}
+      title={
+        mixed
+          ? "Some keywords on — click to disable all"
+          : on
+            ? "Enabled — click to disable"
+            : "Disabled — click to enable"
+      }
     >
       {busy ? (
         <Loader2 className="w-3 h-3 animate-spin text-white mx-auto" />
       ) : (
         <span
-          className={`inline-block h-4 w-4 transform rounded-full bg-white transition ${
-            on ? "translate-x-4" : "translate-x-0.5"
+          className={`inline-flex h-4 w-4 items-center justify-center transform rounded-full bg-white transition ${
+            on ? "translate-x-4" : mixed ? "translate-x-2" : "translate-x-0.5"
           }`}
-        />
+        >
+          {mixed && <span className="block h-0.5 w-2 rounded-full bg-teal-600" />}
+        </span>
       )}
     </button>
   )
@@ -1337,4 +1420,64 @@ function groupBy<T>(items: T[], key: (t: T) => string): Record<string, T[]> {
  *  avoids an O(n) `.find()` per row when rendering the overrides list. */
 function useMemoMap<T, K>(items: T[], key: (t: T) => K): Map<K, T> {
   return useMemo(() => new Map(items.map((item) => [key(item), item])), [items, key])
+}
+
+/** The in-flight edits of one group — a state and its location chips, or a
+ *  track and its keyword pills. */
+interface GroupEdits {
+  /** True while the group's own bulk PATCH is in flight; drives its spinner. */
+  bulkBusy: boolean
+  /** Bulk controls are dead while any single row in the group is saving. */
+  bulkDisabled: boolean
+  /** Row controls are dead while the group's bulk PATCH is in flight. */
+  rowsDisabled: boolean
+  runBulk: (fn: () => Promise<void>) => Promise<void>
+  runRow: (fn: () => Promise<void>) => Promise<void>
+}
+
+/**
+ * Keeps a group's bulk toggle and its individual chips from racing.
+ *
+ * "Enable all" and a chip in the same state (or a track toggle and one of its
+ * keywords) write overlapping rows, and both splice their own response into
+ * local state — so clicking a chip while the bulk PATCH was still in flight
+ * left whichever answer landed last silently winning, with the panel showing a
+ * state neither request had actually produced. Each side now disables while
+ * the *other* is pending. Two chips still don't block each other: they touch
+ * different rows, so there is nothing to race.
+ *
+ * The row side counts rather than flags because a chip can vanish mid-request
+ * — `remove()` deletes its row and re-reads the config — and the count lives
+ * up here in the group, so the `finally` still lands after the chip unmounts
+ * and the bulk buttons can't stick disabled.
+ */
+function useGroupEdits(): GroupEdits {
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [rowsPending, setRowsPending] = useState(0)
+
+  const runBulk = useCallback(async (fn: () => Promise<void>) => {
+    setBulkBusy(true)
+    try {
+      await fn()
+    } finally {
+      setBulkBusy(false)
+    }
+  }, [])
+
+  const runRow = useCallback(async (fn: () => Promise<void>) => {
+    setRowsPending((n) => n + 1)
+    try {
+      await fn()
+    } finally {
+      setRowsPending((n) => n - 1)
+    }
+  }, [])
+
+  return {
+    bulkBusy,
+    bulkDisabled: bulkBusy || rowsPending > 0,
+    rowsDisabled: bulkBusy,
+    runBulk,
+    runRow,
+  }
 }

@@ -244,6 +244,38 @@ def test_add_terms_makes_one_upsert_call_for_a_valid_batch(monkeypatch):
     assert calls[0]["ignore_duplicates"] is True
 
 
+def test_add_terms_counts_only_the_rows_postgres_actually_inserted(monkeypatch):
+    """`ignore_duplicates=True` is ON CONFLICT DO NOTHING RETURNING *, so a
+    term the tenant already has never comes back. Reporting the batch size
+    would tell the operator two terms were added when only one was."""
+    calls = []
+    monkeypatch.setattr(
+        "src.storage._get_client",
+        lambda: _FakeUpsertClient(calls, returned=[{"id": 1, "term": "RN"}]),
+    )
+    result = lead_targets.add_terms(
+        "co",
+        [{"term": "RN", "service_line": "nursing"}, {"term": "LPN", "service_line": "nursing"}],
+    )
+    assert result == {"requested": 2, "inserted": 1}
+
+
+def test_add_locations_counts_only_the_rows_postgres_actually_inserted(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "src.storage._get_client",
+        lambda: _FakeUpsertClient(calls, returned=[]),
+    )
+    result = lead_targets.add_locations(
+        "co",
+        [
+            {"location": "Tampa, FL", "state": "FL", "granularity": "city"},
+            {"location": "Miami, FL", "state": "FL", "granularity": "city"},
+        ],
+    )
+    assert result == {"requested": 2, "inserted": 0}
+
+
 # --------------------------------------------------------------------------
 # sweep_status — accepts locations the caller already read.
 # --------------------------------------------------------------------------
@@ -815,11 +847,18 @@ class _FakeCompanies:
 
 class _FakeUpsertClient:
     """Records every upsert call so validation-before-write tests can assert
-    no write happened on a rejected batch."""
+    no write happened on a rejected batch.
 
-    def __init__(self, calls):
+    `execute` echoes back the rows it was handed, which is what PostgREST
+    RETURNs when every row is new. `returned` overrides that with a shorter
+    list — the shape `ignore_duplicates=True` produces when some of the
+    batch already existed and never reached RETURNING."""
+
+    def __init__(self, calls, returned=None):
         self.calls = calls
+        self.returned = returned
         self._table = None
+        self._rows: list = []
 
     def table(self, name):
         self._table = name
@@ -830,10 +869,12 @@ class _FakeUpsertClient:
             "table": self._table, "rows": rows,
             "on_conflict": on_conflict, "ignore_duplicates": ignore_duplicates,
         })
+        self._rows = rows
         return self
 
     def execute(self):
-        return type("R", (), {"data": None})()
+        data = self._rows if self.returned is None else self.returned
+        return type("R", (), {"data": data})()
 
 
 class _FakeDeleteClient:

@@ -11,6 +11,11 @@ class Settings(BaseSettings):
     # access token locally, dropping a GoTrue `auth.get_user` round trip from
     # every authenticated request. Left empty, auth falls back to that round
     # trip unchanged — so this is safe to roll out one environment at a time.
+    # The trade-off: a local verify never asks GoTrue, so a session revoked
+    # there (sign-out everywhere, password reset) still passes until the
+    # token's own `exp` — up to ~1h. The kill switch is `disabled_at` on the
+    # profile, which `get_current_user` re-reads on every request either way:
+    # ban a user by setting it, not by revoking their session.
     supabase_jwt_secret: str = ""
     openai_api_key: str = ""
     # gpt-4.1 is the recommended default for ICP analysis — significantly

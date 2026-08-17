@@ -335,6 +335,13 @@ create index if not exists idx_cem_message_id
 -- The backend uses the SERVICE-ROLE key for writes (bypasses RLS) and
 -- enforces company_id in code. RLS is defense-in-depth so a code bug
 -- that forgets a filter doesn't leak data via the anon client.
+--
+-- Every `auth.uid()` / `auth.role()` below is wrapped in a scalar subselect.
+-- Those functions are STABLE, not IMMUTABLE, so a bare call is re-executed
+-- per row the policy is checked against; `(select auth.uid())` makes the
+-- planner hoist it into an InitPlan that runs once per statement. The
+-- predicates are otherwise unchanged — see
+-- supabase/migrations/2026-08-15-rls-initplan-fk-indexes.sql.
 -- =============================================================================
 
 alter table companies                 enable row level security;
@@ -345,33 +352,36 @@ alter table company_email_messages    enable row level security;
 alter table practices                 enable row level security;
 -- credit_transactions RLS lives in the 2026-05-29-credits.sql migration
 -- alongside the consume_credits / add_credits / debit_credits RPCs.
+-- job_postings / company_job_leads / company_search_targets RLS lives in
+-- 2026-08-05-job-posting-leads.sql. Those policies carry the same hoisted
+-- form as the ones below.
 
 -- A user can see / edit a company iff they're a member of it.
 drop policy if exists "tenant_membership_companies" on companies;
 create policy "tenant_membership_companies"
   on companies for all
-  using (id in (select company_id from company_members where user_id = auth.uid()));
+  using (id in (select company_id from company_members where user_id = (select auth.uid())));
 
 drop policy if exists "tenant_membership_members" on company_members;
 create policy "tenant_membership_members"
   on company_members for all
-  using (user_id = auth.uid()
-         or company_id in (select company_id from company_members where user_id = auth.uid()));
+  using (user_id = (select auth.uid())
+         or company_id in (select company_id from company_members where user_id = (select auth.uid())));
 
 drop policy if exists "tenant_isolation_analyses" on company_practice_analyses;
 create policy "tenant_isolation_analyses"
   on company_practice_analyses for all
-  using (company_id in (select company_id from company_members where user_id = auth.uid()));
+  using (company_id in (select company_id from company_members where user_id = (select auth.uid())));
 
 drop policy if exists "tenant_isolation_state" on company_practice_state;
 create policy "tenant_isolation_state"
   on company_practice_state for all
-  using (company_id in (select company_id from company_members where user_id = auth.uid()));
+  using (company_id in (select company_id from company_members where user_id = (select auth.uid())));
 
 drop policy if exists "tenant_isolation_emails" on company_email_messages;
 create policy "tenant_isolation_emails"
   on company_email_messages for all
-  using (company_id in (select company_id from company_members where user_id = auth.uid()));
+  using (company_id in (select company_id from company_members where user_id = (select auth.uid())));
 
 -- `practices` is intentionally world-readable across tenants — same
 -- business should dedup to one row regardless of which company first
@@ -380,7 +390,7 @@ create policy "tenant_isolation_emails"
 drop policy if exists "practices_authenticated_read" on practices;
 create policy "practices_authenticated_read"
   on practices for select
-  using (auth.role() = 'authenticated' or auth.role() = 'service_role');
+  using ((select auth.role()) = 'authenticated' or (select auth.role()) = 'service_role');
 
 -- Backfill tags from existing state (idempotent — only writes empty tags)
 update practices set tags = coalesce((
@@ -394,3 +404,207 @@ update practices set tags = coalesce((
     case when status = 'CLOSED LOST' then 'CLOSED_LOST' end
   ]) t where t is not null
 ), '{}'::text[]) where tags = '{}'::text[];
+
+-- =============================================================================
+-- Instant Signals — target dimensions (added 2026-08-13)
+--
+-- Mirrors supabase/migrations/2026-08-13-target-dimensions.sql. That file's
+-- one-time backfill from `company_search_targets` is deliberately not
+-- reproduced here — it reconstructs these tables from the old matrix, which
+-- this file never defined.
+-- =============================================================================
+
+-- search_terms — WHAT to search (~21 rows per tenant).
+create table if not exists search_terms (
+  id           bigserial primary key,
+  company_id   uuid not null references companies(id) on delete cascade,
+  term         text not null,
+  service_line text not null,
+  enabled      boolean not null default true,
+  created_at   timestamptz not null default now(),
+  unique (company_id, term)
+);
+
+-- search_locations — WHERE to search (~31 rows per state per tenant).
+-- Per-source cursor + yield-decay streak are columns, not a child table, so
+-- claim stays one indexed select with no join.
+create table if not exists search_locations (
+  id                   bigserial primary key,
+  company_id           uuid not null references companies(id) on delete cascade,
+  location             text not null,            -- "Tampa, FL" / "Florida, USA"
+  state                char(2) not null,
+  granularity          text not null check (granularity in ('state','city')),
+  enabled              boolean not null default true,
+  last_indeed_at       timestamptz,
+  last_linkedin_at     timestamptz,
+  indeed_zero_streak   int not null default 0,
+  linkedin_zero_streak int not null default 0,
+  created_at           timestamptz not null default now(),
+  unique (company_id, location)
+);
+
+create index if not exists idx_locations_indeed
+  on search_locations (company_id, enabled, last_indeed_at nulls first);
+create index if not exists idx_locations_linkedin
+  on search_locations (company_id, enabled, last_linkedin_at nulls first);
+
+-- target_runs — sparse observational state: only cells that have actually
+-- run. Zero-row tripwire (ADR-02) + per-source yield.
+create table if not exists target_runs (
+  term_id        bigint not null references search_terms(id) on delete cascade,
+  location_id    bigint not null references search_locations(id) on delete cascade,
+  source         text not null,               -- 'indeed' | 'linkedin'
+  last_run_at    timestamptz,
+  last_row_count int,                          -- rows the board returned
+  last_new_count int,                          -- rows not already in job_postings
+  primary key (term_id, location_id, source)
+);
+
+-- target_overrides — rare hand-pinned per-cell offs.
+create table if not exists target_overrides (
+  term_id     bigint not null references search_terms(id) on delete cascade,
+  location_id bigint not null references search_locations(id) on delete cascade,
+  enabled     boolean not null,
+  primary key (term_id, location_id)
+);
+
+alter table search_terms      enable row level security;
+alter table search_locations  enable row level security;
+alter table target_runs       enable row level security;
+alter table target_overrides  enable row level security;
+
+drop policy if exists "tenant_isolation_search_terms" on search_terms;
+create policy "tenant_isolation_search_terms"
+  on search_terms for all
+  using (company_id in (
+    select company_id from company_members where user_id = (select auth.uid())
+  ));
+
+drop policy if exists "tenant_isolation_search_locations" on search_locations;
+create policy "tenant_isolation_search_locations"
+  on search_locations for all
+  using (company_id in (
+    select company_id from company_members where user_id = (select auth.uid())
+  ));
+
+-- target_runs / target_overrides have no company_id of their own; tenancy is
+-- reached through search_terms.
+drop policy if exists "tenant_isolation_target_runs" on target_runs;
+create policy "tenant_isolation_target_runs"
+  on target_runs for all
+  using (exists (
+    select 1 from search_terms t
+    join company_members m on m.company_id = t.company_id
+    where t.id = target_runs.term_id and m.user_id = (select auth.uid())
+  ));
+
+drop policy if exists "tenant_isolation_target_overrides" on target_overrides;
+create policy "tenant_isolation_target_overrides"
+  on target_overrides for all
+  using (exists (
+    select 1 from search_terms t
+    join company_members m on m.company_id = t.company_id
+    where t.id = target_overrides.term_id and m.user_id = (select auth.uid())
+  ));
+
+-- =============================================================================
+-- FK indexes on real join paths (added 2026-08-15)
+--
+-- Mirrors §2 of supabase/migrations/2026-08-15-rls-initplan-fk-indexes.sql;
+-- §1 of that file (the RLS initplan hoisting) is already reflected in the
+-- policy definitions above. Postgres does not auto-index the referencing side
+-- of a foreign key, and these columns are all read as join keys — they are
+-- also what makes `on delete cascade` do a seq scan per deleted parent row.
+-- The user-audit FK columns the advisor also flags are deliberately skipped;
+-- see that migration for the list and the reasoning.
+-- =============================================================================
+
+create index if not exists idx_target_runs_location
+  on target_runs (location_id);
+
+create index if not exists idx_target_overrides_location
+  on target_overrides (location_id);
+
+create index if not exists idx_cps_practice
+  on company_practice_state (practice_id);
+
+create index if not exists idx_cpa_practice
+  on company_practice_analyses (practice_id);
+
+-- practices.last_touched_by: GET /api/admin/users counts by this column, one
+-- HEAD count per profile, which the index makes an index-only scan.
+create index if not exists idx_practices_touched_by
+  on practices (last_touched_by);
+
+-- =============================================================================
+-- Posting-description retention (added 2026-08-15)
+--
+-- Mirrors supabase/migrations/2026-08-15-posting-retention.sql, which also
+-- schedules this function daily at 04:17 UTC via pg_cron
+-- (`prune-discarded-posting-descriptions`) and runs a one-off backfill —
+-- neither is reproduced here.
+--
+-- Requires `job_postings` / `company_job_leads` from
+-- 2026-08-05-job-posting-leads.sql, so apply that file before this block.
+--
+-- THE INVARIANT: a posting's description is pruned only when it has at least
+-- one verdict in `company_job_leads`, EVERY verdict on it across ALL tenants
+-- is `decision = 'discard'`, it has not been seen for `days` (default 30),
+-- and its description is not already null. An unjudged posting is never
+-- touched (the qualifier builds its prompt from `description`), and neither
+-- is one any tenant kept.
+--
+-- SECURITY DEFINER with a pinned `search_path`: `job_postings` has RLS
+-- enabled and pg_cron runs jobs as the database owner, so definer rights make
+-- the behaviour identical from cron and from the backend's service-role key.
+-- EXECUTE is revoked from everyone except service_role.
+-- =============================================================================
+
+create or replace function public.prune_discarded_posting_descriptions(
+  days int default 30
+)
+returns bigint
+language sql
+security definer
+set search_path = public, pg_temp
+as $fn$
+  with pruned as (
+    update job_postings p
+       set description = null
+     where p.description is not null
+       -- (3) Stale: the boards stopped returning it, so no upsert will write
+       -- the body back. A NULL `last_seen_at` (shouldn't happen — every
+       -- upsert stamps it) makes this NULL and excludes the row, which is the
+       -- safe direction.
+       --
+       -- `coalesce` and not just `greatest`: GREATEST *ignores* NULLs in
+       -- Postgres, so `greatest(days, 0)` would silently turn an explicit NULL
+       -- argument into a zero-day window and prune every judged posting.
+       and p.last_seen_at < now()
+                          - (greatest(coalesce(days, 30), 0) * interval '1 day')
+       -- (1) judged by someone …
+       and exists (
+         select 1 from company_job_leads l
+          where l.posting_id = p.id
+       )
+       -- (2) … and not one single non-discard verdict exists, in ANY tenant.
+       -- `is distinct from` (not `<>`) so a NULL decision counts as a reason
+       -- to keep the body, not as a discard.
+       and not exists (
+         select 1 from company_job_leads l
+          where l.posting_id = p.id
+            and l.decision is distinct from 'discard'
+       )
+    returning 1
+  )
+  select count(*) from pruned;
+$fn$;
+
+comment on function public.prune_discarded_posting_descriptions(int) is
+  'Nulls job_postings.description for postings unseen for N days whose every '
+  'company_job_leads verdict (all tenants) is a discard. Never touches an '
+  'unjudged or kept posting. Returns rows pruned. See the 500 MB free-tier cap '
+  'in docs/refactor/supabase-data-layer.md.';
+
+revoke all on function public.prune_discarded_posting_descriptions(int) from public;
+grant execute on function public.prune_discarded_posting_descriptions(int) to service_role;
