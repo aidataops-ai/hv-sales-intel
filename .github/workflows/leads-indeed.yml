@@ -12,6 +12,16 @@ name: Leads — Indeed sweep
 # the hour and silently skips congested slots (the previous on-the-hour cron
 # delivered ~18 of 24 runs/day).
 #
+# BOTH stages are bounded so the run always exits cleanly inside the 60-min
+# job timeout (2026-08-18: an unbounded qualify inherited a 2.7k-posting
+# backlog, overran the window, and the runner hard-killed it mid-batch).
+# collect gets 30 min; qualify is capped at 1000 postings (~20-25 min at the
+# observed ~47/min), leaving setup + preflight headroom. In steady state the
+# unqualified inflow is far below 1000/hr, so the cap only bites during a
+# backlog — which then drains at ~1000/run across successive hourly runs
+# instead of wedging every run into a timeout kill. For a manual fast drain,
+# dispatch with a bigger qualify-limit and a small budget-minutes.
+#
 # NOTE: GitHub only runs `schedule` triggers from the DEFAULT branch — this
 # schedule goes live when the file lands on main. On staging, dispatch it by
 # hand or use leads.yml.
@@ -22,7 +32,10 @@ on:
     inputs:
       budget-minutes:
         description: 'Collect wall-clock budget (minutes)'
-        default: '40'
+        default: '30'
+      qualify-limit:
+        description: 'Max postings to qualify this run'
+        default: '1000'
 
 concurrency:
   group: leads-indeed
@@ -57,5 +70,6 @@ jobs:
           python scripts/run_leads.py \
             --stage both \
             --sources indeed \
-            --budget-minutes "${{ github.event.inputs.budget-minutes || '40' }}" \
+            --budget-minutes "${{ github.event.inputs.budget-minutes || '30' }}" \
+            --limit "${{ github.event.inputs.qualify-limit || '1000' }}" \
             --verbose
