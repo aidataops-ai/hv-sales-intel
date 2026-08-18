@@ -65,6 +65,39 @@ def _track_code(track: str | None) -> str | None:
     return _TRACK_CODES.get((track or "").strip())
 
 
+# Our track name → the industry it serves. Sent as `Industry` so the receiver
+# can segment leads by vertical without re-deriving it from the track code.
+_TRACK_INDUSTRY = {
+    "Virtual Medical Assistant": "medical",
+    "Virtual Medical Scheduler": "medical",
+    "Virtual Medical Scribe": "medical",
+    "Virtual Dental Assistant": "dental",
+    "Virtual Chiropractic Assistant": "chiropractor",
+    "Virtual Wellness and Hospitality Assistant": "spas",
+    "Virtual Assisted Living Coordinator": "assisted_living",
+    "Virtual Home Health Operations Coordinator": "home_health",
+    "Virtual Legal Assistant": "legal",
+}
+
+
+def _track_industry(track: str | None) -> str | None:
+    """Our track name → the industry it serves; None if unmapped (omitted)."""
+    return _TRACK_INDUSTRY.get((track or "").strip())
+
+
+# Placeholder emails the enrichment writes when it finds nothing — these are not
+# real addresses and must be omitted rather than sent as the contact's Email.
+_EMAIL_PLACEHOLDERS = {"not found", "notfound", "n/a", "na", "none", "null",
+                       "unknown", "-", "--"}
+
+
+def _scrub_email(value):
+    """Return None for a placeholder email ("Not Found", …), else the value."""
+    if isinstance(value, str) and value.strip().lower() in _EMAIL_PLACEHOLDERS:
+        return None
+    return value
+
+
 def _org_size_bucket(value) -> str | None:
     """Integer headcount → the receiver's organization_size picklist bucket."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -158,9 +191,8 @@ def build_fields(
 
     Keys are the receiver's exact accepted field API names (its schema: a mix of
     PascalCase core fields and snake_case posting/scoring fields). NOT sent:
-    `Industry` (not evaluated on our side), `hiring_timeline` / `locations_count`
-    (no source in our system). Any of the three args may be None; missing values
-    are omitted.
+    `hiring_timeline` / `locations_count` (no source in our system). Any of the
+    three args may be None; missing values are omitted.
     """
     p = practice or {}
     pg = posting or {}
@@ -169,8 +201,11 @@ def build_fields(
     company = p.get("name") or pg.get("employer_name")
     first_name, last_name = _split_owner_name(p.get("owner_name"))
     phone_primary, phone_alt = _phones(p)
-    # The lead's qualified track is authoritative; the posting hint is the fallback.
-    track = ld.get("service_line") or pg.get("service_line_hint")
+    # The posting hint (search-term → roles.json mapping) is the ground-truth
+    # track and wins; the lead's qualifier-assigned service_line is the fallback.
+    # The qualifier reassigns ~30% of tracks, fogging the real search track, so
+    # the hint is authoritative here.
+    track = pg.get("service_line_hint") or ld.get("service_line")
     track_code = _track_code(track)
     pid = p.get("id")
 
@@ -183,7 +218,7 @@ def build_fields(
         "LastName": last_name or company,           # falls back to company
         "FirstName": first_name,                    # from owner_name; omit if none
         "Title": p.get("owner_title"),              # contact's role (Clay enrichment)
-        "Email": p.get("owner_email") or p.get("email"),
+        "Email": _scrub_email(p.get("owner_email") or p.get("email")),
         "Phone": phone_primary,
         "alternate_phone": phone_alt,
         "Country": "USA",                           # ISO alpha-3, hardcoded for now
@@ -192,7 +227,7 @@ def build_fields(
         "Website": p.get("website"),
 
         # --- Classification ---
-        # Industry: NOT sent (not evaluated on our side).
+        "Industry": _track_industry(track),          # industry the track serves
         "interested_tracks": [track_code] if track_code else None,   # Tracks UUID(s)
         "organization_size": _org_size_bucket(p.get("organization_size")),  # bucket
         # hiring_timeline / locations_count: no source in our system → omitted.
@@ -243,7 +278,7 @@ CSV_COLUMNS = [
     "Company", "LastName", "FirstName", "Title", "Email", "Phone",
     "alternate_phone", "Country", "City", "State", "Website",
     # Classification
-    "interested_tracks", "organization_size", "No_of_Providers__c",
+    "Industry", "interested_tracks", "organization_size", "No_of_Providers__c",
     "Lead_Type__c", "source", "lead_role", "practice_notes", "pain_points",
     # Posting
     "role_title", "posting_source", "posting_url", "posted_at",

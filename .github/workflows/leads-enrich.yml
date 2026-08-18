@@ -1,0 +1,80 @@
+name: Leads — Enrich & Push
+
+# The second half of the pipeline, run unattended twice a day (2026-08-18).
+# The sweeps (leads-indeed/leads-linkedin) end at qualify → practice-link; this
+# job runs AI analyze + call-script playbook + email draft + Clay enrichment on
+# new keeps, and pushes the already-enriched ones to Talent-DB.
+#
+# Two phases per run (push FIRST, enrich SECOND). Clay is asynchronous — a lead
+# enriched this run is pushed the NEXT run once Clay has called back, so two runs
+# ~12h apart cover freshness. Full design + rationale:
+# docs/specs/2026-08-18-enrich-push-automation.md
+#
+# 05:30 and 17:30 UTC (≈ 10:30 / 22:30 PKT) — offset from the :17 (Indeed) and
+# :41 (LinkedIn) sweeps and off GitHub's congested top-of-hour.
+#
+# NOTE: GitHub only runs `schedule` triggers from the DEFAULT branch — this goes
+# live when the file lands on main. On staging, dispatch it by hand.
+#
+# SECRETS: needs more than the sweeps — GOOGLE_MAPS_API_KEY (Places),
+# CLAY_TABLE_WEBHOOK_URL / CLAY_TABLE_API_KEY (Clay), TALENTDB_WEBHOOK_URL /
+# TALENTDB_WEBHOOK_SECRET (push). Add these to the repo secrets before enabling.
+on:
+  schedule:
+    - cron: '30 5,17 * * *'
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Select + print only, send/enrich nothing'
+        type: boolean
+        default: false
+      max-places-calls:
+        description: 'Phase B Places-call ceiling (spend cap)'
+        default: '250'
+      max-usd:
+        description: 'Phase B USD spend ceiling'
+        default: '25'
+
+concurrency:
+  group: leads-enrich
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run enrich + push
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          LEAD_COMPANY_ID: ${{ secrets.LEAD_COMPANY_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+          CLAY_TABLE_WEBHOOK_URL: ${{ secrets.CLAY_TABLE_WEBHOOK_URL }}
+          CLAY_TABLE_API_KEY: ${{ secrets.CLAY_TABLE_API_KEY }}
+          TALENTDB_WEBHOOK_URL: ${{ secrets.TALENTDB_WEBHOOK_URL }}
+          TALENTDB_WEBHOOK_SECRET: ${{ secrets.TALENTDB_WEBHOOK_SECRET }}
+        run: |
+          EXTRA="--yes"
+          if [ "${{ github.event.inputs.dry-run }}" = "true" ]; then
+            EXTRA=""
+            echo "DRY RUN — selecting and printing only."
+          fi
+          python scripts/run_enrich_push.py $EXTRA \
+            --max-places-calls "${{ github.event.inputs.max-places-calls || '250' }}" \
+            --max-usd "${{ github.event.inputs.max-usd || '25' }}"
