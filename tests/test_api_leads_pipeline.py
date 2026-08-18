@@ -251,3 +251,16 @@ def test_pipeline_controls_span_every_scheduled_workflow(
         "ok": True, "state": "active",
         "workflows": ["leads-indeed.yml", "leads-linkedin.yml"],
     }
+
+
+def test_default_toggle_set_covers_every_scheduled_workflow():
+    """The shipped default must cover all three scheduled workflows — the
+    source-split sweep pair plus the twice-daily enrich→push job — and must
+    NOT include the dispatch-only leads.yml (pausing should never disable the
+    manual escape hatch, and leads.yml's enable state is operator-managed)."""
+    from src.settings import Settings
+
+    default = Settings.model_fields["github_leads_scheduled_workflows"].default
+    files = [f.strip() for f in default.split(",") if f.strip()]
+    assert files == ["leads-indeed.yml", "leads-linkedin.yml", "leads-enrich.yml"]
+    assert "leads.yml" not in files

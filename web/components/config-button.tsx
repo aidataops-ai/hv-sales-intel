@@ -9,7 +9,7 @@ import { useAuth } from "@/lib/auth"
  * Link to the Instant Signals config page (`/signals/config`).
  *
  * Admin only, and rendered as nothing for everyone else — the same choice as
- * `RetriggerButton`: every write behind the page is `require_admin`, so a
+ * `PipelineToggleButton`: every write behind the page is `require_admin`, so a
  * non-admin gets no control that hints at an action they can't take.
  */
 export default function ConfigButton() {
