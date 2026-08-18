@@ -11,3 +11,6 @@ __pycache__/
 
 # Source ICP PDFs — internal reference, not for the demo repo
 ICP Documents/
+
+# Leadset working files (build_leadset / run_enrich_push generate these per run)
+leadset-*.json
