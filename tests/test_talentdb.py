@@ -181,7 +181,7 @@ def test_industry_track_code_org_bucket_and_notes():
         _practice(organization_size=120, notes="called twice",
                   pain_points='["long waits","turnover"]'),
         _posting(), _lead(service_line="Virtual Medical Scheduler"))
-    assert "Industry" not in fields                              # never sent
+    assert fields["Industry"] == "medical"                       # derived from the track
     # interested_tracks sends the Tracks UUID code, not a label/slug.
     assert fields["interested_tracks"] == ["45c76242-e585-11f0-831c-2eb420401434"]
     assert fields["organization_size"] == "50_250"               # bucket
@@ -194,6 +194,35 @@ def test_interested_tracks_omitted_when_track_unmapped():
     fields = talentdb.build_fields(_practice(), _posting(),
                                    _lead(service_line="Made Up Track"))
     assert "interested_tracks" not in fields
+    assert "Industry" not in fields             # unmapped track → no industry either
+
+
+def test_track_prefers_posting_hint_over_lead_service_line():
+    """The posting's search-term hint is ground truth; the qualifier's reassigned
+    service_line is only the fallback (the qualifier fogs ~30% of tracks)."""
+    fields = talentdb.build_fields(
+        _practice(),
+        _posting(service_line_hint="Virtual Dental Assistant"),
+        _lead(service_line="Virtual Medical Scheduler"))
+    # hint (dental) wins over the lead's reassigned scheduler track.
+    assert fields["interested_tracks"] == ["88bcb836-c0aa-11f0-a242-325255367c63"]
+    assert fields["Industry"] == "dental"
+    # With no hint, it falls back to the lead's service_line.
+    fallback = talentdb.build_fields(
+        _practice(), _posting(), _lead(service_line="Virtual Dental Assistant"))
+    assert fallback["interested_tracks"] == ["88bcb836-c0aa-11f0-a242-325255367c63"]
+
+
+def test_email_placeholder_is_scrubbed():
+    """A "Not Found" placeholder is dropped rather than sent as the contact email."""
+    assert "Email" not in talentdb.build_fields(
+        _practice(owner_email="Not Found", email=None), None)
+    # case/space-insensitive; other placeholders too.
+    assert "Email" not in talentdb.build_fields(
+        _practice(owner_email="  N/A ", email=None), None)
+    # A real address still passes through untouched.
+    assert talentdb.build_fields(
+        _practice(owner_email="ceo@acme.com"), None)["Email"] == "ceo@acme.com"
 
 
 def test_title_from_owner_title():
