@@ -9,16 +9,17 @@ import { getPipelineState, togglePipeline, type PipelineState } from "@/lib/lead
 /**
  * Pause or resume the scheduled lead pipeline.
  *
- * The backend flips the GitHub Actions workflow (`.github/workflows/leads.yml`)
- * between enabled and disabled — pausing also cancels any queued or in-flight
- * runs, so "stop" means nothing is spending credits after the click. While
- * paused, the hourly cron doesn't fire and manual dispatches are rejected by
- * GitHub, so "Run pipeline" won't work until it's resumed.
+ * The backend flips the scheduled GitHub Actions workflows (the per-board
+ * pair, `github_leads_scheduled_workflows`) between enabled and disabled —
+ * pausing also cancels any queued or in-flight runs, so "stop" means nothing
+ * is spending credits after the click. The manual dispatch workflow is NOT
+ * in that set, so "Run pipeline" keeps working while paused — pause stops
+ * the automatic spend, not the operator.
  *
  * Admin only, same as RetriggerButton: non-admins get nothing rendered. The
  * click opens a confirm step rather than acting immediately — pausing silently
  * would starve the board of fresh signals, and an accidental resume restarts
- * the hourly credit spend.
+ * the scheduled credit spend.
  */
 export default function PipelineToggleButton() {
   const { user } = useAuth()
@@ -73,7 +74,7 @@ export default function PipelineToggleButton() {
                     }`
                   : ""
               }.`
-            : "Pipeline resumed — the hourly schedule is back on.",
+            : "Pipeline resumed — the scheduled sweeps are back on.",
       })
       setTimeout(() => setOpen(false), 1800)
     } else {
@@ -105,8 +106,8 @@ export default function PipelineToggleButton() {
         <div className="absolute right-0 mt-1 w-72 bg-white dark:bg-night-800 rounded-lg border border-gray-200 dark:border-white/10 shadow-md z-30 overflow-hidden p-4 space-y-3">
           <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-snug">
             {paused
-              ? "Re-enables the GitHub Actions workflow so the hourly collect + qualify sweep runs again."
-              : "Disables the GitHub Actions workflow and cancels any run in flight. No sweeps — scheduled or manual — until you resume."}
+              ? "Re-enables the scheduled workflows so the collect + qualify sweeps run again."
+              : "Disables the scheduled workflows and cancels any run in flight. Run pipeline still works for manual sweeps."}
           </p>
 
           <button

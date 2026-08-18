@@ -20,6 +20,26 @@ interface EmailPanelProps {
   onPracticeUpdate: (next: Partial<Practice>) => void
 }
 
+/**
+ * Splice server-returned rows into the thread instead of refetching it.
+ * The thread is ordered oldest-first and every row these endpoints return is
+ * newly inserted, so appending preserves order. De-duped by id, and tolerant
+ * of a null row (the insert helpers return null when the DB is unreachable).
+ */
+function appendMessages(
+  prev: EmailMessage[],
+  incoming: readonly (EmailMessage | null | undefined)[],
+): EmailMessage[] {
+  const seen = new Set(prev.map((m) => m.id))
+  const fresh: EmailMessage[] = []
+  for (const m of incoming) {
+    if (!m || seen.has(m.id)) continue
+    seen.add(m.id)
+    fresh.push(m)
+  }
+  return fresh.length > 0 ? [...prev, ...fresh] : prev
+}
+
 export default function EmailPanel({ practice, onPracticeUpdate }: EmailPanelProps) {
   const [draft, setDraft] = useState<EmailDraft>({ subject: "", body: "" })
   const [messages, setMessages] = useState<EmailMessage[]>([])
@@ -58,8 +78,8 @@ export default function EmailPanel({ practice, onPracticeUpdate }: EmailPanelPro
   }
 
   async function handleSend() {
-    await sendEmail(practice.place_id)
-    await loadMessages()
+    const sent = await sendEmail(practice.place_id)
+    setMessages((prev) => appendMessages(prev, [sent]))
     onPracticeUpdate({ status: "CONTACTED" })
     setDraft({ subject: "", body: "" })
   }
@@ -69,18 +89,18 @@ export default function EmailPanel({ practice, onPracticeUpdate }: EmailPanelPro
     try {
       const result = await pollEmailReplies(practice.place_id)
       if (result.new_messages.length > 0) {
+        setMessages((prev) => appendMessages(prev, result.new_messages))
         onPracticeUpdate({ status: "FOLLOW UP" })
       }
-      await loadMessages()
     } finally {
       setIsPolling(false)
     }
   }
 
   async function handleMarkReplied() {
-    await markEmailReplied(practice.place_id)
+    const marked = await markEmailReplied(practice.place_id)
+    setMessages((prev) => appendMessages(prev, [marked]))
     onPracticeUpdate({ status: "FOLLOW UP" })
-    await loadMessages()
   }
 
   return (

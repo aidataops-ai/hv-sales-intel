@@ -6,6 +6,17 @@ class Settings(BaseSettings):
     supabase_url: str = ""
     supabase_key: str = ""                    # anon key (legacy name preserved)
     supabase_service_role_key: str = ""       # admin client for auth verification
+    # Legacy HS256 JWT secret (Supabase dashboard → Project Settings → API →
+    # JWT Settings). Set it and `get_current_user` verifies each request's
+    # access token locally, dropping a GoTrue `auth.get_user` round trip from
+    # every authenticated request. Left empty, auth falls back to that round
+    # trip unchanged — so this is safe to roll out one environment at a time.
+    # The trade-off: a local verify never asks GoTrue, so a session revoked
+    # there (sign-out everywhere, password reset) still passes until the
+    # token's own `exp` — up to ~1h. The kill switch is `disabled_at` on the
+    # profile, which `get_current_user` re-reads on every request either way:
+    # ban a user by setting it, not by revoking their session.
+    supabase_jwt_secret: str = ""
     openai_api_key: str = ""
     # gpt-4.1 is the recommended default for ICP analysis — significantly
     # more accurate than gpt-4o on multi-criteria classification.
@@ -18,11 +29,61 @@ class Settings(BaseSettings):
     qualifier_model: str = "gpt-5.6-terra"
     qualifier_reasoning_effort: str = "medium"
     qualifier_batch_size: int = 20
-    # Stage batch sizes. Both stages run as serverless invocations behind
-    # /api/index.py, so a full sweep can't fit one call — each drains a
-    # bounded slice and is safe to re-run (ADR-09).
-    lead_collect_batch: int = 40
+    # Qualify's batch size. It runs as a serverless invocation behind
+    # /api/index.py, so a full drain can't fit one call — it takes a
+    # bounded slice and is safe to re-run (ADR-09). Collect's equivalent
+    # (`lead_collect_batch`, a target COUNT) was retired with the matrix
+    # model — collect is now a wall-clock budget, see `lead_budget_minutes`.
     lead_qualify_batch: int = 60
+    # Instant Signals target-dimension collector
+    # (docs/refactor/instant-signals-targets.md). Wall-clock budget replaces the old
+    # `--targets N` count now that the pipeline runs on GitHub Actions
+    # instead of a serverless invocation; per-source staleness thresholds
+    # and window buffer drive the adaptive search window; the zero-streak
+    # cap bounds how far yield decay can push a dead location's threshold.
+    lead_budget_minutes: int = 40
+    lead_indeed_stale_hours: int = 6
+    lead_linkedin_stale_hours: int = 6
+    # LinkedIn runs two tiers. Statewide rows are the INSTANT tier: a
+    # statewide query already sees postings from every city, so a fresh
+    # posting is caught within `lead_linkedin_stale_hours` above (~63min of
+    # scrape per full statewide cycle). City rows are the RECALL tier: they
+    # only add postings the statewide query dropped past the board's
+    # ~40-results-per-query cap in dense markets, so they rotate on the much
+    # slower `lead_linkedin_city_stale_hours` wheel — a full city pass is
+    # ~33h of scrape (33 terms x 155 cities x measured 23s/term), which a
+    # dedicated LinkedIn workflow turns in roughly 4 days. Statewide-only
+    # (`True`) is the escape hatch that drops the city tier entirely — the
+    # 2026-08-13 shape, adopted when a UNIFORM threshold across all LinkedIn
+    # rows collapsed full-matrix freshness to ~3 days; the tier split is
+    # what makes city coverage affordable without giving that back.
+    lead_linkedin_statewide_only: bool = False
+    lead_linkedin_city_stale_hours: int = 72
+    lead_window_buffer_hours: int = 12
+    lead_zero_streak_cap: int = 4
+    # Phase-reserve + fit-check (Phase 4 livelock fix): when both boards are
+    # enabled, Indeed's phase is capped at this fraction of the collect
+    # budget so a flood of never-swept locations (e.g. right after a
+    # re-seed) can never fully starve LinkedIn's phase — LinkedIn always
+    # gets the rest of the budget, even if Indeed still has due locations
+    # left. A single enabled source gets the whole budget; there is nothing
+    # to reserve against.
+    lead_indeed_budget_fraction: float = 0.6
+    # Conservative per-term cost estimate used ONLY until this run has its
+    # own observed average (from job_boards' `elapsed_s`) — picking a
+    # location whose full term list can't fit in what's left of the phase
+    # budget is the other half of the livelock fix: it stops the collector
+    # from repeatedly claiming, partially sweeping, and abandoning the same
+    # stalest location every run without ever finishing it.
+    lead_indeed_est_term_s: float = 6.0
+    lead_linkedin_est_term_s: float = 25.0
+    # The HTTP cron route's own budget — much smaller than
+    # `lead_budget_minutes`, which is the GitHub Actions runner's ceiling.
+    # This route still runs inside a serverless invocation with its own
+    # wall-clock limit, so its default has to leave headroom for the qualify
+    # stage and function overhead rather than spending the whole invocation
+    # on collect.
+    lead_cron_budget_minutes: int = 10
     # Shared secret for the cron stages, matching the existing webhook
     # pattern. Empty disables the cron routes outright rather than leaving
     # them open.
@@ -42,6 +103,14 @@ class Settings(BaseSettings):
     github_token: str = ""
     github_repo: str = "aidataops-ai/hv-sales-intel"
     github_leads_workflow: str = "leads.yml"
+    # The workflows the pause/resume toggle controls — the SCHEDULED pair
+    # (source-split 2026-08-14), comma-separated. Deliberately excludes
+    # `github_leads_workflow` (leads.yml, dispatch-only): pausing stops the
+    # automatic spend but leaves the manual "Run pipeline" dispatch working.
+    # Workflow enable/disable is repo-level, not per-branch — listing a
+    # workflow that carries another environment's cron here would pause that
+    # environment too.
+    github_leads_scheduled_workflows: str = "leads-indeed.yml,leads-linkedin.yml"
     github_workflow_ref: str = "main"
 
     # Bootstrap admin (seeded on startup if profiles has zero admins)

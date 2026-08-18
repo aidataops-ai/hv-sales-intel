@@ -90,6 +90,44 @@ LEAD_LIST_SELECT = (
     f"{_POSTING_LIST_COLS}, practice:practices({_PRACTICE_COLS}))"
 )
 
+# The CSV export is a pure Talent-DB mapping: every column below is read by
+# `talentdb.build_fields` (whose keys ARE `talentdb.CSV_COLUMNS`) or by the
+# route's `_posting_from_lead`. Two consequences worth spelling out:
+#
+# - `description` STAYS. It is the CSV's `posting_description` column — the one
+#   heavy column the export genuinely needs. The lead `draft` (up to 8 KB) does
+#   not, and neither do reason / notes / model / the workflow timestamps.
+# - The practice embed shrinks to `place_id`. The export route immediately
+#   re-fetches the full practice rows by place_id (`get_practices_by_place_ids`)
+#   because build_fields needs the analysis/CRM columns the embed never carried
+#   — so every other embedded column was fetched and then thrown away.
+#
+# Filter columns (`export_count`, the posting's `salary_min` / `practice_id`)
+# are deliberately absent: PostgREST filters against the table, not the
+# projection.
+_LEAD_EXPORT_COLS = "id, posting_id, service_line, provider_count"
+_POSTING_EXPORT_COLS = (
+    "source, url, title, employer_name, city, state, posted_at, "
+    "board_remote_flag, description, search_term, search_location, "
+    "service_line_hint, first_seen_at, last_seen_at, "
+    "match_confidence, match_status"
+)
+LEAD_EXPORT_SELECT = (
+    f"{_LEAD_EXPORT_COLS}, posting:job_postings!inner("
+    f"{_POSTING_EXPORT_COLS}, practice:practices(place_id))"
+)
+
+# The same posting columns, fetched directly rather than through a lead — so
+# this one needs the `id` the export reads off the lead's `posting_id`.
+# `get_posting` is the only reader, and it exists for exactly one job: the
+# practice-detail Import Lead button, which hands the row to
+# `talentdb.build_fields`. So this list is "what build_fields reads", and the
+# test in tests/test_lead_store.py holds it to that. What it drops is what
+# build_fields never touches: `external_id`, `employer_name_norm`,
+# `location_raw`, the salary triple, `practice_id`, `match_method`,
+# `matched_at`.
+_POSTING_TALENTDB_COLS = f"id, {_POSTING_EXPORT_COLS}"
+
 _PAGE = 1000
 
 
@@ -177,9 +215,56 @@ def upsert_postings(rows: list[dict]) -> int:
     return written
 
 
+def existing_external_ids(source: str, external_ids: list[str]) -> set[str]:
+    """Which of these `(source, external_id)` pairs are already in `job_postings`.
+
+    The novelty metric instant-signals is built around (plan §3's whole point
+    is killing redundant re-fetches) needs a NEW-vs-seen split that
+    `upsert_postings` cannot provide on its own: PostgREST's upsert returns
+    every affected row, inserted or updated alike, so its return count is
+    "rows written", not "rows that were new". The collector calls this once
+    per search — before the upsert — and treats anything not in the returned
+    set as new.
+    """
+    client = _client()
+    if not client or not external_ids:
+        return set()
+    try:
+        result = (
+            client.table("job_postings")
+            .select("external_id")
+            .eq("source", source)
+            .in_("external_id", external_ids)
+            .execute()
+        )
+    except Exception as e:
+        log.warning("[leads.postings.novelty_error] %s: %s",
+                    type(e).__name__, str(e)[:200])
+        return set()
+    return {r["external_id"] for r in (result.data or []) if r.get("external_id")}
+
+
 # ---------------------------------------------------------------------------
 # Qualification
 # ---------------------------------------------------------------------------
+
+
+# Every column the qualify path actually reads off a claimed posting, and
+# nothing else. `lead_qualifier._posting_row` renders title / employer_name /
+# location_raw / board_remote_flag / the three salary columns /
+# service_line_hint / description; `parse_verdict` reads `id` and
+# `service_line_hint`; both callers pass `[p["id"] for p in postings]` to
+# `practice_matcher.link_postings`, which re-selects its own columns. Nothing
+# reads url, city, state, posted_at, source, external_id, first/last_seen_at
+# or the match_* link columns, so `select("*")` was paying for all of them.
+#
+# `description` is the expensive one — the whole reason `job_postings` is a
+# 45 MB table — and it IS needed here, so it is fetched, but only for the
+# `limit` rows that survive the anti-join, never for the scan.
+_QUALIFY_POSTING_COLS = (
+    "id, title, employer_name, location_raw, board_remote_flag, "
+    "salary_min, salary_max, salary_interval, service_line_hint, description"
+)
 
 
 def claim_unqualified(company_id: str, limit: int) -> list[dict]:
@@ -191,6 +276,14 @@ def claim_unqualified(company_id: str, limit: int) -> list[dict]:
     already paid to qualify, and `unique (company_id, posting_id)` guarantees
     one entry each. If that set outgrows a few tens of thousands, this wants to
     become a database view.
+
+    Two phases, and the split is the point. The anti-join scan pages
+    `select("id")` — in steady state nearly every scanned row is already
+    qualified, so pulling whole rows meant transferring most of a 45 MB table
+    (full `description` bodies included) on every run just to test integers
+    against a Python set. Only the `limit` survivors are then re-fetched with
+    the columns the qualifier and the matcher actually read
+    (`_QUALIFY_POSTING_COLS`). Same rows, same order, ~1/1000th the egress.
     """
     client = _client()
     if not client or not company_id or limit <= 0:
@@ -217,17 +310,19 @@ def claim_unqualified(company_id: str, limit: int) -> list[dict]:
             break
         page += 1
 
-    # Scan newest postings first and stop as soon as the batch is full. The
-    # window is generous because a tenant that has qualified everything recent
-    # would otherwise see only its own already-done rows.
-    candidates: list[dict] = []
+    # Phase 1 — the anti-join. Scan newest postings first and stop as soon as
+    # the batch is full. The window is generous because a tenant that has
+    # qualified everything recent would otherwise see only its own already-done
+    # rows — which is exactly why this scan must stay id-only: the generous
+    # window is the whole table in steady state.
+    claimed: list[int] = []
     scanned = 0
     page = 0
-    while len(candidates) < limit and scanned < limit * 20 + _PAGE:
+    while len(claimed) < limit and scanned < limit * 20 + _PAGE:
         try:
             result = (
                 client.table("job_postings")
-                .select("*")
+                .select("id")
                 .order("id", desc=True)
                 .range(page * _PAGE, page * _PAGE + _PAGE - 1)
                 .execute()
@@ -240,14 +335,42 @@ def claim_unqualified(company_id: str, limit: int) -> list[dict]:
         scanned += len(batch)
         for posting in batch:
             if posting["id"] not in qualified:
-                candidates.append(posting)
-                if len(candidates) >= limit:
+                claimed.append(posting["id"])
+                if len(claimed) >= limit:
                     break
         if len(batch) < _PAGE:
             break
         page += 1
 
-    return candidates
+    if not claimed:
+        return []
+
+    # Phase 2 — hydrate the survivors, and only the survivors. Chunked so a
+    # large `limit` can never blow the URL out; PostgREST does not promise an
+    # order on an `in_` filter, so the sort is restated rather than assumed.
+    CHUNK = 500
+    by_id: dict[int, dict] = {}
+    for i in range(0, len(claimed), CHUNK):
+        try:
+            rows = (
+                client.table("job_postings")
+                .select(_QUALIFY_POSTING_COLS)
+                .in_("id", claimed[i:i + CHUNK])
+                .order("id", desc=True)
+                .execute()
+            ).data or []
+        except Exception as e:
+            log.warning("[leads.claim.hydrate_error] %s: %s",
+                        type(e).__name__, str(e)[:200])
+            break
+        for row in rows:
+            by_id[row["id"]] = row
+
+    # Re-key onto the scan order so callers still see newest-first, whatever
+    # the server returned. A row that vanished between the two phases (the
+    # retention job nulls bodies but never deletes; a manual delete could)
+    # simply isn't claimed this run.
+    return [by_id[pid] for pid in claimed if pid in by_id]
 
 
 def write_verdicts(company_id: str, verdicts: list[dict]) -> int:
@@ -384,12 +507,19 @@ def list_leads(
     offset: int = 0,
     limit: int = 50,
 ) -> tuple[list[dict], int]:
-    """One page of the tenant's feed plus the exact total. `([], 0)` if unset.
+    """One page of the tenant's feed plus a total. `([], 0)` if unset.
 
     Default order is ADR-07's: band first, then posting recency. Anything the
     operator picks instead still breaks ties on recency, because two leads in
     the same band with the same status are otherwise ordered arbitrarily and
     the page would reshuffle between loads.
+
+    `total` is exact on the last page and a planner estimate before it —
+    `count="exact"` re-counted the whole 29k-row join on every page. Callers
+    turn it into `has_more` (`offset + len(rows) < total`), and THAT stays
+    exact: we fetch one row past the page, so "is there another page?" is
+    answered by data and the estimate can only widen a total already known to
+    be short. Paging therefore never stalls on a stale estimate.
     """
     client = _client()
     if not client or not company_id:
@@ -399,7 +529,8 @@ def list_leads(
     column, on_posting = _SORT_COLUMNS.get(sort, _SORT_COLUMNS["band"])
     desc = (direction or "asc").lower() == "desc"
     start = max(0, offset)
-    end = start + max(1, limit) - 1
+    page_size = max(1, limit)
+    probe_end = start + page_size  # .range() is inclusive → page_size + 1 rows
 
     def _ordered(query):
         if on_posting:
@@ -419,17 +550,23 @@ def list_leads(
             _apply_filters(client.table("company_job_leads").select(LEAD_LIST_SELECT),
                            filters=filters)
             .eq("company_id", company_id)
-        ).range(start, end).execute().data or []
+        ).range(start, probe_end).execute().data or []
     except Exception as e:
         log.warning("[leads.list.error] %s: %s", type(e).__name__, str(e)[:250])
         return [], 0
 
-    total = start + len(rows)
+    # Short read → the page ran off the end of the feed, so this total is
+    # exact and the count query is skipped entirely.
+    if len(rows) <= page_size:
+        return [_flatten(r) for r in rows], start + len(rows)
+    rows = rows[:page_size]
+
+    total = start + page_size + 1
     try:
         counted = (
             _apply_filters(
                 client.table("company_job_leads")
-                .select("id, posting:job_postings!inner(id)", count="exact"),
+                .select("id, posting:job_postings!inner(id)", count="planned"),
                 filters=filters,
             )
             .eq("company_id", company_id)
@@ -437,7 +574,7 @@ def list_leads(
             .execute()
         )
         if counted.count is not None:
-            total = counted.count
+            total = max(total, counted.count)
     except Exception:
         # A failed count still leaves a usable page — the pager just can't
         # show a final page number.
@@ -475,6 +612,17 @@ def update_lead_workflow(
 
     `last_touched_by`/`last_touched_at` are stamped from the write rather than
     trusted from the client, so the history reflects who actually touched it.
+
+    Returns the row the UPDATE itself returned — PostgREST hands back the
+    updated representation, so there is no reason to read it again. `None`
+    means the write matched no row: either the lead doesn't exist or it
+    belongs to another tenant (the `company_id` filter is what makes those
+    the same case), which is why the caller answers it with a 404. A write
+    that raised is logged above and also reports `None`.
+
+    Note the returned row is the RAW lead — no posting/practice embed. A
+    caller that has to render the lead still needs one `get_lead`; a caller
+    that only needs to know the write landed does not.
     """
     client = _client()
     if not client or not company_id:
@@ -489,14 +637,15 @@ def update_lead_workflow(
         payload["last_touched_at"] = _now()
 
     try:
-        (
+        result = (
             client.table("company_job_leads").update(payload)
             .eq("company_id", company_id).eq("id", lead_id).execute()
         )
     except Exception as e:
         log.warning("[leads.update.error] %s: %s", type(e).__name__, str(e)[:250])
         return None
-    return get_lead(company_id, lead_id)
+    rows = result.data or []
+    return rows[0] if rows else None
 
 
 # ---------------------------------------------------------------------------
@@ -505,13 +654,24 @@ def update_lead_workflow(
 
 
 def get_posting(posting_id: int) -> dict | None:
-    """Fetch a single raw posting row (shared across tenants)."""
+    """Fetch one raw posting row (shared across tenants) for the Talent-DB push.
+
+    Selects `_POSTING_TALENTDB_COLS`, not `*`: the only caller hands this row
+    straight to `talentdb.build_fields`, and that column list IS what
+    build_fields reads — `description` included, since the webhook's
+    `posting_description` is the one heavy column the export genuinely needs.
+
+    Read only when a practice-initiated export is actually going to send.
+    `newest_lead_for_practice` answers the dedup question first, and it carries
+    the id this takes — so a practice-detail page load, or a click on an
+    already-exported practice, never reaches this at all.
+    """
     client = _client()
     if not client or not posting_id:
         return None
     try:
         result = (
-            client.table("job_postings").select("*")
+            client.table("job_postings").select(_POSTING_TALENTDB_COLS)
             .eq("id", posting_id).maybe_single().execute()
         )
     except Exception:
@@ -519,48 +679,71 @@ def get_posting(posting_id: int) -> dict | None:
     return result.data if result and result.data else None
 
 
-def newest_posting_for_practice(practice_id: int) -> dict | None:
-    """The most recent job posting linked to a practice, or None if unlinked.
+# What a practice-initiated Talent-DB export reads off the lead: the dedup
+# marker plus the two qualifier fields `talentdb.build_fields` maps
+# (`No_of_Providers__c` and the track).
+_LEAD_EXPORT_MARKER_COLS = "id, talentdb_exported_at, provider_count, service_line"
 
-    Newest by `posted_at` then `id` — the practice-detail Import Lead button
-    resolves `Lead_Type__c` / the `posting_*` fields from this row.
+
+def newest_lead_for_practice(company_id: str, practice_id: int) -> dict | None:
+    """The practice's newest linked posting and this tenant's lead for it — in
+    ONE query. `None` when the practice has no linked posting at all.
+
+    Returns `{"posting_id": int, "lead": dict | None}`. A `lead` of `None` is a
+    real answer, not a miss: postings are shared across tenants (ADR-04) while
+    leads are per-company, so a posting this tenant never qualified has no lead
+    row and nothing to dedup against.
+
+    Replaces the `newest_posting_for_practice` → `find_lead_by_posting` pair,
+    which cost two sequential round trips on every practice-detail load. The
+    shape matters:
+
+    - The top-level table is `job_postings`, so `practice_id`, the ordering and
+      the `limit(1)` all apply to the postings — this picks the SAME posting
+      the old two-step did, rather than the newest posting that happens to have
+      a lead row. Keeping that identical is what stops the detail page's
+      "Exported" badge drifting from what Import Lead would actually send.
+    - The lead is a to-many embed WITHOUT `!inner`, so `lead.company_id`
+      filters the embedded rows rather than the top-level ones (an `!inner`
+      embed here would drop practices whose newest posting this tenant never
+      qualified). `unique (company_id, posting_id)` makes the list 0 or 1 long.
+    - Both halves of that syntax are already load-bearing in production here:
+      `_apply_filters` filters on `posting.city` / `posting.practice_id`
+      through an embed on every signals page load. Ordering stays on a
+      top-level column, so this needs no embedded-order support at all.
+
+    Selects the posting `id` only. The export path re-reads the full row via
+    `get_posting` when it actually sends; the detail page never needs the
+    description it used to drag back on every load.
     """
     client = _client()
-    if not client or not practice_id:
+    if not client or not company_id or not practice_id:
         return None
     try:
         result = (
-            client.table("job_postings").select("*")
+            client.table("job_postings")
+            .select(f"id, lead:company_job_leads({_LEAD_EXPORT_MARKER_COLS})")
             .eq("practice_id", practice_id)
+            .eq("lead.company_id", company_id)
             .order("posted_at", desc=True, nullsfirst=False)
             .order("id", desc=True)
-            .limit(1).execute()
+            .limit(1)
+            .execute()
         )
-    except Exception:
+    except Exception as e:
+        log.warning("[leads.newest_for_practice.error] %s: %s",
+                    type(e).__name__, str(e)[:200])
         return None
     rows = result.data or []
-    return rows[0] if rows else None
-
-
-def find_lead_by_posting(company_id: str, posting_id: int) -> dict | None:
-    """The (company, posting) lead row for a posting, if one exists.
-
-    Carries the export marker (dedup) plus the qualifier fields the Talent-DB
-    payload needs (`provider_count`, `service_line`) so the practice-initiated
-    import matches the signals path."""
-    client = _client()
-    if not client or not company_id or not posting_id:
+    if not rows:
         return None
-    try:
-        result = (
-            client.table("company_job_leads")
-            .select("id, talentdb_exported_at, provider_count, service_line")
-            .eq("company_id", company_id).eq("posting_id", posting_id)
-            .maybe_single().execute()
-        )
-    except Exception:
-        return None
-    return result.data if result and result.data else None
+    row = rows[0]
+    # A to-many embed answers with a list; tolerate a dict in case PostgREST
+    # resolves the relationship as to-one on some deployment.
+    embedded = row.get("lead")
+    if isinstance(embedded, list):
+        embedded = embedded[0] if embedded else None
+    return {"posting_id": row.get("id"), "lead": embedded or None}
 
 
 def mark_lead_exported(company_id: str, lead_id: int) -> None:
@@ -651,6 +834,10 @@ def leads_for_export(
       - None → no filter; export every matching row
       - 0    → only never-exported rows (export_count = 0)
       - N    → only rows with export_count <= N
+
+    Reads `LEAD_EXPORT_SELECT`, not the detail view's `LEAD_SELECT`: an export
+    is tens of thousands of rows in one serverless invocation, so the columns
+    the CSV never prints are the ones that decide whether it finishes.
     """
     client = _client()
     if not client or not company_id:
@@ -660,7 +847,7 @@ def leads_for_export(
     page = 0
     while len(rows) < 50_000:
         query = _apply_filters(
-            client.table("company_job_leads").select(LEAD_SELECT),
+            client.table("company_job_leads").select(LEAD_EXPORT_SELECT),
             filters=filters or {},
         ).eq("company_id", company_id)
         if max_exports is not None:
@@ -689,8 +876,11 @@ def increment_export_counts(
     """Bump `export_count` and stamp who/when, so a follow-up export with
     `max_exports=0` skips the rows already pulled.
 
-    Read-then-write per row: supabase-py exposes no `+= 1` SQL fragment, and
-    export batches are infrequent enough that it doesn't matter.
+    Read-then-write, because supabase-py exposes no `+= 1` SQL fragment — but
+    grouped, not per row. Every lead sharing a current `export_count` gets the
+    same new value, so the writes collapse to one `update ... in (ids)` per
+    distinct count. Real exports are dominated by rows at count 0, which makes
+    this ~1-2 round trips per 500-row chunk instead of 500.
     """
     client = _client()
     if not client or not lead_ids:
@@ -706,16 +896,21 @@ def increment_export_counts(
             ).data or []
         except Exception:
             continue
+        ids_by_count: dict[int, list[int]] = {}
         for row in existing:
+            ids_by_count.setdefault(
+                (row.get("export_count") or 0) + 1, []
+            ).append(row["id"])
+        for next_count, ids in ids_by_count.items():
             payload: dict[str, Any] = {
-                "export_count": (row.get("export_count") or 0) + 1,
+                "export_count": next_count,
                 "last_exported_at": now,
             }
             if user_id:
                 payload["last_exported_by"] = user_id
             try:
-                client.table("company_job_leads").update(payload).eq(
-                    "id", row["id"]
+                client.table("company_job_leads").update(payload).in_(
+                    "id", ids
                 ).execute()
             except Exception:
                 continue
@@ -727,29 +922,56 @@ def increment_export_counts(
 
 
 def lead_analytics(company_id: str, days: int = 30) -> dict:
-    """Aggregates for `/signals/analytics`.
+    """Aggregates for `/signals/analytics`, over the trailing `days` window.
 
-    Computed in Python over a bounded row set rather than in SQL: the numbers
+    Computed in Python over the window's rows rather than in SQL: the numbers
     are small (a tenant's leads, not the shared posting universe), and keeping
     it here means the analytics view needs no database function to deploy
     alongside it.
+
+    Two things make "in Python" honest at 29k+ lead rows:
+
+    * The window is applied SERVER-SIDE (`gte` on `created_at`) instead of by
+      slicing `per_day` after the fact. So `total`, `keep_rate`, the bands and
+      the dispositions all describe the same window the chart draws — they
+      used to be whole-table figures next to a 30-day chart — and the scan is
+      bounded by the window rather than by the table.
+    * The read is PAGED. A bare `.limit(20_000)` does NOT lift PostgREST's
+      1,000-row ceiling: every figure on this page was previously computed
+      over the newest 1,000 leads, with `total` pinned at exactly 1000 and
+      `keep_rate` a ratio of whatever that window happened to hold.
+
+    Full coverage is affordable because the select carries only the six
+    columns the buckets read plus the posting's `source` — no `draft`, no
+    posting `description`, and no `posted_at` (nothing here reads it).
     """
     client = _client()
     if not client or not company_id:
         return _empty_analytics()
 
+    from datetime import timedelta
+
+    from src.storage import _paginated_query
+
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
     try:
-        rows = (
+        builder = (
             client.table("company_job_leads")
             .select(
                 "decision, confidence_band, disposition, reject_reason, service_line, "
-                "created_at, posting:job_postings!inner(source, posted_at)"
+                "created_at, posting:job_postings!inner(source)"
             )
             .eq("company_id", company_id)
+            .gte("created_at", since)
+            # Ordering by the primary key keeps the pages disjoint: an
+            # unordered paged read can repeat or skip rows between requests.
             .order("id", desc=True)
-            .limit(20_000)
-            .execute()
-        ).data or []
+        )
+        # A ceiling, not an expectation — a 365-day window on the busiest
+        # tenant is still well under this, and it stops a runaway loop if the
+        # filter above ever fails to bind.
+        rows = _paginated_query(builder, limit=100_000)
     except Exception as e:
         log.warning("[leads.analytics.error] %s: %s", type(e).__name__, str(e)[:250])
         return _empty_analytics()
@@ -790,6 +1012,8 @@ def lead_analytics(company_id: str, days: int = 30) -> dict:
     return {
         "total": len(rows),
         "keep_rate": round(keeps / len(rows), 3) if rows else 0.0,
+        # The window is already enforced server-side; the slice is a belt to
+        # that brace (a day boundary can land one extra bucket in the set).
         "per_day": [
             {"day": day, **counts}
             for day, counts in sorted(by_day.items())[-days:]
@@ -809,8 +1033,8 @@ def _empty_analytics() -> dict:
     return {
         "total": 0, "keep_rate": 0.0, "per_day": [], "bands": {},
         "dispositions": {}, "tracks": {}, "reject_reasons": [],
-        "collector": {"targets": 0, "swept": 0, "unfinished": 0,
-                      "zero_row_targets": 0, "last_run_at": None,
+        "collector": {"locations": 0, "swept": 0, "unfinished": 0,
+                      "zero_row_locations": 0, "last_run_at": None,
                       "last_posting_at": None, "alert": None},
     }
 
@@ -820,32 +1044,84 @@ def collector_health(company_id: str) -> dict:
 
     The Indeed failure mode is silence, not an error: the library reaches an
     undocumented mobile API whose embedded key can be rotated upstream without
-    notice, after which every query returns zero rows and nothing raises. A run
-    that swept targets and kept nothing is the tripwire (ADR-02).
+    notice, after which every query returns zero rows and nothing raises. A
+    sweep that swept locations and kept nothing is the tripwire (ADR-02).
+
+    Rewritten for the dimension model (instant-signals refactor, Phase 2):
+    `company_search_targets.last_run_at` (stamped at claim) no longer exists.
+    `search_locations` has a per-source cursor stamped only once a location's
+    FULL sweep finishes (`stamp_location`), so a cursor is proof of a
+    completed sweep, not a claim — "unfinished" now has to come from
+    `target_runs` instead: a location with at least one recorded cell but no
+    cursor on either source is a sweep that was interrupted mid-flight.
     """
     client = _client()
     if not client or not company_id:
-        return {"targets": 0, "swept": 0, "unfinished": 0, "zero_row_targets": 0,
-                "last_run_at": None, "last_posting_at": None, "alert": None}
-    try:
-        targets = (
-            client.table("company_search_targets")
-            .select("last_run_at,last_row_count,enabled")
-            .eq("company_id", company_id).eq("enabled", True)
-            .limit(5000).execute()
-        ).data or []
-    except Exception:
-        targets = []
+        return {"locations": 0, "swept": 0, "unfinished": 0,
+                "zero_row_locations": 0, "last_run_at": None,
+                "last_posting_at": None, "alert": None}
+    # A `.limit(N)` alone does not paginate — PostgREST truncates any single
+    # request at 1000 rows regardless of what N asks for. Safe at today's ~160
+    # locations, but at national scale a bare limit would silently drop every
+    # location past the first page: `locations`/`swept` would under-report and
+    # the zero-row tripwire would stop seeing the locations it exists to watch.
+    from src.storage import _paginated_query
 
-    # `last_run_at` is stamped when a target is CLAIMED, not when it finishes —
-    # that is what makes a crashed run safe to retry. So completion has to be
-    # read from `last_row_count`, which only `record_target_result` writes.
-    # Treating a claimed-but-unfinished target as a zero-row one would fire the
-    # Indeed alert every time a run was interrupted.
-    claimed = [t for t in targets if t.get("last_run_at")]
-    swept = [t for t in claimed if t.get("last_row_count") is not None]
-    zero_rows = [t for t in swept if t["last_row_count"] == 0]
-    last_run = max((t["last_run_at"] for t in claimed), default=None)
+    try:
+        builder = (
+            client.table("search_locations")
+            .select("id,last_indeed_at,last_linkedin_at,"
+                    "indeed_zero_streak,linkedin_zero_streak")
+            .eq("company_id", company_id).eq("enabled", True)
+            # Paged reads need a stable order or the pages can overlap.
+            .order("id")
+        )
+        locations = _paginated_query(builder, limit=20_000)
+    except Exception:
+        locations = []
+
+    swept = [l for l in locations if l.get("last_indeed_at") or l.get("last_linkedin_at")]
+    swept_ids = {l.get("id") for l in swept}
+
+    location_ids = [l.get("id") for l in locations if l.get("id") is not None]
+    started_ids: set = set()
+    if location_ids:
+        # Same reason as above, and it bites sooner here: term_count x
+        # location_count cells can exceed 1000 well before a tenant's
+        # dimension tables do. `target_runs` has no surrogate key (its PK is
+        # the (term, location, source) triple), so `location_id` is what the
+        # pages sort on.
+        builder = (
+            client.table("target_runs")
+            .select("location_id")
+            .in_("location_id", location_ids)
+            .order("location_id")
+        )
+        runs = _paginated_query(builder, limit=20_000)
+        started_ids = {r["location_id"] for r in runs if r.get("location_id")}
+    # Claimed (has a recorded cell) but never finished (no cursor on either
+    # source) — a run that was interrupted. Not an error on its own; a
+    # persistently high number means runs are being killed mid-sweep,
+    # probably by a function timeout.
+    unfinished = len(started_ids - swept_ids)
+
+    # Zero-row tripwire: the zero-streak columns already ARE "did the last
+    # full sweep on this source return nothing" (record_location_sweep), so
+    # no per-cell scan of target_runs is needed here — a location counts as
+    # zero-row if every source it has swept currently carries a nonzero
+    # streak.
+    def _is_zero_row(loc: dict) -> bool:
+        swept_sources = [s for s in ("indeed", "linkedin") if loc.get(f"last_{s}_at")]
+        return bool(swept_sources) and all(
+            (loc.get(f"{s}_zero_streak") or 0) > 0 for s in swept_sources
+        )
+
+    zero_rows = [l for l in swept if _is_zero_row(l)]
+    last_run = max(
+        (t for l in locations
+         for t in (l.get("last_indeed_at"), l.get("last_linkedin_at")) if t),
+        default=None,
+    )
 
     try:
         newest = (
@@ -859,20 +1135,17 @@ def collector_health(company_id: str) -> dict:
     alert = None
     if swept and len(zero_rows) == len(swept):
         alert = (
-            "Every swept target returned zero rows. This is the Indeed "
+            "Every swept location returned zero rows. This is the Indeed "
             "API-key rotation failure mode — check the python-jobspy pin."
         )
     elif swept and len(zero_rows) > len(swept) * 0.8:
-        alert = f"{len(zero_rows)} of {len(swept)} swept targets returned zero rows."
+        alert = f"{len(zero_rows)} of {len(swept)} swept locations returned zero rows."
 
     return {
-        "targets": len(targets),
+        "locations": len(locations),
         "swept": len(swept),
-        # Claimed but never finished — a run that was interrupted. Not an
-        # error on its own; a persistently high number means runs are being
-        # killed mid-sweep, probably by a function timeout.
-        "unfinished": len(claimed) - len(swept),
-        "zero_row_targets": len(zero_rows),
+        "unfinished": unfinished,
+        "zero_row_locations": len(zero_rows),
         "last_run_at": last_run,
         "last_posting_at": last_posting,
         "alert": alert,

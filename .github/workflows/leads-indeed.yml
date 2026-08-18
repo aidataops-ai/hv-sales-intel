@@ -1,0 +1,61 @@
+name: Leads — Indeed sweep
+
+# Indeed's half of the source-split pipeline (2026-08-14). Hourly, with the
+# FULL collect budget to itself — the old combined run gave Indeed only 60%
+# of the window as a reserve against starving LinkedIn, which no longer
+# applies when each board has its own workflow. Qualify rides on this job
+# (not the LinkedIn one) because it runs hourly: one qualifier drain per
+# hour covers both boards' collected postings without two jobs racing to
+# claim the same unqualified rows.
+#
+# The cron fires at :17, not :00 — GitHub's scheduler is most congested on
+# the hour and silently skips congested slots (the previous on-the-hour cron
+# delivered ~18 of 24 runs/day).
+#
+# NOTE: GitHub only runs `schedule` triggers from the DEFAULT branch — this
+# schedule goes live when the file lands on main. On staging, dispatch it by
+# hand or use leads.yml.
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+    inputs:
+      budget-minutes:
+        description: 'Collect wall-clock budget (minutes)'
+        default: '40'
+
+concurrency:
+  group: leads-indeed
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Indeed sweep + qualify
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LEAD_COMPANY_ID: ${{ secrets.LEAD_COMPANY_ID }}
+        run: |
+          python scripts/run_leads.py \
+            --stage both \
+            --sources indeed \
+            --budget-minutes "${{ github.event.inputs.budget-minutes || '40' }}" \
+            --verbose

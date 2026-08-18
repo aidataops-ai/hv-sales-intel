@@ -313,7 +313,9 @@ async def scan_one(
                 if p.place_id not in seen_ids and not seen_ids.add(p.place_id)
             ]
             try:
-                upserted = await _write_with_retry(upsert_practices, unique)
+                # `upsert_practices` returns the rows it wrote; this script
+                # only ever wanted how many.
+                upserted = len(await _write_with_retry(upsert_practices, unique) or [])
                 # Stamp which service line surfaced these rows — the one signal
                 # `category` can't carry (home-health classifies as `specialty`).
                 await _write_with_retry(

@@ -166,14 +166,34 @@ export function filterParams(
   return out
 }
 
+/**
+ * The one response check every path in this module has to agree on: a 401 is
+ * an expired session, and the only useful answer is the login page.
+ *
+ * It lives outside `leadFetch` because the mutations below deliberately don't
+ * go through it — they need the server's own `detail` string, which `leadFetch`
+ * throws away — and without this they surfaced a bare "Failed (401)" that no
+ * operator can act on, while the JSON readers on the same page redirected.
+ *
+ * Returns true once it has taken over navigation, so callers can bail out.
+ * No-ops on the server, where there is no location to send anyone to.
+ */
+function redirectOn401(res: Response): boolean {
+  if (res.status !== 401 || typeof window === "undefined") return false
+  const redirect = encodeURIComponent(window.location.pathname)
+  window.location.href = `/login?redirect=${redirect}`
+  return true
+}
+
+/** What a mutation reports while `redirectOn401` is already navigating away.
+ *  Nobody reads it — the page is leaving — but the caller's result shape still
+ *  needs an error string, and "Failed (401)" misdescribes what happened. */
+const SESSION_EXPIRED = "Session expired — signing in again."
+
 async function leadFetch<T>(path: string, init?: RequestInit): Promise<T> {
   if (!API_URL && !IS_PROD) throw new Error("NO_API")
   const res = await fetch(`${API_URL}${path}`, { ...init, credentials: "include" })
-  if (res.status === 401 && typeof window !== "undefined") {
-    const redirect = encodeURIComponent(window.location.pathname)
-    window.location.href = `/login?redirect=${redirect}`
-    throw new Error("API 401")
-  }
+  if (redirectOn401(res)) throw new Error("API 401")
   if (!res.ok) throw new Error(`API ${res.status}`)
   return res.json()
 }
@@ -284,6 +304,7 @@ export async function retriggerLeads(): Promise<RetriggerResult> {
       method: "POST",
       credentials: "include",
     })
+    if (redirectOn401(res)) return { ok: false, error: SESSION_EXPIRED }
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
       return { ok: false, error: body.detail || `Failed (${res.status})` }
@@ -304,6 +325,7 @@ export async function getPipelineState(): Promise<PipelineState | null> {
     const res = await fetch(`${API_URL}/api/admin/leads/pipeline`, {
       credentials: "include",
     })
+    if (redirectOn401(res)) return null
     if (!res.ok) return null
     const body = await res.json()
     return body.state === "paused" ? "paused" : "active"
@@ -326,6 +348,7 @@ export async function togglePipeline(
       method: "POST",
       credentials: "include",
     })
+    if (redirectOn401(res)) return { ok: false, error: SESSION_EXPIRED }
     if (!res.ok) {
       const body = await res.json().catch(() => ({}))
       return { ok: false, error: body.detail || `Failed (${res.status})` }
@@ -359,9 +382,9 @@ export interface LeadAnalytics {
   tracks: Record<string, number>
   reject_reasons: Array<{ reason: string; count: number }>
   collector: {
-    targets: number
+    locations: number
     swept: number
-    zero_row_targets: number
+    zero_row_locations: number
     last_run_at: string | null
     last_posting_at: string | null
     alert: string | null
@@ -373,6 +396,310 @@ export async function getLeadAnalytics(days = 30): Promise<LeadAnalytics | null>
     return await leadFetch<LeadAnalytics>(`/api/leads/analytics?days=${days}`)
   } catch {
     return null
+  }
+}
+
+// --------------------------------------------------------------------------
+// Config page — editable search dimensions (admin)
+//
+// Instant Signals refactor Phase 3: the collector's search space is two
+// dimensions — terms and locations — crossed at claim time rather than a
+// stored `(term x location)` matrix. Editing a dimension row (one PATCH)
+// now flips a whole track or city at once, instead of one PATCH per cell.
+// See docs/refactor/instant-signals-targets.md §4-5.
+// --------------------------------------------------------------------------
+
+/** One search keyword the collector crosses with every enabled location, from
+ *  `search_terms`. The live, editable row — not the config file. */
+export interface SearchTerm {
+  id: number
+  term: string
+  service_line: string
+  enabled: boolean
+}
+
+/** One place the collector searches, from `search_locations`. Per-source
+ *  rotation cursors live here — `null` means that source has never swept
+ *  this location. */
+export interface SearchLocation {
+  id: number
+  location: string
+  state: string
+  granularity: "state" | "city"
+  enabled: boolean
+  last_indeed_at: string | null
+  last_linkedin_at: string | null
+}
+
+/** A rare hand-pinned `(term, location)` cell — disables (or force-enables)
+ *  one cell independent of its term's and location's own `enabled`. */
+export interface TargetOverride {
+  term_id: number
+  location_id: number
+  enabled: boolean
+}
+
+/** Per-source sweep freshness, from `sweep_status` — how much of the
+ *  enabled geography is within its staleness threshold right now. */
+export interface SweepSourceStatus {
+  enabled_locations: number
+  fresh_within_threshold: number
+  coverage_pct: number
+  never_swept: number
+  oldest_cursor_age_hours: number | null
+}
+
+/** A state as it appears in the checked-in config catalog (suggestions for the
+ *  "Add state" form). */
+export interface CatalogState {
+  code: string
+  statewide_query: string | null
+  cities: string[]
+}
+
+/** A track (service line) and its search keywords, from the config catalog. */
+export interface CatalogTrack {
+  service_line: string
+  terms: string[]
+}
+
+export interface SignalsConfig {
+  catalog: {
+    states: CatalogState[]
+    tracks: CatalogTrack[]
+    search: { hours_old: number; results_wanted: number; distance_miles: number }
+    sources: string[]
+  }
+  terms: SearchTerm[]
+  locations: SearchLocation[]
+  overrides: TargetOverride[]
+  sweep: Record<string, SweepSourceStatus>
+}
+
+/** The shape POSTed to add terms. */
+export interface NewTermRow {
+  term: string
+  service_line: string
+  enabled?: boolean
+}
+
+/** The shape POSTed to add locations. */
+export interface NewLocationRow {
+  location: string
+  state: string
+  granularity: "state" | "city"
+  enabled?: boolean
+}
+
+export async function getSignalsConfig(): Promise<SignalsConfig | null> {
+  try {
+    return await leadFetch<SignalsConfig>("/api/admin/leads/config")
+  } catch {
+    return null
+  }
+}
+
+export type AddDimensionResult =
+  | { ok: true; requested: number; inserted: number }
+  | { ok: false; error: string }
+
+/** Add search terms (admin). Returns a discriminated result so the UI can
+ *  show the server's validation message rather than a bare failure. */
+export async function addTerms(rows: NewTermRow[]): Promise<AddDimensionResult> {
+  try {
+    const res = await fetch(`${API_URL}/api/admin/leads/terms`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows }),
+    })
+    if (redirectOn401(res)) return { ok: false, error: SESSION_EXPIRED }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      return { ok: false, error: body.detail || `Failed (${res.status})` }
+    }
+    return { ok: true, ...(await res.json()) }
+  } catch {
+    return { ok: false, error: "Could not reach the server." }
+  }
+}
+
+/** Add search locations (admin). Same discriminated-result shape as `addTerms`. */
+export async function addLocations(
+  rows: NewLocationRow[],
+): Promise<AddDimensionResult> {
+  try {
+    const res = await fetch(`${API_URL}/api/admin/leads/locations`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows }),
+    })
+    if (redirectOn401(res)) return { ok: false, error: SESSION_EXPIRED }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      return { ok: false, error: body.detail || `Failed (${res.status})` }
+    }
+    return { ok: true, ...(await res.json()) }
+  } catch {
+    return { ok: false, error: "Could not reach the server." }
+  }
+}
+
+/** Enable or disable one term (admin). Returns the updated row, or null. */
+export async function setTermEnabled(
+  id: number,
+  enabled: boolean,
+): Promise<SearchTerm | null> {
+  try {
+    return await leadFetch<SearchTerm>(`/api/admin/leads/terms/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    })
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Enable or disable many rows of one dimension in a single request.
+ *
+ * `null` means the request itself failed; an empty array means it succeeded
+ * and nothing matched. Callers splice the returned rows into local state, so
+ * those two have to be distinguishable — the same reasoning as `setOverride`.
+ * A caller that gets back fewer rows than it asked for is looking at a
+ * partial update (stray ids, or another tenant's) and should re-read rather
+ * than assume.
+ */
+async function setDimensionEnabledBulk<T>(
+  dimension: "terms" | "locations",
+  ids: number[],
+  enabled: boolean,
+): Promise<T[] | null> {
+  if (ids.length === 0) return []
+  try {
+    const data = await leadFetch<{ updated: T[] }>(
+      `/api/admin/leads/${dimension}/bulk`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids, enabled }),
+      },
+    )
+    return data.updated ?? []
+  } catch {
+    return null
+  }
+}
+
+/** Enable or disable many terms at once (admin) — one PATCH for a whole
+ *  track, where the page used to fire one per keyword. Returns the updated
+ *  rows, or null if the request failed. */
+export function setTermsEnabledBulk(
+  ids: number[],
+  enabled: boolean,
+): Promise<SearchTerm[] | null> {
+  return setDimensionEnabledBulk<SearchTerm>("terms", ids, enabled)
+}
+
+/** Enable or disable many locations at once (admin). The one that pays off
+ *  most: "Enable all" on a state is dozens of city rows plus its statewide
+ *  row, and that was dozens of PATCHes plus a full config re-read. */
+export function setLocationsEnabledBulk(
+  ids: number[],
+  enabled: boolean,
+): Promise<SearchLocation[] | null> {
+  return setDimensionEnabledBulk<SearchLocation>("locations", ids, enabled)
+}
+
+export type DeleteDimensionResult = { ok: true } | { ok: false; error: string }
+
+/** Hard-delete one hand-added term (admin). A term still in the checked-in
+ *  catalog answers 409 — the server's message says to disable it instead of
+ *  deleting it (a deleted catalog row is undone by the next collect run's
+ *  re-seed), surfaced here the same way `addTerms` surfaces a 400. */
+export async function deleteTerm(id: number): Promise<DeleteDimensionResult> {
+  try {
+    const res = await fetch(`${API_URL}/api/admin/leads/terms/${id}`, {
+      method: "DELETE",
+      credentials: "include",
+    })
+    if (redirectOn401(res)) return { ok: false, error: SESSION_EXPIRED }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      return { ok: false, error: body.detail || `Failed (${res.status})` }
+    }
+    return { ok: true }
+  } catch {
+    return { ok: false, error: "Could not reach the server." }
+  }
+}
+
+/** Enable or disable one location (admin). Returns the updated row, or null. */
+export async function setLocationEnabled(
+  id: number,
+  enabled: boolean,
+): Promise<SearchLocation | null> {
+  try {
+    return await leadFetch<SearchLocation>(`/api/admin/leads/locations/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    })
+  } catch {
+    return null
+  }
+}
+
+/** Hard-delete one hand-added location (admin). Same catalog-protection 409
+ *  as `deleteTerm`. */
+export async function deleteLocation(id: number): Promise<DeleteDimensionResult> {
+  try {
+    const res = await fetch(`${API_URL}/api/admin/leads/locations/${id}`, {
+      method: "DELETE",
+      credentials: "include",
+    })
+    if (redirectOn401(res)) return { ok: false, error: SESSION_EXPIRED }
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      return { ok: false, error: body.detail || `Failed (${res.status})` }
+    }
+    return { ok: true }
+  } catch {
+    return { ok: false, error: "Could not reach the server." }
+  }
+}
+
+export type SetOverrideResult =
+  | { ok: true; override: TargetOverride | null }
+  | { ok: false; error: string }
+
+/** Pin or unpin one `(term, location)` cell (admin). `enabled: null` deletes
+ *  the pin, returning the cell to `term.enabled AND location.enabled`.
+ *
+ *  Discriminated like `addTerms`/`deleteTerm` rather than returning a bare
+ *  `TargetOverride | null`: a successful unpin and a failed request both
+ *  produce a null override, and callers that splice the response into local
+ *  state (instead of refetching the whole config) have to tell those apart —
+ *  otherwise a failed unpin silently erases the row from the UI. */
+export async function setOverride(
+  termId: number,
+  locationId: number,
+  enabled: boolean | null,
+): Promise<SetOverrideResult> {
+  try {
+    const data = await leadFetch<{ override: TargetOverride | null }>(
+      "/api/admin/leads/overrides",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ term_id: termId, location_id: locationId, enabled }),
+      },
+    )
+    return { ok: true, override: data.override ?? null }
+  } catch {
+    return { ok: false, error: "Could not update the pin." }
   }
 }
 

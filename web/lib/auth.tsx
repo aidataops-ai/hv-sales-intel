@@ -3,6 +3,9 @@
 import { createContext, useCallback, useContext, useEffect, useState, ReactNode } from "react"
 import { useRouter } from "next/navigation"
 import { getSupabaseBrowserClient } from "./supabase-client"
+import {
+  clearCredits, seedCredits, settleCreditsUnfetched, type CreditsState,
+} from "./credits"
 import type { User } from "./types"
 
 export interface Company {
@@ -46,46 +49,66 @@ const AuthContext = createContext<AuthContextValue>({
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? ""
 const IS_PROD = process.env.NODE_ENV === "production"
 
+/** Re-read just the company list. Boot gets these from `/api/session`; this
+ *  narrow route is for the later re-reads (a membership edit), where the user
+ *  and the credit balance are not in question and a whole session would be
+ *  the wasteful call. Never rejects — an unreachable API is an empty list. */
+async function fetchCompanies(): Promise<Company[]> {
+  if (!API_URL && !IS_PROD) return []
+  try {
+    const res = await fetch(`${API_URL}/api/me/companies`, { credentials: "include" })
+    if (!res.ok) return []
+    const data = await res.json()
+    return data.companies ?? []
+  } catch {
+    return []
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
   const [companies, setCompanies] = useState<Company[]>([])
   const router = useRouter()
 
-  const fetchCompanies = useCallback(async (): Promise<Company[]> => {
-    if (!API_URL && !IS_PROD) return []
-    try {
-      const res = await fetch(`${API_URL}/api/me/companies`, { credentials: "include" })
-      if (!res.ok) return []
-      const data = await res.json()
-      return data.companies ?? []
-    } catch {
-      return []
-    }
-  }, [])
-
   const refreshCompanies = useCallback(async () => {
     setCompanies(await fetchCompanies())
-  }, [fetchCompanies])
+  }, [])
 
   useEffect(() => {
     let cancelled = false
     async function hydrate() {
       try {
-        if (!API_URL && !IS_PROD) return
-        const res = await fetch(`${API_URL}/api/me`, { credentials: "include" })
+        // No backend configured in local dev: settle the store so the
+        // topbar pill resolves to "hidden" instead of pulsing forever.
+        // The old hook got there by way of a request that 404'd.
+        if (!API_URL && !IS_PROD) return settleCreditsUnfetched()
+        // One request for the whole shell. This used to be /api/me and
+        // /api/me/companies in parallel plus a third /api/me/credits fired
+        // independently by `useCredits` in the topbar — three requests
+        // asking three questions about the same user, each separately
+        // paying the backend's auth round trips. /api/session resolves the
+        // user once and answers all three; the keys carry those routes'
+        // bodies verbatim.
+        const res = await fetch(`${API_URL}/api/session`, { credentials: "include" })
         if (cancelled) return
         if (res.ok) {
-          setUser(await res.json())
-          // Pull companies in parallel with first paint.
-          const cs = await fetchCompanies()
-          if (!cancelled) setCompanies(cs)
+          const body = (await res.json()) as {
+            user: User
+            companies?: { companies?: Company[] }
+            credits?: CreditsState | null
+          }
+          setUser(body.user ?? null)
+          setCompanies(body.companies?.companies ?? [])
+          seedCredits(body.credits ?? null)
         } else {
           setUser(null)
           setCompanies([])
+          settleCreditsUnfetched()
         }
       } catch {
         /* leave state as-is */
+        if (!cancelled) settleCreditsUnfetched()
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -98,6 +121,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       else if (event === "SIGNED_OUT") {
         setUser(null)
         setCompanies([])
+        clearCredits()
       }
     })
 
@@ -105,13 +129,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       cancelled = true
       sub.subscription.unsubscribe()
     }
-  }, [fetchCompanies])
+  }, [])
 
   async function signOut() {
     const supabase = getSupabaseBrowserClient()
     await supabase.auth.signOut()
     setUser(null)
     setCompanies([])
+    clearCredits()
     router.push("/login")
     router.refresh()
   }

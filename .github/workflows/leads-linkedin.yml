@@ -1,0 +1,60 @@
+name: Leads — LinkedIn sweep
+
+# LinkedIn's half of the source-split pipeline (2026-08-14). Every 2 hours:
+# the statewide instant tier is 165 calls x ~23s ≈ 63min per full cycle, so
+# it completes across two runs and holds ~4h worst-case freshness; whatever
+# budget remains inside each run goes to the city RECALL tier (see
+# `lead_linkedin_city_stale_hours`), which rotates the ~155 city rows over
+# roughly 4 days catching postings the statewide query dropped past the
+# board's per-query result cap. Collect-only — qualify runs hourly on the
+# Indeed workflow and drains both boards' postings there.
+#
+# Safe to overlap with the Indeed job: the claim cursors are per-source
+# columns, so the two workflows never contend for rows.
+#
+# NOTE: GitHub only runs `schedule` triggers from the DEFAULT branch — this
+# schedule goes live when the file lands on main. On staging, dispatch it by
+# hand or use leads.yml.
+on:
+  schedule:
+    - cron: '41 */2 * * *'
+  workflow_dispatch:
+    inputs:
+      budget-minutes:
+        description: 'Collect wall-clock budget (minutes)'
+        default: '35'
+
+concurrency:
+  group: leads-linkedin
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run LinkedIn sweep
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          LEAD_COMPANY_ID: ${{ secrets.LEAD_COMPANY_ID }}
+        run: |
+          python scripts/run_leads.py \
+            --stage collect \
+            --sources linkedin \
+            --budget-minutes "${{ github.event.inputs.budget-minutes || '35' }}" \
+            --verbose

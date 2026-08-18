@@ -1,12 +1,45 @@
 import json
+from typing import Any
 
 from openai import AsyncOpenAI
 
 from src.settings import settings
 
-SYSTEM_PROMPT = """You are a cold outreach email writer for ApexVirtuals, a healthcare staffing and talent acquisition company.
+# Interactive path: the user is watching a spinner, so fail fast rather than
+# hang on the SDK's 600s default.
+_OPENAI_TIMEOUT = 60.0
 
-Given information about a healthcare practice (name, category, analysis summary, pain points, sales angles), write a short personalized cold email (80-140 words) to the practice from a ApexVirtuals rep.
+# One cached client for the process. Building `AsyncOpenAI` per call paid a
+# fresh TCP+TLS handshake to api.openai.com every time and abandoned the
+# connection pool to the GC. The cache is a single slot keyed on both the
+# API key and the *class object* currently bound to `AsyncOpenAI`, so a test
+# that patches either `settings` or `AsyncOpenAI` gets a client built from
+# its own patch instead of one left behind by an earlier test.
+_client_cache: tuple[Any, Any, Any] | None = None
+
+
+def _get_client() -> Any:
+    """Return the process-wide AsyncOpenAI client, building it on first use."""
+    global _client_cache
+    cls, api_key = AsyncOpenAI, settings.openai_api_key
+    if _client_cache is not None:
+        cached_cls, cached_key, cached_client = _client_cache
+        if cached_cls is cls and cached_key == api_key:
+            return cached_client
+    client = cls(api_key=api_key, timeout=_OPENAI_TIMEOUT)
+    _client_cache = (cls, api_key, client)
+    return client
+
+
+def _reset_client() -> None:
+    """Drop the cached client. Test hook — see `tests/conftest.py`."""
+    global _client_cache
+    _client_cache = None
+
+
+SYSTEM_PROMPT = """You are a cold outreach email writer for Health & Virtuals, a healthcare staffing and talent acquisition company.
+
+Given information about a healthcare practice (name, category, analysis summary, pain points, sales angles), write a short personalized cold email (80-140 words) to the practice from a Health & Virtuals rep.
 
 Reference ONE specific pain point and ONE specific sales angle from the analysis. End with a clear ask: a 15-minute call.
 
@@ -16,7 +49,7 @@ Return ONLY valid JSON with this exact structure, no other text:
   "body": "the email body as plain text with paragraph breaks as \\n\\n"
 }
 
-Tone: warm, direct, not pushy. First person ("I", "we at ApexVirtuals")."""
+Tone: warm, direct, not pushy. First person ("I", "we at Health & Virtuals")."""
 
 
 async def generate_email_draft(
@@ -42,7 +75,7 @@ Pain Points: {pain_points or '[]'}
 Sales Angles: {sales_angles or '[]'}
 """
 
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    client = _get_client()
     try:
         response = await client.chat.completions.create(
             model=settings.openai_model,
@@ -80,7 +113,7 @@ def _mock_draft(name: str, category: str | None) -> dict:
         "subject": f"Staffing support for {name}",
         "body": (
             f"Hi there,\n\n"
-            f"I'm reaching out from ApexVirtuals — we specialize in staffing "
+            f"I'm reaching out from Health & Virtuals — we specialize in staffing "
             f"for {cat} practices. I noticed {name} could benefit from front-desk "
             f"or admin support, and wanted to introduce myself.\n\n"
             f"We place pre-vetted healthcare staff (front desk, medical assistants, "
@@ -90,6 +123,6 @@ def _mock_draft(name: str, category: str | None) -> dict:
             f"a fit for your practice?\n\n"
             f"Best,\n"
             f"[Your Name]\n"
-            f"ApexVirtuals"
+            f"Health & Virtuals"
         ),
     }

@@ -110,17 +110,17 @@ export default function SignalsAnalyticsPage() {
                   one value and no comparison to draw. */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 <StatTile label="Signals" value={String(data.total)}
-                          hint="Qualified postings for this company" />
+                          hint="Qualified postings, last 30 days" />
                 <StatTile label="Keep rate" value={`${Math.round(data.keep_rate * 100)}%`}
                           hint="Share the qualifier kept" />
                 <StatTile
-                  label="Targets swept"
-                  value={`${collector?.swept ?? 0} / ${collector?.targets ?? 0}`}
-                  hint="Search targets run at least once"
+                  label="Locations swept"
+                  value={`${collector?.swept ?? 0} / ${collector?.locations ?? 0}`}
+                  hint="Search locations fully swept at least once"
                 />
                 <StatTile
-                  label="Zero-row targets"
-                  value={String(collector?.zero_row_targets ?? 0)}
+                  label="Zero-row locations"
+                  value={String(collector?.zero_row_locations ?? 0)}
                   tone={collector?.alert ? "alert" : "neutral"}
                   hint="Silence, not an error, is the Indeed failure mode"
                 />

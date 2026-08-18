@@ -1,11 +1,19 @@
 import json
 import re
+import threading
 from datetime import datetime, timezone
+from typing import Any
 
-from supabase import create_client
+import httpx
+from supabase import ClientOptions, create_client
 
 from src.models import Practice
 from src.settings import settings
+
+# PostgREST's default client timeout is 120s — longer than any serverless
+# ceiling we deploy under, so a hung query would burn the whole invocation
+# instead of failing fast. 15s is well above p99 for every query we issue.
+POSTGREST_TIMEOUT_SECONDS = 15
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +52,58 @@ _JSONB_ANALYSIS_FIELDS = frozenset({
     "pain_points", "sales_angles", "website_contacts", "icp_breakdown",
 })
 
-PROFILE_JOIN_SELECT = "*, last_touched_by_profile:profiles!last_touched_by(name)"
+_PROFILE_EMBED = "last_touched_by_profile:profiles!last_touched_by(name)"
+PROFILE_JOIN_SELECT = f"*, {_PROFILE_EMBED}"
+
+# The list page paints a card (web/components/practice-card.tsx) and a map pin
+# (map-view.tsx) per row, up to 500 rows a page — and it renders none of
+# `call_script`, `email_draft`, `notes`, `website_contacts`,
+# `analysis_input_hash` or `opening_hours`, which `*` shipped on every load.
+# This names what the list provably reads: the card fields (including the
+# analysis text it expands — summary, pain_points, sales_angles,
+# icp_breakdown), the map's lat/lng, and nothing else. Filter and sort columns
+# do NOT need to be selected — PostgREST applies both against the table.
+#
+# The detail route (`get_practice`) and the CSV export (`query_for_export`)
+# keep `PROFILE_JOIN_SELECT`: they need the columns this drops, and they read
+# one row / run rarely.
+_PRACTICE_LIST_COLS = (
+    "place_id, name, address, city, state, phone, website, "
+    "rating, review_count, category, lat, lng, status, lead_score, "
+    "summary, pain_points, sales_angles, "
+    "last_touched_by, last_touched_at"
+)
+
+# Columns later migrations added (`_OPTIONAL_COLUMNS`). `select("*")` absorbed
+# a half-migrated deployment silently; an explicit list naming a missing column
+# 400s the whole page instead. So they live in a second group that the
+# `include_icp=False` retry below drops — same degradation, still a list.
+_PRACTICE_LIST_OPTIONAL_COLS = (
+    "tags, call_count, enrichment_status, icp_breakdown, "
+    "owner_name, owner_email, owner_phone, owner_title, owner_linkedin, "
+    "salesforce_lead_id, salesforce_lead_url, salesforce_owner_name, "
+    "salesforce_synced_at, website_doctor_name, website_doctor_phone"
+)
+
+_PRACTICE_LIST_SELECT = (
+    f"{_PRACTICE_LIST_COLS}, {_PRACTICE_LIST_OPTIONAL_COLS}, {_PROFILE_EMBED}"
+)
+_PRACTICE_LIST_SELECT_CORE = f"{_PRACTICE_LIST_COLS}, {_PROFILE_EMBED}"
+
+
+# Memoized client, mirroring src/auth.py's admin-client pattern. Building a
+# client is not free: each one owns a brand-new httpx connection pool, so
+# constructing one per call meant no HTTP connection was ever reused and every
+# PostgREST query paid a fresh TCP+TLS handshake. The cache is keyed on the
+# credentials it was built from so that changing settings (as tests do) yields
+# a new client rather than a stale one bound to the old creds.
+_client: Any = None
+_client_creds: tuple[str, str] | None = None
+# Sync route handlers run in FastAPI's threadpool, so several can reach the
+# check-then-set below at once and each build a client — one pool per racer,
+# which is what the memoization exists to prevent. Only construction takes
+# the lock; the already-cached path stays an unlocked read.
+_client_lock = threading.Lock()
 
 
 def _get_client():
@@ -53,13 +112,32 @@ def _get_client():
     Uses the service-role key when available so backend writes bypass RLS.
     The backend is the only client talking to the DB and performs its own
     auth checks, so service-role is the correct scope here.
+
+    The client is cached per credential pair so its underlying connection
+    pool (and TLS session) is reused across the ~44 call sites.
     """
-    if not settings.supabase_url:
+    global _client, _client_creds
+    url = settings.supabase_url
+    if not url:
         return None
     key = settings.supabase_service_role_key or settings.supabase_key
     if not key:
         return None
-    return create_client(settings.supabase_url, key)
+    # Unconfigured returns above never populate the cache, so a client is only
+    # ever memoized alongside the exact creds that produced it.
+    creds = (url, key)
+    if _client is None or _client_creds != creds:
+        with _client_lock:
+            if _client is None or _client_creds != creds:
+                _client = create_client(
+                    url,
+                    key,
+                    options=ClientOptions(
+                        postgrest_client_timeout=POSTGREST_TIMEOUT_SECONDS,
+                    ),
+                )
+                _client_creds = creds
+    return _client
 
 
 def _with_attribution(fields: dict, touched_by: str | None) -> dict:
@@ -109,7 +187,11 @@ def find_duplicate_place_ids(practices: list[Practice]) -> dict[str, str]:
     different place_id.
 
     Prevents Google's parallel listings (same business with two place_ids)
-    from creating duplicate rows. One DB round-trip per search.
+    from creating duplicate rows. One DB round-trip per 500 distinct names —
+    chunked because an unbounded `in_` either blows the URL out or comes back
+    truncated at PostgREST's silent 1,000-row cap, and a truncated answer here
+    means a duplicate place_id is admitted, which is the exact failure this
+    function exists to prevent.
     """
     client = _get_client()
     if not client or not practices:
@@ -118,18 +200,22 @@ def find_duplicate_place_ids(practices: list[Practice]) -> dict[str, str]:
     names = list({p.name for p in practices if p.name})
     if not names:
         return {}
-    try:
-        result = (
-            client.table("practices")
-            .select("place_id,name,address,phone")
-            .in_("name", names)
-            .execute()
-        )
-    except Exception:
-        return {}
+    rows: list[dict] = []
+    CHUNK = 500
+    for i in range(0, len(names), CHUNK):
+        try:
+            result = (
+                client.table("practices")
+                .select("place_id,name,address,phone")
+                .in_("name", names[i:i + CHUNK])
+                .execute()
+            )
+        except Exception:
+            return {}
+        rows.extend(result.data or [])
 
     existing_by_key: dict[tuple, str] = {}
-    for row in (result.data or []):
+    for row in rows:
         key = _dedup_key(row.get("name"), row.get("address"), row.get("phone"))
         # Stable choice if pre-existing dupes share a key: lowest place_id wins.
         prev = existing_by_key.get(key)
@@ -191,13 +277,24 @@ def upsert_practices(
     practices: list[Practice],
     touched_by: str | None = None,
     company_id: str | None = None,
-) -> int:
-    """Upsert practices. Returns count. Stamps attribution when touched_by set.
+) -> list[dict]:
+    """Upsert practices. Returns the upserted rows. Stamps attribution when
+    touched_by set.
 
     Only core Google Places fields + attribution are written. Every other
     column is owned by a downstream write path (analyze, call log, enrich,
     email, etc.) and would be clobbered by sending None here when a search
     hits an already-worked row.
+
+    The rows come back from the write itself — PostgREST returns the updated
+    representation — so a caller that needs the fresh record does not pay a
+    re-fetch for it. They carry every column (including the ones this write
+    deliberately left alone), but NOT the profile join:
+    `last_touched_by_name` is a read-time join, so it is present and `None`
+    here. A caller that renders it either stamps the acting user's name (it
+    just became the toucher) or re-reads through `get_practice`.
+
+    Callers wanting the old count take `len()` of the result.
 
     Defense in depth: if PostgREST rejects a column that doesn't exist on
     the deployed schema (half-applied migrations), retry without that
@@ -205,7 +302,7 @@ def upsert_practices(
     """
     client = _get_client()
     if not client or not practices:
-        return 0
+        return []
     # Every non-Google-Places field. (last_touched_by_name is derived from a
     # read-time join, not a stored column.)
     preserved = {
@@ -292,7 +389,7 @@ def upsert_practices(
         [p.place_id for p in practices if p.place_id],
     )
 
-    return len(result.data) if result.data else 0
+    return [_flatten_attribution(r) for r in (result.data or [])]
 
 
 # PostgREST has a default `db-max-rows` cap (1000 on hosted Supabase) that
@@ -337,7 +434,15 @@ def _paginated_query(builder, limit: int) -> list[dict]:
 
 
 def _practice_id_by_place(place_id: str) -> int | None:
-    """Look up `practices.id` (bigint) given a `place_id` (text)."""
+    """Look up `practices.id` (bigint) given a `place_id` (text).
+
+    Every per-company mirror below needs this id, so a single write path used
+    to pay for it two or three times over (update + tag union, each resolving
+    it again). The mirrors now take an optional `practice_id`: callers that
+    already hold the practice row — which is most of them, since they had to
+    read or write it to get here — hand the id down instead of re-resolving
+    it. `_resolve_practice_id` is the one place that decision is made.
+    """
     if not place_id:
         return None
     client = _get_client()
@@ -353,6 +458,20 @@ def _practice_id_by_place(place_id: str) -> int | None:
     if not result or not result.data:
         return None
     return result.data["id"]
+
+
+def _resolve_practice_id(place_id: str | None, practice_id: int | None) -> int | None:
+    """The practice id a per-company mirror should write against.
+
+    A caller-supplied id wins and costs nothing; otherwise fall back to the
+    lookup. Keeping this in one function means "did we already know this?"
+    is answered identically by every mirror.
+    """
+    if practice_id:
+        return practice_id
+    if not place_id:
+        return None
+    return _practice_id_by_place(place_id)
 
 
 def _coerce_jsonb(value):
@@ -415,10 +534,11 @@ def _write_per_company_state(
     company_id: str | None,
     state_fields: dict,
     touched_by: str | None,
+    practice_id: int | None = None,
 ) -> None:
-    if not place_id or not company_id or not state_fields:
+    if not company_id or not state_fields:
         return
-    pid = _practice_id_by_place(place_id)
+    pid = _resolve_practice_id(place_id, practice_id)
     if not pid:
         return
     payload = {**state_fields}
@@ -432,10 +552,11 @@ def _write_per_company_analyses(
     place_id: str | None,
     company_id: str | None,
     analysis_fields: dict,
+    practice_id: int | None = None,
 ) -> None:
-    if not place_id or not company_id or not analysis_fields:
+    if not company_id or not analysis_fields:
         return
-    pid = _practice_id_by_place(place_id)
+    pid = _resolve_practice_id(place_id, practice_id)
     if not pid:
         return
     # Coerce JSON-string fields into structured jsonb.
@@ -452,11 +573,12 @@ def _add_tags_per_company(
     place_id: str | None,
     company_id: str | None,
     new_tags: list[str],
+    practice_id: int | None = None,
 ) -> None:
     """Dedup-merge tags onto company_practice_state for (company, practice)."""
-    if not place_id or not company_id or not new_tags:
+    if not company_id or not new_tags:
         return
-    pid = _practice_id_by_place(place_id)
+    pid = _resolve_practice_id(place_id, practice_id)
     if not pid:
         return
     client = _get_client()
@@ -490,35 +612,41 @@ def _ensure_state_rows_for_practices(
 ) -> None:
     """Seed blank company_practice_state rows so newly-upserted practices
     show up in the active tenant's sidebar even before any per-practice
-    action is taken. Idempotent — only inserts missing rows."""
+    action is taken. Idempotent — only inserts missing rows.
+
+    Resolves place_id → practice_id 500 at a time: an unchunked `in_` over a
+    >1000-place upsert came back truncated at PostgREST's silent row cap, so
+    the practices past the cap were never seeded and stayed invisible."""
     if not company_id or not place_ids:
         return
     client = _get_client()
     if not client:
         return
-    # Resolve place_id → practice_id in one round-trip.
-    try:
-        rows = (
-            client.table("practices").select("id,place_id")
-            .in_("place_id", place_ids).execute()
+    payload: list[dict] = []
+    CHUNK = 500
+    for i in range(0, len(place_ids), CHUNK):
+        try:
+            rows = (
+                client.table("practices").select("id,place_id")
+                .in_("place_id", place_ids[i:i + CHUNK]).execute()
+            )
+        except Exception:
+            return
+        payload.extend(
+            {"company_id": company_id, "practice_id": r["id"]}
+            for r in (rows.data or []) if r.get("id")
         )
-    except Exception:
-        return
-    payload = [
-        {"company_id": company_id, "practice_id": r["id"]}
-        for r in (rows.data or [])
-        if r.get("id")
-    ]
     if not payload:
         return
-    try:
-        client.table("company_practice_state").upsert(
-            payload,
-            on_conflict="company_id,practice_id",
-            ignore_duplicates=True,
-        ).execute()
-    except Exception:
-        pass
+    for i in range(0, len(payload), CHUNK):
+        try:
+            client.table("company_practice_state").upsert(
+                payload[i:i + CHUNK],
+                on_conflict="company_id,practice_id",
+                ignore_duplicates=True,
+            ).execute()
+        except Exception:
+            pass
 
 
 def query_practices(
@@ -589,9 +717,18 @@ def query_practices_page(
 ) -> tuple[list[dict], int]:
     """Server-side filtered + sorted + paginated practice list.
 
-    Returns ``(rows, total)`` where ``total`` is the exact count of rows
-    matching the filters (ignoring pagination), so the caller can drive
-    "load more" / infinite scroll. Returns ``([], 0)`` if unconfigured.
+    Returns ``(rows, total)`` so the caller can drive "load more" / infinite
+    scroll. Returns ``([], 0)`` if unconfigured.
+
+    ``total`` is exact on the last page and a planner estimate before it —
+    ``count="exact"`` made every page pay a full scan of the 23k-row table on
+    a shared-CPU instance. What callers actually derive from it is
+    ``has_more`` (``offset + len(rows) < total``), so the contract this keeps
+    is narrower than "exact" but the one that matters: **``total`` exceeds
+    ``offset + len(rows)`` if and only if another page exists.** We guarantee
+    that by fetching one row past the page and answering the question from
+    data, never from the estimate; the estimate only ever widens a total we
+    already know is short.
 
     Replaces the all-rows ``query_practices`` for the main list view: a single
     ``.range()`` request per page instead of the serial 1000-row loop.
@@ -603,7 +740,8 @@ def query_practices_page(
     col = _SORT_COLUMNS.get(sort, "lead_score")
     desc = (direction or "desc").lower() != "asc"
     start = max(0, offset)
-    end = start + max(1, limit) - 1  # .range() is inclusive
+    page_size = max(1, limit)
+    probe_end = start + page_size  # .range() is inclusive → page_size + 1 rows
 
     def _filtered(q, include_icp: bool):
         """Apply every filter to a query builder. ``include_icp`` lets us retry
@@ -653,37 +791,54 @@ def query_practices_page(
     def _fetch(include_icp: bool):
         sort_col = col if (include_icp or col != "icp_vertical") else "lead_score"
         # Data page: plain select + simple chained .order() calls — NO count on
-        # this query. (count="exact" on an embedded-join select, and a combined
+        # this query. (count on an embedded-join select, and a combined
         # order string, are exactly what was silently failing before and
         # blanking the list.)
-        dq = _filtered(
-            client.table("practices").select(PROFILE_JOIN_SELECT), include_icp
+        select_cols = (
+            _PRACTICE_LIST_SELECT if include_icp else _PRACTICE_LIST_SELECT_CORE
         )
+        dq = _filtered(client.table("practices").select(select_cols), include_icp)
         dq = dq.order(sort_col, desc=desc, nullsfirst=False)
         if sort_col != "place_id":
             dq = dq.order("place_id", desc=False, nullsfirst=False)
-        rows = dq.range(start, end).execute().data or []
+        rows = dq.range(start, probe_end).execute().data or []
 
-        # Total via a separate, embed-free count query — resilient: if counting
-        # fails we still return the page (just with an estimated total).
-        total = start + len(rows)
+        # The probe row answers "is there another page?" from data. Short read
+        # → we ran off the end of the result set, so `start + len(rows)` is the
+        # exact total and no count query is needed at all.
+        if len(rows) <= page_size:
+            return rows, start + len(rows)
+        rows = rows[:page_size]
+
+        # Another page exists, so the total must exceed this one. A separate,
+        # embed-free PLANNED count widens it to something worth displaying —
+        # planned is an EXPLAIN, not a scan. Resilient: if counting fails we
+        # still return the page (just with a floor for a total).
+        total = start + page_size + 1
         try:
             cres = (
                 _filtered(
-                    client.table("practices").select("place_id", count="exact"),
+                    client.table("practices").select("place_id", count="planned"),
                     include_icp,
                 )
                 .limit(1)
                 .execute()
             )
             if cres.count is not None:
-                total = cres.count
+                total = max(total, cres.count)
         except Exception:
             pass
         return rows, total
 
     try:
         rows, total = _fetch(include_icp=True)
+    except httpx.TimeoutException:
+        # The 15s `POSTGREST_TIMEOUT_SECONDS` cap fired. Out before the
+        # missing-column heuristic below, which reads the exception's text:
+        # a timeout is not a half-migrated deployment, and retrying it
+        # without the icp_* columns would only stall for a second 15s.
+        # It propagates — the route layer is where a status code belongs.
+        raise
     except Exception as exc:
         if any(c in str(exc) for c in _OPTIONAL_COLUMNS):
             rows, total = _fetch(include_icp=False)
@@ -764,60 +919,96 @@ def increment_export_counts(
 ) -> None:
     """Increment export_count by 1 and stamp who/when on each `place_id`.
 
-    Single SELECT then per-row UPDATE — Supabase-py doesn't expose `+= 1`
-    SQL fragments. Fine at export-batch scale (a few thousand rows,
-    infrequent). Each UPDATE writes `export_count`, `last_exported_at`,
-    and `last_exported_by`; missing columns are dropped via the optional-
-    column retry pattern.
+    Read-then-write, because supabase-py exposes no `+= 1` SQL fragment — but
+    chunked and grouped, because a practices CSV export passes up to 50k ids.
+    Three things were wrong with doing it one row at a time:
+
+      * the read was an unchunked `in_` over every id — a URL long enough to
+        be rejected outright (silent no-op) or, short of that, a response
+        truncated at PostgREST's 1,000-row cap, which quietly broke the
+        `max_exports=0` dedup the counter exists to serve;
+      * every row cost its own UPDATE, plus a `_practice_id_by_place` SELECT
+        and a state upsert inside `_write_per_company_state` — ~3 round trips
+        per row, ~15,000 for one export, which does not fit a serverless
+        invocation;
+      * `practices.id` was right there in the row and thrown away.
+
+    Now: 500 ids per read, `id` selected so the per-row lookup disappears,
+    and one UPDATE per distinct new count value (exports are dominated by
+    rows at count 0, so that is typically one or two). `last_exported_by` and
+    friends are still dropped via the optional-column retry when the deployed
+    schema lacks them.
     """
     if not place_ids:
         return
     client = _get_client()
     if not client:
         return
-    try:
-        existing = (
-            client.table("practices")
-            .select("place_id,export_count")
-            .in_("place_id", place_ids)
-            .execute()
-        )
-    except Exception:
-        return
     now = datetime.now(timezone.utc).isoformat()
-    for row in existing.data or []:
-        next_count = (row.get("export_count") or 0) + 1
-        payload: dict = {
-            "export_count": next_count,
-            "last_exported_at": now,
-        }
-        if user_id:
-            payload["last_exported_by"] = user_id
+    CHUNK = 500
+    for i in range(0, len(place_ids), CHUNK):
+        chunk = place_ids[i:i + CHUNK]
         try:
-            client.table("practices").update(payload).eq(
-                "place_id", row["place_id"]
-            ).execute()
-            # Phase 3 dual-write: mirror to per-company state so Phase 4
-            # can read export_count from there without a backfill scramble.
-            if company_id:
-                _write_per_company_state(
-                    row["place_id"], company_id, payload, touched_by=None,
-                )
-        except Exception as e:
-            msg = str(e)
-            # Drop columns the deployed schema is missing and retry once.
-            missing = [c for c in _OPTIONAL_COLUMNS if c in msg]
-            if not missing:
-                continue
-            retry = {k: v for k, v in payload.items() if k not in missing}
-            if not retry:
-                continue
+            existing = (
+                client.table("practices")
+                .select("id,place_id,export_count")
+                .in_("place_id", chunk)
+                .execute()
+            )
+        except Exception:
+            continue
+        rows_by_count: dict[int, list[dict]] = {}
+        for row in existing.data or []:
+            rows_by_count.setdefault(
+                (row.get("export_count") or 0) + 1, []
+            ).append(row)
+
+        for next_count, rows in rows_by_count.items():
+            payload: dict = {
+                "export_count": next_count,
+                "last_exported_at": now,
+            }
+            if user_id:
+                payload["last_exported_by"] = user_id
+            ids = [r["place_id"] for r in rows]
             try:
-                client.table("practices").update(retry).eq(
-                    "place_id", row["place_id"]
+                client.table("practices").update(payload).in_(
+                    "place_id", ids
                 ).execute()
-            except Exception:
+            except Exception as e:
+                # Drop columns the deployed schema is missing and retry once.
+                # As before, a group that only lands on the retry does NOT get
+                # the per-company mirror — the mirror table has the same
+                # columns, so it would fail the same way.
+                missing = [c for c in _OPTIONAL_COLUMNS if c in str(e)]
+                retry = {k: v for k, v in payload.items() if k not in missing}
+                if not missing or not retry:
+                    continue
+                try:
+                    client.table("practices").update(retry).in_(
+                        "place_id", ids
+                    ).execute()
+                except Exception:
+                    pass
                 continue
+
+            # Phase 3 dual-write: mirror to per-company state so Phase 4 can
+            # read export_count from there without a backfill scramble. One
+            # upsert for the whole group — `practices.id` came back with the
+            # read, so there is nothing left to resolve per row.
+            if company_id:
+                mirror = [
+                    {"company_id": company_id, "practice_id": r["id"], **payload}
+                    for r in rows if r.get("id")
+                ]
+                if mirror:
+                    try:
+                        client.table("company_practice_state").upsert(
+                            mirror, on_conflict="company_id,practice_id",
+                        ).execute()
+                    except Exception:
+                        # Never fail the legacy write because the mirror did.
+                        pass
 
 
 def resolve_user_names(user_ids: list[str]) -> dict[str, str]:
@@ -871,6 +1062,7 @@ def update_practice_analysis(
     analysis: dict,
     touched_by: str | None = None,
     company_id: str | None = None,
+    practice_id: int | None = None,
 ) -> dict | None:
     """Update Phase 2 analysis fields. Stamps attribution when touched_by set.
 
@@ -891,9 +1083,13 @@ def update_practice_analysis(
         # Split: most analysis dict keys are analysis; status (auto-advance) is state.
         analysis_part = {k: v for k, v in analysis.items() if k in _ANALYSIS_FIELDS}
         state_part = {k: v for k, v in analysis.items() if k in _STATE_FIELDS}
-        _write_per_company_analyses(place_id, company_id, analysis_part)
+        # The UPDATE returned the row; its id saves both mirrors a lookup.
+        pid = practice_id or (result or {}).get("id")
+        _write_per_company_analyses(place_id, company_id, analysis_part,
+                                    practice_id=pid)
         if state_part:
-            _write_per_company_state(place_id, company_id, state_part, touched_by)
+            _write_per_company_state(place_id, company_id, state_part, touched_by,
+                                     practice_id=pid)
 
     return result
 
@@ -903,6 +1099,7 @@ def update_practice_fields(
     fields: dict,
     touched_by: str | None = None,
     company_id: str | None = None,
+    practice_id: int | None = None,
 ) -> dict | None:
     """Update arbitrary fields. Stamps attribution when touched_by set.
 
@@ -912,6 +1109,10 @@ def update_practice_fields(
     Phase 3 dual-write: when company_id is set, splits the dict by
     category (state vs analysis vs other) and upserts into the matching
     per-company table(s). `tags` is routed through the tag-union helper.
+
+    Pass `practice_id` when the caller already holds the practice row: a dict
+    touching state AND analysis AND tags otherwise re-resolves the same
+    place_id → id three times over, on top of whatever the route already read.
     """
     result = _update_with_optional_retry(
         place_id,
@@ -920,14 +1121,73 @@ def update_practice_fields(
 
     if company_id:
         state, analysis, new_tags = _split_fields_for_dual_write(fields)
+        # The UPDATE just handed the row back — its id is the one the mirrors
+        # need, so even a caller that knew nothing going in pays no lookup.
+        pid = practice_id or (result or {}).get("id")
         if state:
-            _write_per_company_state(place_id, company_id, state, touched_by)
+            _write_per_company_state(place_id, company_id, state, touched_by,
+                                     practice_id=pid)
         if analysis:
-            _write_per_company_analyses(place_id, company_id, analysis)
+            _write_per_company_analyses(place_id, company_id, analysis,
+                                        practice_id=pid)
         if new_tags:
-            _add_tags_per_company(place_id, company_id, new_tags)
+            _add_tags_per_company(place_id, company_id, new_tags, practice_id=pid)
 
     return result
+
+
+# The per-message half of an `email_messages` row — everything that varies
+# within one batch. `practice_id`, `user_id` and `direction` are the same for
+# every message a single write inserts, so they are arguments instead.
+_EMAIL_MESSAGE_FIELDS = ("subject", "body", "message_id", "in_reply_to", "error")
+
+
+def insert_email_messages(
+    practice_id: int,
+    user_id: str | None,
+    direction: str,
+    messages: list[dict],
+    company_id: str | None = None,
+) -> list[dict]:
+    """Insert a batch of email messages. Returns the inserted rows.
+
+    Each entry in `messages` carries the per-message fields
+    (`_EMAIL_MESSAGE_FIELDS`); anything else in it is ignored, so a caller can
+    hand over the raw reply dicts it already has.
+
+    ONE insert per table regardless of batch size — a reply poll that found
+    four new messages used to pay eight round trips, an insert plus a mirror
+    insert per reply.
+
+    Phase 3 dual-write, semantics unchanged from the single-row helper: the
+    legacy `email_messages` write is the source of truth and is left to raise,
+    while the `company_email_messages` mirror is fail-soft. Phase 4 swaps the
+    reads; until then a mirror failure must never lose a real message.
+    """
+    client = _get_client()
+    if not client or not messages:
+        return []
+    rows = [
+        {
+            "practice_id": practice_id,
+            "user_id": user_id,
+            "direction": direction,
+            **{k: m.get(k) for k in _EMAIL_MESSAGE_FIELDS},
+        }
+        for m in messages
+    ]
+    result = client.table("email_messages").insert(rows).execute()
+    inserted = result.data or []
+
+    if company_id and practice_id:
+        try:
+            client.table("company_email_messages").insert(
+                [{**row, "company_id": company_id} for row in rows]
+            ).execute()
+        except Exception:
+            pass
+
+    return inserted
 
 
 def insert_email_message(
@@ -946,31 +1206,17 @@ def insert_email_message(
     Phase 3 dual-write: when company_id is set, also mirrors into
     company_email_messages so Phase 4 can swap reads cleanly.
     """
-    client = _get_client()
-    if not client:
-        return None
-    row = {
-        "practice_id": practice_id,
-        "user_id": user_id,
-        "direction": direction,
-        "subject": subject,
-        "body": body,
-        "message_id": message_id,
-        "in_reply_to": in_reply_to,
-        "error": error,
-    }
-    result = client.table("email_messages").insert(row).execute()
-    inserted = result.data[0] if result.data else None
-
-    if company_id and practice_id:
-        try:
-            client.table("company_email_messages").insert(
-                {**row, "company_id": company_id}
-            ).execute()
-        except Exception:
-            pass
-
-    return inserted
+    inserted = insert_email_messages(
+        practice_id,
+        user_id,
+        direction,
+        [{
+            "subject": subject, "body": body, "message_id": message_id,
+            "in_reply_to": in_reply_to, "error": error,
+        }],
+        company_id=company_id,
+    )
+    return inserted[0] if inserted else None
 
 
 def list_email_messages(practice_id: int) -> list[dict]:
@@ -1055,6 +1301,7 @@ def add_tags(
     place_id: str,
     new_tags: list[str],
     company_id: str | None = None,
+    practice_id: int | None = None,
 ) -> None:
     """Append tags to a practice's tags array, deduped. No-op if list empty.
 
@@ -1064,6 +1311,13 @@ def add_tags(
 
     Phase 3 dual-write: when company_id is set, also unions the same tags
     into company_practice_state for (company_id, practice_id).
+
+    Pass `practice_id` when the caller holds the practice row. Every route
+    that tags does so right after reading or writing the practice, so the
+    mirror's place_id → id lookup is pure duplication — and this runs from
+    ~8 mutation endpoints. Failing that, the read below now carries `id`
+    alongside `tags`: same query, same cost, and the mirror never has to ask
+    for it separately.
     """
     if not new_tags:
         return
@@ -1072,21 +1326,24 @@ def add_tags(
         return
     try:
         result = (
-            client.table("practices").select("tags")
+            client.table("practices").select("id,tags")
             .eq("place_id", place_id).maybe_single().execute()
         )
     except Exception:
         return
     if result is None:
         return
-    existing = (result.data or {}).get("tags") or []
+    row = result.data or {}
+    practice_id = practice_id or row.get("id")
+    existing = row.get("tags") or []
     merged = sorted(set(existing) | set(new_tags))
     if sorted(existing) != merged:
         client.table("practices").update({"tags": merged}).eq("place_id", place_id).execute()
 
     # Mirror to per-company state (handles its own dedup separately).
     if company_id:
-        _add_tags_per_company(place_id, company_id, new_tags)
+        _add_tags_per_company(place_id, company_id, new_tags,
+                              practice_id=practice_id)
 
 
 def list_outbound_message_ids(practice_id: int) -> list[str]:

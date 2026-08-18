@@ -202,7 +202,7 @@ export default function ICPDefinitionPage() {
           </h1>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
             Paste your Ideal Customer Profile document below.
-            {" "}<span className="font-medium">Apex AI</span> will extract the
+            {" "}<span className="font-medium">H&amp;V AI</span> will extract the
             structured criteria the analyzer uses to score every lead — verticals,
             geographies, dimension weights, disqualifiers, decision-makers, and
             service catalog.

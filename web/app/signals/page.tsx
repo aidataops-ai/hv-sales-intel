@@ -2,10 +2,9 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 
+import ConfigButton from "@/components/config-button"
 import ExportButton from "@/components/export-button"
 import Pagination from "@/components/pagination"
-import PipelineToggleButton from "@/components/pipeline-toggle-button"
-import RetriggerButton from "@/components/retrigger-button"
 import SignalsFilterBar from "@/components/signals-filter-bar"
 import SignalsTable from "@/components/signals-table"
 import SignalsTopBar from "@/components/signals-top-bar"
@@ -116,8 +115,7 @@ function SignalsContent() {
   return (
     <div className="min-h-screen bg-cream dark:bg-night-900">
       <SignalsTopBar>
-        <PipelineToggleButton />
-        <RetriggerButton />
+        <ConfigButton />
         <ExportButton
           endpoint="/api/leads/export.csv"
           label="Export the signals matching your current filters"

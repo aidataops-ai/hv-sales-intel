@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Any
 
 from openai import AsyncOpenAI
 
@@ -7,7 +8,38 @@ from src.settings import settings
 
 log = logging.getLogger("hvsi.scriptgen")
 
-SYSTEM_PROMPT = """You are a cold call script writer for ApexVirtuals.
+# Interactive path: the user is watching a spinner, so fail fast rather than
+# hang on the SDK's 600s default.
+_OPENAI_TIMEOUT = 60.0
+
+# One cached client for the process. Building `AsyncOpenAI` per call paid a
+# fresh TCP+TLS handshake to api.openai.com every time and abandoned the
+# connection pool to the GC. The cache is a single slot keyed on both the
+# API key and the *class object* currently bound to `AsyncOpenAI`, so a test
+# that patches either `settings` or `AsyncOpenAI` gets a client built from
+# its own patch instead of one left behind by an earlier test.
+_client_cache: tuple[Any, Any, Any] | None = None
+
+
+def _get_client() -> Any:
+    """Return the process-wide AsyncOpenAI client, building it on first use."""
+    global _client_cache
+    cls, api_key = AsyncOpenAI, settings.openai_api_key
+    if _client_cache is not None:
+        cached_cls, cached_key, cached_client = _client_cache
+        if cached_cls is cls and cached_key == api_key:
+            return cached_client
+    client = cls(api_key=api_key, timeout=_OPENAI_TIMEOUT)
+    _client_cache = (cls, api_key, client)
+    return client
+
+
+def _reset_client() -> None:
+    """Drop the cached client. Test hook — see `tests/conftest.py`."""
+    global _client_cache
+    _client_cache = None
+
+SYSTEM_PROMPT = """You are a cold call script writer for Health & Virtuals.
 
 The lead has already been analyzed. The user prompt below contains the
 analyzer's output for THIS specific practice — pain_points,
@@ -58,7 +90,7 @@ content for the section but never substitute generic filler):
    - Name EACH sales_angle and tie it explicitly to the matching
      pain_point. Example: "Your reviews mention long phone-hold
      times — our Virtual Scheduler picks up within two rings."
-   - Mention ApexVirtuals by name once.
+   - Mention Health & Virtuals by name once.
    - If the decision-maker's title is "Owner & Lead Dentist" or
      similar, tailor the framing to that role.
 
@@ -84,7 +116,7 @@ content for the section but never substitute generic filler):
      the follow-up to that exact address.
 
 GLOBAL RULES:
-- Use the rep's perspective ("I", "we at ApexVirtuals").
+- Use the rep's perspective ("I", "we at Health & Virtuals").
 - Names + phone numbers + emails from website_contacts MUST be
   copied verbatim — do not paraphrase or invent.
 - If pain_points / sales_angles are empty arrays, say so honestly
@@ -151,7 +183,7 @@ Verbatim Patient Review Excerpts:
 {excerpts_block}
 """
 
-    client = AsyncOpenAI(api_key=settings.openai_api_key)
+    client = _get_client()
     log.info("[scriptgen.start] practice=%r model=%s contacts=%d",
              name, settings.openai_model, len(website_contacts or []))
     try:
@@ -237,7 +269,7 @@ def _mock_script(
     elif website_doctor_name:
         doctor_greeting = f"Hi, may I speak with {website_doctor_name}?"
     else:
-        doctor_greeting = f"Hi, this is [Your Name] calling from ApexVirtuals about {name}."
+        doctor_greeting = f"Hi, this is [Your Name] calling from Health & Virtuals about {name}."
 
     # Build an "other contacts on file" line for the rep's reference.
     secondary_lines = []
@@ -262,7 +294,7 @@ def _mock_script(
                 "title": "Opening",
                 "icon": "phone",
                 "content": (
-                    f"{doctor_greeting} I'm reaching out because ApexVirtuals "
+                    f"{doctor_greeting} I'm reaching out because Health & Virtuals "
                     f"helps {cat_label} practices{city_phrase} with staffing solutions. "
                     f"Do you have a quick moment?{other_contacts_line}"
                 ),
@@ -281,7 +313,7 @@ def _mock_script(
                 "title": "Pitch",
                 "icon": "target",
                 "content": (
-                    f"At ApexVirtuals, we provide pre-vetted front desk staff, medical "
+                    f"At Health & Virtuals, we provide pre-vetted front desk staff, medical "
                     f"assistants, and administrative support specifically for practices like "
                     f"{name}. We handle recruiting, screening, and onboarding so you can focus "
                     "on patient care."

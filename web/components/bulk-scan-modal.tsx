@@ -1,12 +1,13 @@
 "use client"
 
-import { useMemo, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Loader2, X, Search, Layers, Download, Coins } from "lucide-react"
 import { searchPractices } from "@/lib/api"
 import {
   BULK_SCAN_RANGE,
   creditsToDollars,
   formatCredits,
+  refreshCreditsIfStale,
   useCredits,
 } from "@/lib/credits"
 import { SHOW_BILLING } from "@/lib/flags"
@@ -87,6 +88,16 @@ export default function BulkScanModal({
   const [exporting, setExporting] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
   const { data: credits, refresh: refreshCredits } = useCredits()
+
+  // This modal is mounted (closed) by the topbar on every page, so it must
+  // not fetch anything just by existing — the balance comes from the shared
+  // store the shell seeds out of /api/session. But the balance also gates
+  // Start, so re-read it when the modal actually opens, and only if the
+  // snapshot has aged: opening it right after a page load reuses the number
+  // that page load already paid for.
+  useEffect(() => {
+    if (open) refreshCreditsIfStale()
+  }, [open])
 
   const queries = useMemo(() => {
     const usQs =
@@ -231,7 +242,7 @@ export default function BulkScanModal({
       const url = URL.createObjectURL(blob)
       const a = document.createElement("a")
       a.href = url
-      a.download = `apex-leads-bulkscan-${new Date()
+      a.download = `hv-leads-bulkscan-${new Date()
         .toISOString()
         .replace(/[:.]/g, "-")
         .slice(0, 16)}.csv`

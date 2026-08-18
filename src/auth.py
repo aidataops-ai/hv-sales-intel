@@ -1,24 +1,41 @@
 import json
+import threading
 from typing import Any
 
+import httpx
+import jwt
 from fastapi import Depends, HTTPException, Request
-from supabase import create_client
+from supabase import ClientOptions, create_client
 
 from src.settings import settings
+from src.storage import POSTGREST_TIMEOUT_SECONDS
 
 _admin_client: Any = None
+# FastAPI runs `get_current_user` in the threadpool, so concurrent requests
+# can race the check-then-set below and each build a client (and its own
+# connection pool), defeating the memoization. Only construction takes the
+# lock; the hot path is the unlocked read above it.
+_admin_client_lock = threading.Lock()
 
 
 def get_admin_client():
     """Supabase client with service-role key. Lazily instantiated."""
     global _admin_client
     if _admin_client is None:
-        if not settings.supabase_url or not settings.supabase_service_role_key:
-            raise RuntimeError("Supabase service-role client not configured")
-        _admin_client = create_client(
-            settings.supabase_url,
-            settings.supabase_service_role_key,
-        )
+        with _admin_client_lock:
+            if _admin_client is None:
+                if not settings.supabase_url or not settings.supabase_service_role_key:
+                    raise RuntimeError("Supabase service-role client not configured")
+                _admin_client = create_client(
+                    settings.supabase_url,
+                    settings.supabase_service_role_key,
+                    # Same 15s PostgREST cap as the data-layer client — the 120s
+                    # library default outlives any serverless invocation. (GoTrue
+                    # calls are unaffected; its client carries httpx's own default.)
+                    options=ClientOptions(
+                        postgrest_client_timeout=POSTGREST_TIMEOUT_SECONDS,
+                    ),
+                )
     return _admin_client
 
 
@@ -81,10 +98,61 @@ def _read_supabase_token(request: Request) -> str | None:
 
 CURRENT_COMPANY_COOKIE = "apex_current_company"
 
+# Supabase stamps signed-in access tokens with this audience.
+_JWT_AUDIENCE = "authenticated"
+# Tolerate a little clock drift between this host and the auth server. Past
+# that the token really is expired, which is a 401 — never a 500.
+_JWT_LEEWAY_SECONDS = 30
 
-async def get_current_user(request: Request) -> dict:
+
+def _auth_user_id(client, token: str) -> str:
+    """Return the auth user id a token belongs to, or raise 401.
+
+    With `supabase_jwt_secret` configured this verifies the HS256 signature,
+    audience and expiry locally and reads `sub` — no network at all. Left
+    empty it falls back to the GoTrue `auth.get_user` round trip, which is
+    what every request used to pay unconditionally.
+    """
+    secret = settings.supabase_jwt_secret
+    if secret:
+        try:
+            claims = jwt.decode(
+                token,
+                secret,
+                algorithms=["HS256"],          # pinned: no `alg: none` downgrade
+                audience=_JWT_AUDIENCE,
+                leeway=_JWT_LEEWAY_SECONDS,
+                options={"require": ["exp", "sub"]},
+            )
+        except Exception:
+            # Expired, wrong signature, wrong audience, or not a JWT at all —
+            # every one of those means "not authenticated", not "server bug".
+            raise HTTPException(status_code=401, detail="Invalid token") from None
+        user_id = claims.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        return user_id
+
+    try:
+        user_id = client.auth.get_user(token).user.id
+    except Exception:
+        # Covers a rejected token and a `user`-less response alike.
+        raise HTTPException(status_code=401, detail="Invalid token") from None
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    return user_id
+
+
+def get_current_user(request: Request) -> dict:
     """Resolve JWT → profiles row + active company. 401 if no token,
     403 if no profile or no company membership.
+
+    Plain `def`, deliberately: FastAPI runs sync dependencies in the
+    threadpool, so the blocking Supabase calls below stay off the event
+    loop instead of stalling every other in-flight request.
+
+    Costs at most two queries — profile, then memberships — plus a GoTrue
+    round trip only when `supabase_jwt_secret` is unset.
 
     The returned dict carries:
       - All `profiles` columns (id, email, name, role, etc.)
@@ -99,16 +167,21 @@ async def get_current_user(request: Request) -> dict:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
     client = get_admin_client()
-    try:
-        user_resp = client.auth.get_user(token)
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    user_id = _auth_user_id(client, token)
 
-    auth_user = user_resp.user
-    result = (
-        client.table("profiles").select("*")
-        .eq("id", auth_user.id).single().execute()
-    )
+    try:
+        result = (
+            client.table("profiles").select("*")
+            .eq("id", user_id).single().execute()
+        )
+    except httpx.TimeoutException:
+        # postgrest-py hands httpx's timeout straight through, so this is the
+        # 15s `POSTGREST_TIMEOUT_SECONDS` cap firing on the one query every
+        # authenticated request makes. Say so — a generic 500 sends the
+        # operator hunting for a bug that isn't there.
+        raise HTTPException(
+            status_code=504, detail="Database timed out — try again",
+        ) from None
     if not result.data:
         raise HTTPException(status_code=403, detail="No profile for this user")
     if result.data.get("disabled_at"):
@@ -142,42 +215,44 @@ def _resolve_current_company(
     If the cookie names a company the user belongs to, use it.
     Otherwise pick the oldest membership. Raises 403 if the user is in
     no companies — every authenticated user must belong to at least one.
-    """
-    if cookie_value:
-        try:
-            member = (
-                client.table("company_members")
-                .select("role,company_id")
-                .eq("user_id", user_id)
-                .eq("company_id", cookie_value)
-                .maybe_single().execute()
-            )
-        except Exception:
-            member = None
-        if member and member.data:
-            return cookie_value, member.data["role"]
 
+    One round trip, not the two this used to take. It can't be folded into
+    the profile query either: `company_members.user_id` and `profiles.id`
+    both point at `auth.users` with no foreign key between them, so
+    PostgREST has no relationship to embed and
+    `profiles?select=*,company_members(...)` fails with PGRST200. So we
+    fetch the whole (small) membership set once, still ordered by
+    `joined_at` server-side, and make the cookie-vs-oldest choice here.
+    """
     try:
-        first = (
+        result = (
             client.table("company_members")
             .select("company_id,role")
             .eq("user_id", user_id)
             .order("joined_at")
-            .limit(1)
             .execute()
         )
+        memberships = result.data or []
     except Exception:
-        first = None
-    if not first or not first.data:
+        memberships = []
+
+    if not memberships:
         raise HTTPException(
             status_code=403,
             detail="User belongs to no company. Sign up to create one.",
         )
-    row = first.data[0]
+
+    if cookie_value:
+        for row in memberships:
+            if row["company_id"] == cookie_value:
+                return cookie_value, row["role"]
+
+    # Oldest membership: the query is already ordered by joined_at.
+    row = memberships[0]
     return row["company_id"], row["role"]
 
 
-async def require_admin(user: dict = Depends(get_current_user)) -> dict:
+def require_admin(user: dict = Depends(get_current_user)) -> dict:
     """Raise 403 if the current user isn't an admin of the active company."""
     if user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Admin only")

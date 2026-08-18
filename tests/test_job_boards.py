@@ -337,3 +337,46 @@ def test_capped_description_keeps_the_work_arrangement_lines():
     )
     assert len(row["description"]) <= cap
     assert row["description"].endswith("Work Location: In person")
+
+
+# --------------------------- per-search timing ------------------------
+#
+# `scripts/run_leads.py` averages `elapsed_s` across the searches it has
+# already run and asks `location_fits_budget` whether the next location fits
+# in what's left of the phase. Drop the field, or hand it something that
+# isn't a number, and that estimate silently stops working.
+
+
+def _stub_scrape_jobs(monkeypatch, result, elapsed_s):
+    """Run `search_jobs` against a stubbed board and a stubbed monotonic clock.
+
+    `search_jobs` imports `scrape_jobs` from `jobspy` at call time, so the
+    patch has to land on the module. The clock is read once before the call
+    and once after, so two ticks `elapsed_s` apart is the whole fake."""
+    import jobspy
+
+    ticks = iter([100.0, 100.0 + elapsed_s])
+    monkeypatch.setattr(job_boards.time, "monotonic", lambda: next(ticks))
+
+    def scrape_jobs(**kwargs):
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(jobspy, "scrape_jobs", scrape_jobs)
+
+
+def test_search_jobs_records_how_long_the_board_took(monkeypatch):
+    _stub_scrape_jobs(monkeypatch, None, elapsed_s=2.5)
+
+    _, stats = job_boards.search_jobs("RN", "Tampa, FL", sources=["indeed"])
+    assert stats["indeed"]["elapsed_s"] == 2.5
+
+
+def test_a_board_that_raises_still_reports_its_elapsed_seconds(monkeypatch):
+    """A failing source burns budget too — the estimate has to count it."""
+    _stub_scrape_jobs(monkeypatch, RuntimeError("429 from Indeed"), elapsed_s=7.0)
+
+    _, stats = job_boards.search_jobs("RN", "Tampa, FL", sources=["indeed"])
+    assert stats["indeed"]["error"]
+    assert stats["indeed"]["elapsed_s"] == 7.0

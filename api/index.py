@@ -73,6 +73,23 @@ def _attach_lead_url(practice: dict | None) -> dict | None:
     if not practice.get("salesforce_lead_url") and practice.get("salesforce_lead_id"):
         practice["salesforce_lead_url"] = lead_view_url(practice["salesforce_lead_id"])
     return practice
+
+
+def _with_actor_name(practice: dict, user: dict) -> dict:
+    """Fill in `last_touched_by_name` on a row that came back from a write.
+
+    `last_touched_by_name` is a read-time join on `profiles`, so a row returned
+    by an UPDATE or UPSERT never carries it — but the write that produced the
+    row also stamped `last_touched_by` with the acting user, so the name the
+    join would resolve is the one already in hand. Filling it here is what
+    lets those routes answer from the write instead of re-reading the practice
+    purely to pick up one joined column the detail page renders.
+    """
+    if not practice:
+        return practice
+    if not practice.get("last_touched_by_name"):
+        practice["last_touched_by_name"] = user.get("name")
+    return practice
 from src.clay import trigger_enrichment
 from src.email_gen import generate_email_draft
 from src.email_poll import poll_replies
@@ -87,8 +104,10 @@ from src.storage import (
     find_duplicate_place_ids,
     get_cached_search,
     get_practice,
+    get_practices_by_place_ids,
     increment_export_counts,
     insert_email_message,
+    insert_email_messages,
     list_email_messages,
     list_outbound_message_ids,
     query_for_export,
@@ -101,7 +120,7 @@ from src.storage import (
     upsert_practices,
 )
 
-app = FastAPI(title="Apex Sales Intel", version="0.2.0")
+app = FastAPI(title="H&V Sales Intel", version="0.2.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -167,16 +186,42 @@ class CreateUserRequest(BaseModel):
 def list_users(admin: dict = Depends(require_admin)):
     """List all profiles with per-user touched-practice count."""
     client = get_admin_client()
-    profiles_res = client.table("profiles").select("*").execute()
-    counts_res = client.table("practices").select("last_touched_by").execute()
+    # Narrowed from `select("*")`: these are every column `profiles` has
+    # today, so the payload is unchanged, but a column added later (a token,
+    # a preferences blob) will not join an admin list response by default.
+    profiles = (
+        client.table("profiles")
+        .select("id,email,name,role,disabled_at,created_at")
+        .execute()
+    ).data or []
+
+    # `practices_touched` used to be counted in Python over an unpaginated
+    # `practices.select("last_touched_by")` — PostgREST silently truncates
+    # that at 1,000 of 23k rows, so every user's count was simply wrong, and
+    # the app paid a table scan to get the wrong answer.
+    #
+    # One `count="exact", head=True` request per profile instead: a HEAD with
+    # no response body, answered in the database. Profiles number 3-10 here,
+    # so it is 3-10 tiny requests against ~23 round trips and 23k rows of
+    # transfer for the paged-scan alternative — and it stays correct as
+    # `practices` grows, since the cost tracks the user list, not the table.
+    # (If profiles ever numbered in the hundreds, the single paged
+    # `select("last_touched_by")` scan becomes the better trade.)
     counts: dict[str, int] = {}
-    for row in counts_res.data or []:
-        uid = row.get("last_touched_by")
-        if uid:
-            counts[uid] = counts.get(uid, 0) + 1
-    users = []
-    for p in profiles_res.data or []:
-        users.append({**p, "practices_touched": counts.get(p["id"], 0)})
+    for p in profiles:
+        try:
+            res = (
+                client.table("practices")
+                .select("id", count="exact", head=True)
+                .eq("last_touched_by", p["id"])
+                .execute()
+            )
+            counts[p["id"]] = res.count or 0
+        except Exception as e:
+            log.warning("[admin.users.count.error] %s: %s", type(e).__name__, e)
+            counts[p["id"]] = 0
+
+    users = [{**p, "practices_touched": counts.get(p["id"], 0)} for p in profiles]
     return {"users": users}
 
 
@@ -534,8 +579,10 @@ async def send_email_endpoint(
     fields: dict = {}
     if _should_auto_advance(current_status, "CONTACTED"):
         fields["status"] = "CONTACTED"
-    update_practice_fields(place_id, fields, touched_by=user["id"], company_id=user["company_id"])
-    add_tags(place_id, ["CONTACTED"], company_id=user["company_id"])
+    update_practice_fields(place_id, fields, touched_by=user["id"],
+                           company_id=user["company_id"], practice_id=practice["id"])
+    add_tags(place_id, ["CONTACTED"], company_id=user["company_id"],
+             practice_id=practice["id"])
 
     return row
 
@@ -582,35 +629,32 @@ async def poll_email_replies_endpoint(
     existing = list_email_messages(practice["id"])
     existing_ids = {m.get("message_id") for m in existing if m.get("message_id")}
 
-    new_rows: list[dict] = []
-    for reply in replies:
-        if reply["message_id"] in existing_ids:
-            continue
-        inserted = insert_email_message(
-            practice_id=practice["id"],
-            user_id=None,
-            direction="in",
-            subject=reply.get("subject"),
-            body=reply.get("body"),
-            message_id=reply.get("message_id"),
-            in_reply_to=reply.get("in_reply_to"),
-            error=None,
-            company_id=user["company_id"],
-        )
-        if inserted:
-            new_rows.append(inserted)
+    # One insert for the whole batch (per table), not one per reply.
+    fresh = [r for r in replies if r["message_id"] not in existing_ids]
+    new_rows = insert_email_messages(
+        practice_id=practice["id"],
+        user_id=None,
+        direction="in",
+        messages=fresh,
+        company_id=user["company_id"],
+    ) if fresh else []
 
     if new_rows:
         current_status = practice.get("status", "NEW")
         fields: dict = {}
         if _should_auto_advance(current_status, "FOLLOW UP"):
             fields["status"] = "FOLLOW UP"
-        update_practice_fields(place_id, fields, touched_by=user["id"], company_id=user["company_id"])
-        add_tags(place_id, ["REPLIED"], company_id=user["company_id"])
+        update_practice_fields(place_id, fields, touched_by=user["id"],
+                               company_id=user["company_id"],
+                               practice_id=practice["id"])
+        add_tags(place_id, ["REPLIED"], company_id=user["company_id"],
+                 practice_id=practice["id"])
 
     return {
+        # The thread we just read plus what we just wrote — re-reading the
+        # table to count rows we already hold is a round trip for arithmetic.
         "new_messages": new_rows,
-        "total": len(list_email_messages(practice["id"])),
+        "total": len(existing) + len(new_rows),
     }
 
 
@@ -639,8 +683,10 @@ def mark_email_replied_endpoint(
     fields: dict = {}
     if _should_auto_advance(current_status, "FOLLOW UP"):
         fields["status"] = "FOLLOW UP"
-    update_practice_fields(place_id, fields, touched_by=user["id"], company_id=user["company_id"])
-    add_tags(place_id, ["REPLIED"], company_id=user["company_id"])
+    update_practice_fields(place_id, fields, touched_by=user["id"],
+                           company_id=user["company_id"], practice_id=practice["id"])
+    add_tags(place_id, ["REPLIED"], company_id=user["company_id"],
+             practice_id=practice["id"])
 
     return row
 
@@ -662,15 +708,53 @@ def me(user: dict = Depends(get_current_user)):
     return {**user, "is_bootstrap_admin": is_bootstrap_admin(user)}
 
 
+@app.get("/api/session")
+def session(user: dict = Depends(get_current_user)):
+    """Everything the app shell needs to boot, in one request.
+
+    `/api/me`, `/api/me/companies` and `/api/me/credits` are three requests
+    that every page load makes before it can render anything — and each one
+    separately pays `get_current_user`'s auth round trips, so the shell was
+    spending roughly three times the auth cost to answer three questions
+    about the same already-resolved user. This resolves the user once and
+    answers all three.
+
+    The keys carry the other routes' bodies verbatim (they call the same
+    helpers), so a client can migrate one field at a time. Those three routes
+    stay exactly as they are — the frontend moves over separately.
+    """
+    from src.auth import is_bootstrap_admin
+
+    return {
+        "user": {**user, "is_bootstrap_admin": is_bootstrap_admin(user)},
+        "companies": _my_companies(user),
+        "credits": _my_credits(user),
+    }
+
+
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
 
 
 def _anon_supabase_client():
-    """Anon (non-admin) Supabase client used to verify a user's current password."""
-    from supabase import create_client
-    return create_client(app_settings.supabase_url, app_settings.supabase_key)
+    """Anon (non-admin) Supabase client used to verify a user's current password.
+
+    Built per call rather than memoized: this is a rare re-auth path, and the
+    client is short-lived by design. It still takes an explicit timeout so it
+    can never inherit PostgREST's 120s default.
+    """
+    from supabase import ClientOptions, create_client
+
+    from src.storage import POSTGREST_TIMEOUT_SECONDS
+
+    return create_client(
+        app_settings.supabase_url,
+        app_settings.supabase_key,
+        options=ClientOptions(
+            postgrest_client_timeout=POSTGREST_TIMEOUT_SECONDS,
+        ),
+    )
 
 
 @app.post("/api/me/password")
@@ -813,9 +897,9 @@ def _has_icp_defined(icp_parsed) -> bool:
     return bool(icp_parsed.get("verticals_in_scope"))
 
 
-@app.get("/api/me/companies")
-def list_my_companies(user: dict = Depends(get_current_user)):
-    """List every company the current user is a member of."""
+def _my_companies(user: dict) -> dict:
+    """The `GET /api/me/companies` body. Extracted so `/api/session` returns
+    the identical shape rather than a second implementation of it."""
     client = get_admin_client()
     try:
         result = (
@@ -846,6 +930,12 @@ def list_my_companies(user: dict = Depends(get_current_user)):
     return {"companies": out, "current_company_id": user.get("company_id")}
 
 
+@app.get("/api/me/companies")
+def list_my_companies(user: dict = Depends(get_current_user)):
+    """List every company the current user is a member of."""
+    return _my_companies(user)
+
+
 # ---------------------------------------------------------------------------
 # Credits — balance, transactions, top-ups.
 # ---------------------------------------------------------------------------
@@ -857,6 +947,11 @@ def my_credits(user: dict = Depends(get_current_user)):
     company. Every authenticated user can read their own tenant's
     balance (so the topbar pill works for SDRs, not just admins).
     """
+    return _my_credits(user)
+
+
+def _my_credits(user: dict) -> dict:
+    """The `GET /api/me/credits` body — shared with `/api/session`."""
     company_id = user.get("company_id")
     if not company_id:
         return {"balance": 0, "purchased": 0, "consumed": 0, "transactions": []}
@@ -1036,20 +1131,47 @@ def admin_usage(
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
     client = get_admin_client()
 
+    # `.limit(5000)` does NOT lift PostgREST's 1,000-row ceiling, so every
+    # total below was computed over the newest 1,000 events in the window —
+    # cost was under-reported for any window holding more than that. Page the
+    # aggregate scan, and carry only the columns the buckets actually read:
+    # `metadata` is jsonb, is rendered for the newest 50 rows only, and used
+    # to be dragged across the wire for every row in the window.
     rows: list[dict]
     try:
-        result = (
-            client.table("usage_events").select("*")
+        from src.storage import _paginated_query
+
+        agg = (
+            client.table("usage_events")
+            .select("kind,model,input_tokens,output_tokens,calls,cost_cents,created_at")
             .eq("company_id", admin["company_id"])
             .gte("created_at", since)
             .order("created_at", desc=True)
-            .limit(5000)
-            .execute()
+            .order("id", desc=True)
         )
-        rows = result.data or []
+        rows = _paginated_query(agg, limit=200_000)
     except Exception as e:
         log.warning("[usage.fetch.error] %s", e)
         rows = []
+
+    # The rendered tail, fetched on its own so `metadata` rides along for the
+    # 50 rows that display it instead of for the whole window.
+    try:
+        recent_rows = (
+            client.table("usage_events")
+            .select("created_at,kind,model,input_tokens,output_tokens,"
+                    "calls,cost_cents,metadata")
+            .eq("company_id", admin["company_id"])
+            .gte("created_at", since)
+            .order("created_at", desc=True)
+            .order("id", desc=True)
+            .limit(50)
+            .execute()
+        ).data or []
+    except Exception as e:
+        log.warning("[usage.recent.error] %s", e)
+        # Same rows, minus the jsonb the fallback never fetched.
+        recent_rows = rows[:50]
 
     by_kind: dict[str, dict] = {}
     by_model: dict[str, dict] = {}
@@ -1122,7 +1244,7 @@ def admin_usage(
         "calls": r.get("calls") or 1,
         "cost_cents": round(float(r.get("cost_cents") or 0), 4),
         "metadata": r.get("metadata"),
-    } for r in rows[:50]]
+    } for r in recent_rows[:50]]
 
     return {
         "window_days": days,
@@ -1387,7 +1509,7 @@ def export_practices_csv_by_ids(
         company_id=user.get("company_id"),
     )
 
-    filename = f"apex-leads-bulk-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.csv"
+    filename = f"hv-leads-bulk-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.csv"
     return StreamingResponse(
         iter_csv(),
         media_type="text/csv",
@@ -1462,7 +1584,7 @@ def export_practices_csv(
     )
 
     cap_label = "all" if cap is None else f"max{cap}"
-    filename = f"apex-leads-{cap_label}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.csv"
+    filename = f"hv-leads-{cap_label}-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M')}.csv"
     return StreamingResponse(
         iter_csv(),
         media_type="text/csv",
@@ -1536,9 +1658,14 @@ async def search(body: SearchRequest, user: dict = Depends(get_current_user)):
     # Re-fetch relevant practices from DB so the response carries joined
     # attribution (last_touched_by_name). Irrelevant ones never enter the DB
     # — we return their in-memory dump so the UI can show + grey them out.
+    #
+    # ONE batched read, not one `get_practice` per result: a Places page is up
+    # to 20 rows and Bulk Scan runs this ~60 times a sweep, so the per-row loop
+    # was ~1,200 avoidable selects (each its own TLS handshake) per scan.
+    rows_by_place = get_practices_by_place_ids([p.place_id for p in relevant])
     enriched: list[dict] = []
     for p in relevant:
-        row = get_practice(p.place_id)
+        row = rows_by_place.get(p.place_id)
         enriched.append(_attach_lead_url(row) if row else p.model_dump())
     for p in irrelevant:
         enriched.append(p.model_dump())
@@ -1548,7 +1675,7 @@ async def search(body: SearchRequest, user: dict = Depends(get_current_user)):
     return {
         "practices": enriched,
         "count": len(practices),
-        "upserted": upserted,
+        "upserted": len(upserted),
     }
 
 
@@ -1560,15 +1687,18 @@ def _practice_exported(company_id: str, practice_id: int | None) -> bool:
     practice-detail Import Lead button can render 'Exported' after a reload
     instead of reverting to its default state. A practice with no linked posting
     is never deduped (always sendable), so it reports False.
+
+    ONE query: `newest_lead_for_practice` answers "newest posting + this
+    tenant's lead for it" in a single embed. This runs on every practice-detail
+    load, and it used to be two sequential round trips whose first one dragged
+    back a full job description to read one integer off it.
     """
     from src import lead_store
 
     if not practice_id:
         return False
-    posting = lead_store.newest_posting_for_practice(practice_id)
-    if not posting:
-        return False
-    lead_row = lead_store.find_lead_by_posting(company_id, posting["id"])
+    found = lead_store.newest_lead_for_practice(company_id, practice_id)
+    lead_row = (found or {}).get("lead")
     return bool(lead_row and lead_row.get("talentdb_exported_at"))
 
 
@@ -1609,8 +1739,15 @@ async def analyze(
             user_id=user.get("id"),
         )
         if refreshed:
-            upsert_practices([refreshed], touched_by=user["id"], company_id=user["company_id"])
-            current_record = get_practice(place_id) or refreshed.model_dump()
+            # The upsert returns the stored row — no re-read. `last_touched_by`
+            # was just stamped with this user, so the name the join would have
+            # resolved is the one we already have.
+            rows = upsert_practices(
+                [refreshed], touched_by=user["id"], company_id=user["company_id"],
+            )
+            current_record = (
+                _with_actor_name(rows[0], user) if rows else refreshed.model_dump()
+            )
 
     if current_record:
         name = current_record["name"]
@@ -1698,8 +1835,10 @@ async def analyze(
         if _should_auto_advance(current_status, "RESEARCHED"):
             analysis["status"] = "RESEARCHED"
 
-    updated = update_practice_analysis(place_id, analysis, touched_by=user["id"], company_id=user["company_id"])
-    add_tags(place_id, ["RESEARCHED"], company_id=user["company_id"])
+    updated = update_practice_analysis(place_id, analysis, touched_by=user["id"],
+                                       company_id=user["company_id"])
+    add_tags(place_id, ["RESEARCHED"], company_id=user["company_id"],
+             practice_id=(updated or current_record or {}).get("id"))
     if updated:
         return updated
 
@@ -1723,8 +1862,12 @@ async def rescan_practice(place_id: str, user: dict = Depends(get_current_user))
     if not refreshed:
         return existing
 
-    upsert_practices([refreshed], touched_by=user["id"], company_id=user["company_id"])
-    return get_practice(place_id) or refreshed.model_dump()
+    # The upsert hands back the stored row, so the old `get_practice` right
+    # after it was re-reading a row we were already holding.
+    rows = upsert_practices(
+        [refreshed], touched_by=user["id"], company_id=user["company_id"],
+    )
+    return _with_actor_name(rows[0], user) if rows else refreshed.model_dump()
 
 
 @app.get("/api/practices/{place_id}/script")
@@ -1744,12 +1887,17 @@ async def get_script(place_id: str, user: dict = Depends(get_current_user)):
             detail={"error": "INSUFFICIENT_CREDITS", "action": "call_script"},
         )
 
-    update_practice_fields(place_id, {"call_script": json.dumps(script)}, touched_by=user["id"], company_id=user["company_id"])
-    add_tags(place_id, ["SCRIPT_READY"], company_id=user["company_id"])
+    update_practice_fields(place_id, {"call_script": json.dumps(script)},
+                           touched_by=user["id"], company_id=user["company_id"],
+                           practice_id=practice["id"])
+    add_tags(place_id, ["SCRIPT_READY"], company_id=user["company_id"],
+             practice_id=practice["id"])
 
     current_status = practice.get("status", "NEW")
     if _should_auto_advance(current_status, "SCRIPT READY"):
-        update_practice_fields(place_id, {"status": "SCRIPT READY"}, touched_by=user["id"], company_id=user["company_id"])
+        update_practice_fields(place_id, {"status": "SCRIPT READY"},
+                               touched_by=user["id"], company_id=user["company_id"],
+                               practice_id=practice["id"])
 
     return script
 
@@ -1768,8 +1916,11 @@ async def regenerate_script_endpoint(place_id: str, user: dict = Depends(get_cur
             detail={"error": "INSUFFICIENT_CREDITS", "action": "call_script"},
         )
 
-    update_practice_fields(place_id, {"call_script": json.dumps(script)}, touched_by=user["id"], company_id=user["company_id"])
-    add_tags(place_id, ["SCRIPT_READY"], company_id=user["company_id"])
+    update_practice_fields(place_id, {"call_script": json.dumps(script)},
+                           touched_by=user["id"], company_id=user["company_id"],
+                           practice_id=practice["id"])
+    add_tags(place_id, ["SCRIPT_READY"], company_id=user["company_id"],
+             practice_id=practice["id"])
     return script
 
 
@@ -1872,7 +2023,8 @@ async def patch_practice(
         "CLOSED LOST": "CLOSED_LOST",
     }
     if body.status and body.status in STATUS_TAG_MAP:
-        add_tags(place_id, [STATUS_TAG_MAP[body.status]], company_id=user["company_id"])
+        add_tags(place_id, [STATUS_TAG_MAP[body.status]],
+                 company_id=user["company_id"], practice_id=updated.get("id"))
 
     # If notes changed AND practice has a Salesforce Lead, push the notes
     # into the Lead's Call_Notes__c field (overwriting). Fail-soft: log
@@ -1922,7 +2074,8 @@ async def call_log_endpoint(
     except LookupError:
         log.warning("[api.call_log.404] place_id=%s", place_id)
         raise HTTPException(404, "Practice not found")
-    add_tags(place_id, ["CONTACTED"], company_id=user["company_id"])
+    add_tags(place_id, ["CONTACTED"], company_id=user["company_id"],
+             practice_id=practice.get("id"))
     log.info(
         "[api.call_log.response] place_id=%s call_count=%s lead_id=%s warning=%s",
         place_id, practice.get("call_count"),
@@ -1996,18 +2149,27 @@ async def import_lead_practice_endpoint(
     company_id = user["company_id"]
     posting = None
     lead_row = None
+    posting_id = None
     pid = practice.get("id")
     if pid:
-        posting = lead_store.newest_posting_for_practice(pid)
-    if posting:
-        lead_row = lead_store.find_lead_by_posting(company_id, posting["id"])
-        if lead_row and lead_row.get("talentdb_exported_at"):
-            log.info("[api.import_lead.skip] place_id=%s already_exported", place_id)
-            return {"talentdb_status": "already_exported", "talentdb_warning": None,
-                    "local_entity_id": None}
+        # Same single-query helper the detail page's `exported` flag uses, so
+        # the badge and this guard can never disagree about which posting is
+        # "the newest one".
+        found = lead_store.newest_lead_for_practice(company_id, pid)
+        if found:
+            posting_id = found["posting_id"]
+            lead_row = found["lead"]
+    if lead_row and lead_row.get("talentdb_exported_at"):
+        log.info("[api.import_lead.skip] place_id=%s already_exported", place_id)
+        return {"talentdb_status": "already_exported", "talentdb_warning": None,
+                "local_entity_id": None}
+    # Only now is the full posting worth reading: the helper above carries the
+    # id, and the export is the one path that needs `description`.
+    if posting_id:
+        posting = lead_store.get_posting(posting_id)
 
     log.info("[api.import_lead] place_id=%s user=%s posting=%s",
-             place_id, user.get("email"), posting["id"] if posting else None)
+             place_id, user.get("email"), posting_id)
     result = await talentdb.import_lead(practice, posting, lead_row)
     if result.get("ok") and lead_row:
         lead_store.mark_lead_exported(company_id, lead_row["id"])
@@ -2059,6 +2221,7 @@ async def enrich_endpoint(
         final = update_practice_fields(
             place_id, {"enrichment_status": "failed"},
             touched_by=None, company_id=user["company_id"],
+            practice_id=existing.get("id"),
         )
         return {"practice": final, "clay_warning": f"Enrichment trigger failed: {e}"}
 
@@ -2068,6 +2231,7 @@ async def enrich_endpoint(
     updated = update_practice_fields(
         place_id, {"enrichment_status": "pending"},
         touched_by=None, company_id=user["company_id"],
+        practice_id=existing.get("id"),
     )
     return {"practice": updated, "clay_warning": None}
 
@@ -2185,27 +2349,40 @@ def _require_cron_secret(
 # GET is registered alongside POST on both stages because Vercel's scheduler
 # only ever issues a GET. The stages are idempotent and claim a bounded slice,
 # so neither is a meaningful mutation of anything a GET shouldn't touch.
+_SOURCE_ORDER = ("indeed", "linkedin")
+
+
 @app.post("/api/cron/leads/collect")
 @app.get("/api/cron/leads/collect")
 def cron_collect_leads(
     company_id: str | None = Query(None, description="Scope to one tenant"),
-    limit: int | None = Query(None, ge=1, le=200),
+    budget_minutes: float | None = Query(None, gt=0, le=45),
     x_cron_secret: str | None = Header(default=None, alias="X-Cron-Secret"),
     authorization: str | None = Header(default=None),
 ):
-    """Claim the least-recently-run targets, search the boards, upsert postings.
+    """Two-phase budget sweep (plan §3): claim the stalest due location for one
+    source at a time, cross it with every enabled term, search, upsert, and
+    stamp only once every term for that location has run.
 
-    Boards rotate on wall clock rather than a stored cursor: consecutive
-    firings advance without any state to lose, and a crashed run costs at most
-    one slice of freshness.
+    A much smaller default budget than the GitHub Actions path
+    (`lead_cron_budget_minutes`, default 10 min): this route still runs
+    inside a serverless invocation with its own wall-clock ceiling, unlike
+    `scripts/run_leads.py` on the Actions runner, which is the steady-state
+    path this route now shadows for a manual/quick trigger.
+
+    Indeed's phase is capped at `lead_indeed_budget_fraction` of the budget
+    when both sources are enabled (LinkedIn always gets the rest), and a
+    location whose estimated cost (this run's own observed per-term timing)
+    doesn't fit the remaining phase is never started at all — see
+    `lead_targets.phase_deadline` / `location_fits_budget` for why: without
+    both, a re-seed flooding Indeed with never-swept locations can starve
+    LinkedIn for the whole run, and the stalest LinkedIn location can get
+    claimed, partially swept, and abandoned unstamped every run forever.
     """
     _require_cron_secret(x_cron_secret, authorization)
     from src.job_boards import search_jobs
 
-    batch = limit or app_settings.lead_collect_batch
-    # 30-minute buckets, so the LinkedIn cycle advances at a human-legible rate.
-    run_index = int(_time.time() // 1800)
-    sources = lead_targets.sources_for_run(run_index)
+    budget = budget_minutes or app_settings.lead_cron_budget_minutes
 
     try:
         tenant = company_id or lead_targets.resolve_company_id()
@@ -2213,50 +2390,132 @@ def cron_collect_leads(
         raise HTTPException(503, f"No lead tenant resolved: {e}")
 
     # Seeds on the very first run so collection works without a separate admin
-    # step. A no-op once the tenant has targets.
+    # step. A no-op once the tenant has locations.
     seeded = lead_targets.ensure_targets(tenant)
 
-    summary = {
-        "run_index": run_index, "sources": sources,
-        "company_id": tenant, "seeded": seeded["inserted"], "targets": 0,
-        "rows": 0, "written": 0, "zero_row_targets": 0, "errors": [],
-    }
+    # Fetched ONCE for the whole sweep — neither changes mid-run, and
+    # re-querying them per claimed location would double the DB round trips.
+    terms = lead_targets.enabled_terms(tenant)
+    config = lead_targets.list_config(tenant)
+    overrides = {(o["term_id"], o["location_id"]): o["enabled"] for o in config["overrides"]}
+    sources = [s for s in _SOURCE_ORDER if s in lead_config.enabled_sources()]
 
-    for target in lead_targets.claim_targets(tenant, batch):
-        summary["targets"] += 1
-        try:
-            rows, stats = search_jobs(
-                target["term"], target["location"],
-                sources=sources, target=target,
+    summary = {
+        "company_id": tenant, "sources": sources,
+        "seeded": seeded["terms"] + seeded["locations"],
+        "locations": 0, "rows": 0, "written": 0, "new": 0,
+        "incomplete": 0, "skipped": 0, "errors": [],
+    }
+    # Per-source zero-row tripwire bookkeeping: swept count + total rows.
+    per_source = {s: {"locations": 0, "rows": 0} for s in sources}
+
+    run_start = _time.monotonic()
+    budget_seconds = budget * 60
+    default_est = {
+        "indeed": app_settings.lead_indeed_est_term_s,
+        "linkedin": app_settings.lead_linkedin_est_term_s,
+    }
+    term_seconds_total = {s: 0.0 for s in sources}
+    term_seconds_count = {s: 0 for s in sources}
+
+    for source in sources:
+        cursor_col = f"last_{source}_at"
+        phase_end = lead_targets.phase_deadline(
+            source, sources, run_start, budget_seconds,
+            app_settings.lead_indeed_budget_fraction,
+        )
+        while _time.monotonic() < phase_end:
+            claimed = lead_targets.claim_locations(tenant, source, limit=1)
+            if not claimed:
+                break
+            location = claimed[0]
+
+            rows_for_loc = lead_targets.build_claim_rows(location, terms, overrides)
+            avg_term_s = (
+                term_seconds_total[source] / term_seconds_count[source]
+                if term_seconds_count[source] else default_est[source]
             )
-        except Exception as e:
-            summary["errors"].append(f"{target['term']}@{target['location']}: {e}")
-            continue
-        for source, stat in stats.items():
-            if stat.get("error"):
-                summary["errors"].append(f"{source}: {stat['error']}")
-        summary["rows"] += len(rows)
-        if rows:
-            summary["written"] += lead_store.upsert_postings(rows)
-        else:
-            summary["zero_row_targets"] += 1
-        lead_targets.record_target_result(target["id"], len(rows))
+            if not lead_targets.location_fits_budget(
+                _time.monotonic(), phase_end, avg_term_s, len(rows_for_loc)
+            ):
+                summary["skipped"] += 1
+                break  # do NOT touch this location; it stays claimable next run
+
+            summary["locations"] += 1
+            window = lead_targets.adaptive_window_hours(
+                location.get(cursor_col), app_settings.lead_window_buffer_hours
+            )
+
+            loc_rows = 0
+            completed = True
+            for row in rows_for_loc:
+                if _time.monotonic() >= phase_end:
+                    completed = False
+                    break
+                try:
+                    found, stats = search_jobs(
+                        row["term"], row["location"],
+                        sources=[source], target=row, hours_old=window,
+                    )
+                except Exception as e:
+                    summary["errors"].append(f"{row['term']}@{row['location']}: {e}")
+                    continue
+                stat = stats.get(source, {})
+                if stat.get("error"):
+                    summary["errors"].append(f"{source}: {stat['error']}")
+                elapsed_s = stat.get("elapsed_s")
+                if elapsed_s is not None:
+                    term_seconds_total[source] += elapsed_s
+                    term_seconds_count[source] += 1
+                row_count = stat.get("rows", 0)
+                if found:
+                    existing = lead_store.existing_external_ids(
+                        source, [r["external_id"] for r in found if r.get("external_id")]
+                    )
+                    new_count = sum(
+                        1 for r in found if r.get("external_id") not in existing
+                    )
+                    summary["written"] += lead_store.upsert_postings(found)
+                else:
+                    new_count = 0
+                lead_targets.record_target_result(
+                    row["term_id"], row["location_id"], source, row_count, new_count,
+                )
+                loc_rows += row_count
+                summary["rows"] += row_count
+                summary["new"] += new_count
+
+            if completed:
+                # Only stamp + record the sweep once every term ran — an
+                # incomplete location (deadline hit mid-loop) is redone next
+                # run instead of being marked fresh (crash-safe, plan §3).
+                lead_targets.stamp_location(tenant, location["id"], source)
+                lead_targets.record_location_sweep(tenant, location["id"], source, loc_rows)
+                per_source[source]["locations"] += 1
+                per_source[source]["rows"] += loc_rows
+            else:
+                summary["incomplete"] += 1
+                break  # budget exhausted mid-location; stop this source's phase
 
     # The Indeed failure mode is silence, not an error (ADR-02): the library
     # reaches an undocumented mobile API whose key can rotate upstream, after
-    # which every query returns zero rows and nothing raises. Log it loudly —
-    # this line is what an alert should watch.
-    if summary["targets"] and summary["zero_row_targets"] == summary["targets"]:
+    # which every query returns zero rows and nothing raises. A source that
+    # swept at least one location and kept nothing across all of them is the
+    # tripwire.
+    alert_sources = [
+        s for s, v in per_source.items() if v["locations"] and v["rows"] == 0
+    ]
+    if alert_sources:
         summary["alert"] = (
-            "Every target returned zero rows. Check the python-jobspy pin — "
-            "this is the Indeed API-key rotation failure mode."
+            f"{', '.join(alert_sources)} swept locations but returned zero rows. "
+            "Check the python-jobspy pin — this is the Indeed API-key rotation "
+            "failure mode."
         )
-        log.error("[leads.collect.zero_rows] targets=%d sources=%s",
-                  summary["targets"], sources)
+        log.error("[leads.collect.zero_rows] sources=%s", alert_sources)
     else:
-        log.info("[leads.collect] targets=%d rows=%d written=%d zero=%d",
-                 summary["targets"], summary["rows"], summary["written"],
-                 summary["zero_row_targets"])
+        log.info("[leads.collect] locations=%d rows=%d written=%d new=%d",
+                 summary["locations"], summary["rows"], summary["written"],
+                 summary["new"])
     return summary
 
 
@@ -2424,84 +2683,116 @@ def _github_actions_headers() -> dict:
     }
 
 
-def _leads_workflow_url() -> str:
+def _scheduled_workflow_files() -> list[str]:
+    """The workflow files the pause/resume toggle controls.
+
+    The scheduled pair by default (source-split, one workflow per board).
+    Falls back to the dispatch workflow if the list is configured empty, so
+    the toggle can never be a silent no-op.
+    """
+    files = [
+        f.strip()
+        for f in app_settings.github_leads_scheduled_workflows.split(",")
+        if f.strip()
+    ]
+    return files or [app_settings.github_leads_workflow]
+
+
+def _workflow_url(workflow_file: str) -> str:
     return (
         f"https://api.github.com/repos/{app_settings.github_repo}"
-        f"/actions/workflows/{app_settings.github_leads_workflow}"
+        f"/actions/workflows/{workflow_file}"
     )
 
 
 @app.get("/api/admin/leads/pipeline")
 async def get_lead_pipeline_state(admin: dict = Depends(require_admin)):
-    """Report whether the scheduled pipeline workflow is active or paused.
+    """Report whether the scheduled pipeline workflows are active or paused.
 
-    Reads the workflow's `state` from GitHub: "active" means the hourly cron
-    will fire; any of the disabled_* states means it won't. Collapsed to a
-    two-value state so the frontend toggle doesn't care *how* it was disabled.
+    Reads each scheduled workflow's `state` from GitHub: "active" means its
+    cron will fire; any of the disabled_* states means it won't. Collapsed to
+    a two-value state — "active" if ANY scheduled workflow is active — so the
+    frontend toggle doesn't care how many workflows exist or how one was
+    disabled. A workflow GitHub hasn't registered yet (404 — e.g. the file
+    hasn't landed on the default branch) is skipped, not an error.
     """
     headers = _github_actions_headers()
 
     import httpx
+    states: dict[str, str] = {}
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(_leads_workflow_url(), headers=headers)
+            for wf in _scheduled_workflow_files():
+                resp = await client.get(_workflow_url(wf), headers=headers)
+                if resp.status_code == 404:
+                    continue
+                if resp.status_code != 200:
+                    detail = (resp.text or "").strip()[:200]
+                    raise HTTPException(
+                        502,
+                        f"GitHub rejected the state read ({resp.status_code}): {detail}",
+                    )
+                states[wf] = resp.json().get("state", "")
+    except HTTPException:
+        raise
     except Exception as e:
         log.warning("[leads.pipeline.state.error] %s: %s",
                     type(e).__name__, str(e)[:200])
         raise HTTPException(502, "Could not reach GitHub to read the workflow state")
 
-    if resp.status_code != 200:
-        detail = (resp.text or "").strip()[:200]
-        raise HTTPException(
-            502, f"GitHub rejected the state read ({resp.status_code}): {detail}"
-        )
-
-    gh_state = resp.json().get("state", "")
-    return {"state": "active" if gh_state == "active" else "paused",
-            "github_state": gh_state}
+    any_active = any(s == "active" for s in states.values())
+    return {"state": "active" if any_active else "paused",
+            "workflows": states}
 
 
 @app.post("/api/admin/leads/pipeline/stop")
 async def stop_lead_pipeline(admin: dict = Depends(require_admin)):
-    """Pause the pipeline: disable the scheduled workflow and cancel live runs.
+    """Pause the pipeline: disable every scheduled workflow, cancel live runs.
 
-    Disabling the workflow stops the hourly cron (and blocks manual dispatches)
-    but leaves an in-flight run going, so queued and in-progress runs are
-    cancelled too — after the click nothing should still be spending credits.
-    A failed cancel of one run doesn't fail the request: the workflow is
-    already disabled, which is the part that must not silently no-op.
+    Disabling a workflow stops its cron but leaves an in-flight run going, so
+    queued and in-progress runs are cancelled too — after the click nothing
+    should still be spending credits. A failed cancel of one run doesn't fail
+    the request: the workflows are already disabled, which is the part that
+    must not silently no-op. Unregistered workflows (404) are skipped; the
+    manual dispatch workflow is deliberately NOT in this set, so "Run
+    pipeline" keeps working while paused.
     """
     headers = _github_actions_headers()
-    base = _leads_workflow_url()
 
     import httpx
+    disabled: list[str] = []
+    cancelled = 0
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.put(f"{base}/disable", headers=headers)
-            if resp.status_code != 204:
-                detail = (resp.text or "").strip()[:200]
-                log.warning("[leads.pipeline.stop.rejected] status=%s body=%s",
-                            resp.status_code, detail)
-                raise HTTPException(
-                    502, f"GitHub rejected the disable ({resp.status_code}): {detail}"
-                )
-
-            cancelled = 0
-            for status in ("queued", "in_progress"):
-                runs_resp = await client.get(
-                    f"{base}/runs", headers=headers,
-                    params={"status": status, "per_page": 100},
-                )
-                if runs_resp.status_code != 200:
+            for wf in _scheduled_workflow_files():
+                base = _workflow_url(wf)
+                resp = await client.put(f"{base}/disable", headers=headers)
+                if resp.status_code == 404:
                     continue
-                for run in runs_resp.json().get("workflow_runs", []):
-                    cancel_resp = await client.post(
-                        f"https://api.github.com/repos/{app_settings.github_repo}"
-                        f"/actions/runs/{run['id']}/cancel",
-                        headers=headers,
+                if resp.status_code != 204:
+                    detail = (resp.text or "").strip()[:200]
+                    log.warning("[leads.pipeline.stop.rejected] wf=%s status=%s body=%s",
+                                wf, resp.status_code, detail)
+                    raise HTTPException(
+                        502, f"GitHub rejected the disable ({resp.status_code}): {detail}"
                     )
-                    if cancel_resp.status_code == 202:
-                        cancelled += 1
+                disabled.append(wf)
+
+                for status in ("queued", "in_progress"):
+                    runs_resp = await client.get(
+                        f"{base}/runs", headers=headers,
+                        params={"status": status, "per_page": 100},
+                    )
+                    if runs_resp.status_code != 200:
+                        continue
+                    for run in runs_resp.json().get("workflow_runs", []):
+                        cancel_resp = await client.post(
+                            f"https://api.github.com/repos/{app_settings.github_repo}"
+                            f"/actions/runs/{run['id']}/cancel",
+                            headers=headers,
+                        )
+                        if cancel_resp.status_code == 202:
+                            cancelled += 1
     except HTTPException:
         raise
     except Exception as e:
@@ -2509,34 +2800,259 @@ async def stop_lead_pipeline(admin: dict = Depends(require_admin)):
                     type(e).__name__, str(e)[:200])
         raise HTTPException(502, "Could not reach GitHub to stop the pipeline")
 
-    log.info("[leads.pipeline.stop] cancelled=%s by=%s", cancelled, admin.get("id"))
-    return {"ok": True, "state": "paused", "cancelled_runs": cancelled}
+    log.info("[leads.pipeline.stop] disabled=%s cancelled=%s by=%s",
+             disabled, cancelled, admin.get("id"))
+    return {"ok": True, "state": "paused", "workflows": disabled,
+            "cancelled_runs": cancelled}
 
 
 @app.post("/api/admin/leads/pipeline/resume")
 async def resume_lead_pipeline(admin: dict = Depends(require_admin)):
-    """Resume the pipeline: re-enable the workflow so the hourly cron fires."""
+    """Resume the pipeline: re-enable every scheduled workflow's cron."""
     headers = _github_actions_headers()
 
     import httpx
+    enabled: list[str] = []
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.put(f"{_leads_workflow_url()}/enable", headers=headers)
+            for wf in _scheduled_workflow_files():
+                resp = await client.put(f"{_workflow_url(wf)}/enable", headers=headers)
+                if resp.status_code == 404:
+                    continue
+                if resp.status_code != 204:
+                    detail = (resp.text or "").strip()[:200]
+                    log.warning("[leads.pipeline.resume.rejected] wf=%s status=%s body=%s",
+                                wf, resp.status_code, detail)
+                    raise HTTPException(
+                        502, f"GitHub rejected the enable ({resp.status_code}): {detail}"
+                    )
+                enabled.append(wf)
+    except HTTPException:
+        raise
     except Exception as e:
         log.warning("[leads.pipeline.resume.error] %s: %s",
                     type(e).__name__, str(e)[:200])
         raise HTTPException(502, "Could not reach GitHub to resume the pipeline")
 
-    if resp.status_code != 204:
-        detail = (resp.text or "").strip()[:200]
-        log.warning("[leads.pipeline.resume.rejected] status=%s body=%s",
-                    resp.status_code, detail)
-        raise HTTPException(
-            502, f"GitHub rejected the enable ({resp.status_code}): {detail}"
-        )
+    log.info("[leads.pipeline.resume] enabled=%s by=%s", enabled, admin.get("id"))
+    return {"ok": True, "state": "active", "workflows": enabled}
 
-    log.info("[leads.pipeline.resume] by=%s", admin.get("id"))
-    return {"ok": True, "state": "active"}
+
+# ---------------------------------------------------------------------------
+# Instant Signals — config page. Reads the config catalog and edits the live
+# `search_terms` / `search_locations` / `target_overrides` dimension tables by
+# hand (admin only). The collector reads only these tables (ADR-03), so this
+# is the supported way to tune what gets searched without a config-file
+# change and deploy. See docs/refactor/instant-signals-targets.md §4.
+# ---------------------------------------------------------------------------
+
+
+class AddTermRow(BaseModel):
+    term: str
+    service_line: str
+    enabled: bool = True
+
+
+class AddTermsRequest(BaseModel):
+    rows: list[AddTermRow]
+
+
+class AddLocationRow(BaseModel):
+    location: str
+    state: str
+    granularity: str
+    enabled: bool = True
+
+
+class AddLocationsRequest(BaseModel):
+    rows: list[AddLocationRow]
+
+
+class ToggleEnabledRequest(BaseModel):
+    enabled: bool
+
+
+class BulkToggleEnabledRequest(BaseModel):
+    ids: list[int]
+    enabled: bool
+
+
+class SetOverrideRequest(BaseModel):
+    term_id: int
+    location_id: int
+    # None unpins the cell, returning it to term.enabled AND location.enabled.
+    enabled: bool | None = None
+
+
+@app.get("/api/admin/leads/config")
+def get_leads_config(admin: dict = Depends(require_admin)):
+    """The search-dimension config for the current tenant.
+
+    `catalog` is the checked-in lead config surfaced as suggestions for the
+    "Add …" forms; `terms`/`locations`/`overrides` are the live, editable
+    dimensions the collector actually reads (ADR-03) — the two can drift on
+    purpose, since editing the tables without touching the file is the whole
+    point of the page. `sweep` is the per-source coverage/freshness numbers
+    from `sweep_status`, so the page can show the freshness cost of adding a
+    state before an operator does it.
+    """
+    try:
+        cat = lead_targets.catalog()
+    except lead_config.LeadConfigError as e:
+        raise HTTPException(500, f"Lead config is invalid: {e}")
+    dims = lead_targets.list_config(admin["company_id"])
+    return {
+        "catalog": cat,
+        "terms": dims["terms"],
+        "locations": dims["locations"],
+        "overrides": dims["overrides"],
+        # Hand `sweep_status` the rows we just read — it computes coverage from
+        # `search_locations` and would otherwise select the same table twice
+        # per page load. It filters `enabled` itself.
+        "sweep": lead_targets.sweep_status(
+            admin["company_id"], locations=dims["locations"],
+        ),
+    }
+
+
+@app.post("/api/admin/leads/terms")
+def add_leads_terms(body: AddTermsRequest, admin: dict = Depends(require_admin)):
+    """Add hand-built search terms (a track's keywords). Idempotent: existing
+    `(company_id, term)` pairs are skipped, never reset, so an add never
+    re-enables a term an operator switched off."""
+    if not body.rows:
+        raise HTTPException(400, "No term rows supplied")
+    try:
+        result = lead_targets.add_terms(
+            admin["company_id"], [r.model_dump() for r in body.rows]
+        )
+    except lead_targets.TargetValidationError as e:
+        raise HTTPException(400, str(e))
+    return result
+
+
+@app.post("/api/admin/leads/locations")
+def add_leads_locations(body: AddLocationsRequest, admin: dict = Depends(require_admin)):
+    """Add hand-built search locations (a state's statewide row plus cities,
+    or a single custom city). Idempotent, same shape as `add_leads_terms`."""
+    if not body.rows:
+        raise HTTPException(400, "No location rows supplied")
+    try:
+        result = lead_targets.add_locations(
+            admin["company_id"], [r.model_dump() for r in body.rows]
+        )
+    except lead_targets.TargetValidationError as e:
+        raise HTTPException(400, str(e))
+    return result
+
+
+# Route order matters, same trap as `/api/leads/export.csv` below: the literal
+# `/bulk` paths must be declared BEFORE their `/{id}` siblings, or FastAPI
+# matches the parameter route first and rejects "bulk" as a non-integer id.
+
+
+@app.patch("/api/admin/leads/terms/bulk")
+def bulk_toggle_leads_terms(
+    body: BulkToggleEnabledRequest, admin: dict = Depends(require_admin),
+):
+    """Enable or disable many terms in ONE update.
+
+    The config page's state-level switches used to fan out a PATCH per row —
+    ~64 requests to enable a state, each paying its own auth round trips. Ids
+    that aren't this tenant's are silently absent from `updated` rather than
+    erroring: the tenant filter is in the UPDATE itself, so a caller can
+    neither read nor write another tenant's rows by guessing ids.
+    """
+    return {
+        "updated": lead_targets.set_terms_enabled(
+            admin["company_id"], body.ids, body.enabled,
+        )
+    }
+
+
+@app.patch("/api/admin/leads/locations/bulk")
+def bulk_toggle_leads_locations(
+    body: BulkToggleEnabledRequest, admin: dict = Depends(require_admin),
+):
+    """Enable or disable many locations in ONE update. Same contract as the
+    terms sibling — and the one that pays off most, since a state is dozens of
+    city rows plus its statewide row."""
+    return {
+        "updated": lead_targets.set_locations_enabled(
+            admin["company_id"], body.ids, body.enabled,
+        )
+    }
+
+
+@app.patch("/api/admin/leads/terms/{term_id}")
+def toggle_leads_term(
+    term_id: int, body: ToggleEnabledRequest, admin: dict = Depends(require_admin),
+):
+    """Enable or disable one term. One PATCH flips a whole keyword across
+    every location it crosses at claim time — no per-cell PATCH storm."""
+    updated = lead_targets.set_term_enabled(admin["company_id"], term_id, body.enabled)
+    if not updated:
+        raise HTTPException(404, "Term not found")
+    return updated
+
+
+@app.delete("/api/admin/leads/terms/{term_id}")
+def delete_leads_term(term_id: int, admin: dict = Depends(require_admin)):
+    """Hard-delete one hand-added term. A term still in the checked-in
+    catalog (`roles.json`) refuses with 409 rather than deleting — it would
+    just be silently resurrected by the next collect run's re-seed; see
+    `lead_targets.CatalogProtectedError`. Disable it instead."""
+    try:
+        deleted = lead_targets.delete_term(admin["company_id"], term_id)
+    except lead_targets.CatalogProtectedError as e:
+        raise HTTPException(409, str(e))
+    if not deleted:
+        raise HTTPException(404, "Term not found")
+    return deleted
+
+
+@app.patch("/api/admin/leads/locations/{location_id}")
+def toggle_leads_location(
+    location_id: int, body: ToggleEnabledRequest, admin: dict = Depends(require_admin),
+):
+    """Enable or disable one location (a city or a statewide row). Disable is
+    the off switch — we never delete, because the rotation cursors are the
+    sweep history and dropping a row would lose them."""
+    updated = lead_targets.set_location_enabled(admin["company_id"], location_id, body.enabled)
+    if not updated:
+        raise HTTPException(404, "Location not found")
+    return updated
+
+
+@app.delete("/api/admin/leads/locations/{location_id}")
+def delete_leads_location(location_id: int, admin: dict = Depends(require_admin)):
+    """Hard-delete one hand-added location. A location still in the
+    checked-in catalog (`geography.json`) refuses with 409 — same reasoning
+    as `delete_leads_term`. Disable it instead."""
+    try:
+        deleted = lead_targets.delete_location(admin["company_id"], location_id)
+    except lead_targets.CatalogProtectedError as e:
+        raise HTTPException(409, str(e))
+    if not deleted:
+        raise HTTPException(404, "Location not found")
+    return deleted
+
+
+@app.put("/api/admin/leads/overrides")
+def set_leads_override(body: SetOverrideRequest, admin: dict = Depends(require_admin)):
+    """Pin or unpin one `(term, location)` cell. `enabled: null` deletes the
+    pin, returning the cell to the default (`term.enabled AND
+    location.enabled`); `true`/`false` upserts an explicit override.
+    """
+    result = lead_targets.set_override(
+        admin["company_id"], body.term_id, body.location_id, body.enabled
+    )
+    # A `None` result is ambiguous by itself: it's the expected return for an
+    # unpin (enabled=None) but also what a scope miss (term/location not this
+    # tenant's) returns. Only the latter is a 404.
+    if result is None and body.enabled is not None:
+        raise HTTPException(404, "Term or location not found for this tenant")
+    return {"override": result}
 
 
 # ---------------------------------------------------------------------------
@@ -2550,11 +3066,18 @@ async def resume_lead_pipeline(admin: dict = Depends(require_admin)):
 # CSV column order — kept in sync with the export endpoint below.
 # The posting facts an operator acts on, then the outreach contact columns.
 def _posting_from_lead(lead: dict) -> dict:
-    """Reconstruct a posting dict from a flattened export lead.
+    """Reconstruct a posting dict from a flattened lead.
 
-    `leads_for_export` lifts the posting's columns onto the lead (renaming
-    `first_seen_at` → `posting_created_at` and dropping the posting `id`), so
-    talentdb's builders — which expect a raw posting dict — get their keys back.
+    `lead_store._flatten` lifts the embedded posting's columns onto the lead
+    (renaming `first_seen_at` → `posting_created_at` and dropping the posting
+    `id`), so talentdb's builders — which expect a raw posting dict — get their
+    keys back. That rename is the whole reason this is not just `lead`: pass
+    the flattened row straight through and `first_seen_at` silently vanishes
+    from the payload.
+
+    Two callers, both reading a lead whose posting came back embedded: the CSV
+    export (`LEAD_EXPORT_SELECT`) and the signals Import Lead button
+    (`LEAD_SELECT`). Neither needs to re-read `job_postings`.
     """
     return {
         "id": lead.get("posting_id"),
@@ -2785,21 +3308,30 @@ def patch_lead_endpoint(
     Only the three fields above are accepted, and `lead_store` strips anything
     outside `WORKFLOW_COLUMNS` again before writing — an operator action must
     never rewrite the reason the lead was surfaced.
+
+    Two round trips, not three. The write is its own existence check — an
+    UPDATE filtered on `(company_id, id)` that matches nothing is exactly the
+    404 the pre-check used to make a separate query for — so the only read
+    left is the one that shapes the response: both the feed and the detail
+    page splice this row in place of the one they were rendering, and those
+    rows carry the posting embed (title, employer, city, posted_at) that a
+    bare `company_job_leads` row has no way to supply.
     """
     if body.disposition and body.disposition not in lead_store.LEAD_DISPOSITIONS:
         raise HTTPException(
             400,
             f"disposition must be one of: {', '.join(lead_store.LEAD_DISPOSITIONS)}",
         )
-    if not lead_store.get_lead(user["company_id"], lead_id):
-        raise HTTPException(404, "Lead not found")
 
     fields = body.model_dump(exclude_unset=True)
-    updated = lead_store.update_lead_workflow(
+    if not lead_store.update_lead_workflow(
         user["company_id"], lead_id, fields, user_id=user.get("id"),
-    )
+    ):
+        raise HTTPException(404, "Lead not found")
+
+    updated = lead_store.get_lead(user["company_id"], lead_id)
     if not updated:
-        raise HTTPException(500, "Lead update failed")
+        raise HTTPException(404, "Lead not found")
     return updated
 
 
@@ -2824,7 +3356,12 @@ async def import_lead_signal_endpoint(
         return {"talentdb_status": "already_exported", "talentdb_warning": None,
                 "local_entity_id": None}
 
-    posting = lead_store.get_posting(lead.get("posting_id"))
+    # No posting fetch: `get_lead`'s LEAD_SELECT already embeds the whole
+    # posting and `_flatten` lifted it onto the lead. `_posting_from_lead`
+    # hands talentdb's builders the keys back under the names they expect —
+    # which is the reason it exists, and why re-reading `job_postings` here
+    # was pure duplication (description included).
+    posting = _posting_from_lead(lead)
     practice = None
     place_id = (lead.get("practice") or {}).get("place_id")
     if place_id:

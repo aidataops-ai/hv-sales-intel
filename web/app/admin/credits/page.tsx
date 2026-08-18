@@ -1,13 +1,13 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import Link from "next/link"
 import {
   ArrowLeft, Coins, Loader2, Plus, History, TrendingUp, TrendingDown,
 } from "lucide-react"
 import { useAuth } from "@/lib/auth"
 import {
-  CREDIT_VALUE_CENTS, creditsToDollars, formatCredits,
+  CREDIT_VALUE_CENTS, creditsToDollars, formatCredits, refreshCreditsIfStale,
   topupCredits, useCredits, type CreditTransaction,
 } from "@/lib/credits"
 
@@ -21,6 +21,15 @@ export default function AdminCreditsPage() {
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [successMsg, setSuccessMsg] = useState<string | null>(null)
+
+  // The balance now comes from the shared store the app shell seeds out of
+  // /api/session, so landing here cold costs no extra request. This is the
+  // one page that also renders the transaction ledger, though, and reaching
+  // it by client-side navigation can mean a snapshot several actions old —
+  // so re-read, but only when the snapshot didn't just arrive with the page.
+  useEffect(() => {
+    refreshCreditsIfStale()
+  }, [])
 
   // Reachable by direct URL for admins only — intentionally NOT linked in the
   // UI; the customer-facing billing surfaces stay hidden via SHOW_BILLING.
