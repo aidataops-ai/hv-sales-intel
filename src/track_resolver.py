@@ -17,7 +17,13 @@ from __future__ import annotations
 
 import re
 
-# Track labels — must match the `service_line` values in `search_terms` / roles.json.
+# The H&V specialty tracks the resolver can assign. Every value is a LIVE track in
+# Supabase `search_terms` (each has active search terms), so `from_posting` only ever
+# emits a real, searched-for track. Note ASSISTED_LIVING lives in `search_terms` but
+# NOT in config/leads/roles.json (which seeds only the six original lines), so the
+# resolver is intentionally NOT gated on `lead_config.service_lines()` — the DB is the
+# authoritative track set, not roles.json. (PR #10 review; making service_lines()
+# DB-derived is the tracked follow-up.)
 CHIRO = "Virtual Chiropractic Assistant"
 DENTAL = "Virtual Dental Assistant"
 ASSISTED_LIVING = "Virtual Assisted Living Coordinator"

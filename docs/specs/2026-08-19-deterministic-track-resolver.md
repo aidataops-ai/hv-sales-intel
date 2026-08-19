@@ -45,22 +45,29 @@ rows it fires, 0 conflicts, fires on 32% of keeps). Pure, no I/O, no model:
   the description, where "dental insurance"-type false positives live); fires only
   on an **unambiguous single-specialty** match. Covers chiro / dental /
   assisted-living / home-health.
-- `resolve(posting) -> str | None` — the track:
-  **`from_posting(posting) or posting["service_line_hint"]`.**
-  (Returns None only for a non-kept posting, where a track is never set.)
+- `track_for(posting, model_track) -> str | None` — the precedence (shipped):
+  **`from_posting(posting) or model_track or posting["service_line_hint"]`** — the
+  posting specialty (deterministic) wins; else the model's own track (the generic
+  front-office judgment); else the search hint. Applied only to kept leads.
 
 ### Coverage — who decides the track
 
 | Case | Track source |
 |---|---|
-| Title/employer names chiro / dental / assisted-living / home-health | **calculator** (deterministic) |
-| Title *and* employer generic (no specialty word) | **`service_line_hint`** (search-term track) |
-| — | qualifier's `service_line` is **not used** |
+| Title/employer names chiro / dental / assisted-living / home-health | **calculator** (deterministic lookup) |
+| Generic front-office role (no specialty word) | **model's `service_line`** (MA vs Scheduler vs Scribe — a judgment) |
+| Model track missing / invalid | **`service_line_hint`** (search-term track, last resort) |
 
-So a generically-titled lead inherits the track of the **search term that found
-it** — e.g. a bare "Front Desk" found by `chiropractic receptionist` → Chiro; found
-by `scheduling coordinator` → Scheduler. That is the best deterministic guess when
-the posting itself says nothing; specialty-named postings are pinned exactly.
+Specialty-named postings are pinned deterministically; generic ones keep the
+qualifier's own read of the front-office role, with the search hint only as a
+null-safety fallback.
+
+> **Config drift (PR #10 review):** the resolver can emit "Virtual Assisted Living
+> Coordinator" — a live track in `search_terms` but not in `config/leads/roles.json`
+> (which seeds only the six original lines). Intentional: roles.json is the
+> search-term *seed*, not the authoritative track set — the DB is. The four resolver
+> constants are all live `search_terms` tracks. Making `lead_config.service_lines()`
+> DB-derived is the tracked follow-up.
 
 ## Changes, in dependency order
 
@@ -69,12 +76,12 @@ the posting itself says nothing; specialty-named postings are pinned exactly.
    Desk Receptionist" with a dental hint → falls back to the hint; the
    "dental insurance" and "Alpha Home Health and…" edge cases do *not* mis-fire).
 
-**2. Qualify-time: resolve the track deterministically.** In
-   `lead_qualifier.parse_verdict` (~L219, currently
-   `service_line = <model verdict> or hint`), replace with, for a KEPT lead:
-   `service_line = track_resolver.from_posting(posting) or posting.get("service_line_hint")`.
-   The model's `service_line` is no longer read (the now-dead validation at
-   L191-193 can be removed). Discards still get `null`. **No prompt change.**
+**2. Qualify-time: resolve the track.** In `lead_qualifier.parse_verdict`, for a
+   KEPT lead: `service_line = track_resolver.track_for(posting, model_track)`, where
+   `model_track` is the model's `service_line` validated against
+   `lead_config.service_lines()`. Specialty wins deterministically; the model's
+   track is kept for the generic split; the hint is the last resort. Discards still
+   get `null`. **No prompt change.**
 
 **3. One-time backfill of `company_job_leads.service_line`.** Staged script: run
    `resolve()` over every kept lead, **back up old values to JSON**, and UPDATE
