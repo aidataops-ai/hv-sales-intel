@@ -289,32 +289,6 @@ export async function importLeadFromSignal(
   }
 }
 
-export type RetriggerResult =
-  | { ok: true; ref: string; workflow: string }
-  | { ok: false; error: string }
-
-/** Dispatch the GitHub Actions lead pipeline on demand (admin only). Always
- *  runs the full collect + qualify sweep.
- *
- *  Returns a discriminated result rather than throwing so the button can show
- *  the server's message — e.g. the 503 when GITHUB_TOKEN isn't configured. */
-export async function retriggerLeads(): Promise<RetriggerResult> {
-  try {
-    const res = await fetch(`${API_URL}/api/admin/leads/retrigger`, {
-      method: "POST",
-      credentials: "include",
-    })
-    if (redirectOn401(res)) return { ok: false, error: SESSION_EXPIRED }
-    if (!res.ok) {
-      const body = await res.json().catch(() => ({}))
-      return { ok: false, error: body.detail || `Failed (${res.status})` }
-    }
-    return await res.json()
-  } catch {
-    return { ok: false, error: "Could not reach the server." }
-  }
-}
-
 export type PipelineState = "active" | "paused"
 
 /** Read whether the scheduled pipeline workflow is active or paused (admin
@@ -338,8 +312,10 @@ export type PipelineToggleResult =
   | { ok: true; state: PipelineState; cancelled_runs?: number }
   | { ok: false; error: string }
 
-/** Pause (disable the workflow + cancel live runs) or resume the scheduled
- *  pipeline. Discriminated result for the same reason as retriggerLeads. */
+/** Pause (disable every scheduled workflow + cancel live runs) or resume the
+ *  scheduled pipeline. Returns a discriminated result rather than throwing so
+ *  the button can show the server's message — e.g. the 503 when GITHUB_TOKEN
+ *  isn't configured. */
 export async function togglePipeline(
   action: "stop" | "resume",
 ): Promise<PipelineToggleResult> {

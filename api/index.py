@@ -2686,9 +2686,9 @@ def _github_actions_headers() -> dict:
 def _scheduled_workflow_files() -> list[str]:
     """The workflow files the pause/resume toggle controls.
 
-    The scheduled pair by default (source-split, one workflow per board).
-    Falls back to the dispatch workflow if the list is configured empty, so
-    the toggle can never be a silent no-op.
+    Every scheduled workflow by default: the source-split sweep pair plus the
+    twice-daily enrich→push job. Falls back to the dispatch workflow if the
+    list is configured empty, so the toggle can never be a silent no-op.
     """
     files = [
         f.strip()
@@ -2754,8 +2754,8 @@ async def stop_lead_pipeline(admin: dict = Depends(require_admin)):
     should still be spending credits. A failed cancel of one run doesn't fail
     the request: the workflows are already disabled, which is the part that
     must not silently no-op. Unregistered workflows (404) are skipped; the
-    manual dispatch workflow is deliberately NOT in this set, so "Run
-    pipeline" keeps working while paused.
+    manual dispatch workflow (leads.yml) is deliberately NOT in this set, so
+    the retrigger endpoint keeps working while paused.
     """
     headers = _github_actions_headers()
 

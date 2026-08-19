@@ -182,6 +182,37 @@ def test_a_discard_carries_no_track():
     assert verdict["service_line"] is None
 
 
+def test_track_comes_from_the_posting_not_the_model():
+    """The model's `service_line` is ignored; the deterministic resolver decides.
+    Here the posting is unmistakably chiropractic, so the model's "Dental" loses."""
+    verdict = lead_qualifier.parse_verdict(
+        {"decision": "keep", "confidence": 0.9, "service_line": "Virtual Dental Assistant"},
+        _posting(title="Front Office Coordinator", employer_name="Downtown Chiropractic",
+                 service_line_hint="Virtual Dental Assistant"),
+        model="m")
+    assert verdict["service_line"] == "Virtual Chiropractic Assistant"
+
+
+def test_a_generic_posting_keeps_the_model_track_over_the_hint():
+    """No specialty in the posting text -> keep the model's own track (the generic
+    front-office judgment). The hint is only used if the model's track is invalid."""
+    verdict = lead_qualifier.parse_verdict(
+        {"decision": "keep", "confidence": 0.9, "service_line": "Virtual Medical Assistant"},
+        _posting(title="Front Desk Associate", employer_name="Family Care Clinic",
+                 service_line_hint="Virtual Medical Scheduler"),
+        model="m")
+    assert verdict["service_line"] == "Virtual Medical Assistant"   # model kept, not the hint
+
+
+def test_an_invalid_model_track_drops_to_the_hint():
+    verdict = lead_qualifier.parse_verdict(
+        {"decision": "keep", "confidence": 0.9, "service_line": "Virtual Astronaut"},
+        _posting(title="Front Desk Associate", employer_name="Family Care Clinic",
+                 service_line_hint="Virtual Medical Scheduler"),
+        model="m")
+    assert verdict["service_line"] == "Virtual Medical Scheduler"   # invalid model -> hint
+
+
 def test_a_keep_at_a_hospital_system_lands_in_the_review_queue():
     """Self-contradictory against TEST 1. The model's decision is not
     overridden — overriding would hide the signal that the prompt needs

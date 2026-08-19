@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useState } from "react"
 import { Loader2, Plus, MapPin, Tags, Pin, X } from "lucide-react"
 
 import PipelineToggleButton from "@/components/pipeline-toggle-button"
-import RetriggerButton from "@/components/retrigger-button"
 import SignalsTopBar from "@/components/signals-top-bar"
 import { useAuth } from "@/lib/auth"
 import {
@@ -135,14 +134,12 @@ export default function SignalsConfigPage() {
               </h1>
               <p className="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
                 What the pipeline searches for — states, cities, tracks &amp; keywords.
-                Changes take effect on the next{" "}
-                <span className="text-gray-400 dark:text-gray-500">Run pipeline</span> sweep.
+                Changes take effect on the next scheduled sweep.
               </p>
             </div>
             {user?.role === "admin" && (
               <div className="flex items-center gap-2">
                 <PipelineToggleButton />
-                <RetriggerButton />
               </div>
             )}
           </header>

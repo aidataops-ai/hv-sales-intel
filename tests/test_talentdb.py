@@ -197,20 +197,23 @@ def test_interested_tracks_omitted_when_track_unmapped():
     assert "Industry" not in fields             # unmapped track → no industry either
 
 
-def test_track_prefers_posting_hint_over_lead_service_line():
-    """The posting's search-term hint is ground truth; the qualifier's reassigned
-    service_line is only the fallback (the qualifier fogs ~30% of tracks)."""
+def test_track_prefers_lead_service_line_over_posting_hint():
+    """The lead's resolved service_line (what-it-IS, from track_resolver) wins; the
+    search-term hint (how we FOUND it) is only a null-safety fallback.
+    (ADR 2026-08-19-deterministic-track-resolver.)"""
     fields = talentdb.build_fields(
         _practice(),
         _posting(service_line_hint="Virtual Dental Assistant"),
         _lead(service_line="Virtual Medical Scheduler"))
-    # hint (dental) wins over the lead's reassigned scheduler track.
-    assert fields["interested_tracks"] == ["88bcb836-c0aa-11f0-a242-325255367c63"]
-    assert fields["Industry"] == "dental"
-    # With no hint, it falls back to the lead's service_line.
+    # the lead's scheduler track wins over the search-term dental hint.
+    assert fields["interested_tracks"] == ["45c76242-e585-11f0-831c-2eb420401434"]
+    assert fields["Industry"] == "medical"
+    # With no lead service_line, it falls back to the posting hint.
     fallback = talentdb.build_fields(
-        _practice(), _posting(), _lead(service_line="Virtual Dental Assistant"))
+        _practice(), _posting(service_line_hint="Virtual Dental Assistant"),
+        _lead(service_line=None))
     assert fallback["interested_tracks"] == ["88bcb836-c0aa-11f0-a242-325255367c63"]
+    assert fallback["Industry"] == "dental"
 
 
 def test_email_placeholder_is_scrubbed():

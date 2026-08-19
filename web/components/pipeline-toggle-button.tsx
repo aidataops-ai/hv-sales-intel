@@ -9,14 +9,14 @@ import { getPipelineState, togglePipeline, type PipelineState } from "@/lib/lead
 /**
  * Pause or resume the scheduled lead pipeline.
  *
- * The backend flips the scheduled GitHub Actions workflows (the per-board
- * pair, `github_leads_scheduled_workflows`) between enabled and disabled —
- * pausing also cancels any queued or in-flight runs, so "stop" means nothing
- * is spending credits after the click. The manual dispatch workflow is NOT
- * in that set, so "Run pipeline" keeps working while paused — pause stops
- * the automatic spend, not the operator.
+ * The backend flips every scheduled GitHub Actions workflow (the per-board
+ * sweep pair plus the enrich→push job, `github_leads_scheduled_workflows`)
+ * between enabled and disabled — pausing also cancels any queued or in-flight
+ * runs, so "stop" means nothing is spending credits after the click. The
+ * manual dispatch workflow (leads.yml) is NOT in that set — pause stops the
+ * automatic spend, not the operator's escape hatch.
  *
- * Admin only, same as RetriggerButton: non-admins get nothing rendered. The
+ * Admin only: non-admins get nothing rendered. The
  * click opens a confirm step rather than acting immediately — pausing silently
  * would starve the board of fresh signals, and an accidental resume restarts
  * the scheduled credit spend.
@@ -106,8 +106,8 @@ export default function PipelineToggleButton() {
         <div className="absolute right-0 mt-1 w-72 bg-white dark:bg-night-800 rounded-lg border border-gray-200 dark:border-white/10 shadow-md z-30 overflow-hidden p-4 space-y-3">
           <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-snug">
             {paused
-              ? "Re-enables the scheduled workflows so the collect + qualify sweeps run again."
-              : "Disables the scheduled workflows and cancels any run in flight. Run pipeline still works for manual sweeps."}
+              ? "Re-enables the scheduled workflows: the collect + qualify sweeps and the enrich + push job."
+              : "Disables the scheduled workflows — sweeps and enrich + push — and cancels any run in flight."}
           </p>
 
           <button

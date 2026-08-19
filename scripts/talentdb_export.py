@@ -203,10 +203,11 @@ def build_fields(practice: dict | None, posting: dict | None, lead: dict | None 
     company = p.get("name") or pg.get("employer_name")
     first_name, last_name = _split_owner_name(p.get("owner_name"))
     phone_primary, phone_alt = _phones(p)
-    # Track comes DIRECTLY from the posting's service_line_hint (the search-term →
-    # track mapping), not the lead's qualified service_line. Falls back to the
-    # lead's service_line only if the posting has no hint.
-    track = pg.get("service_line_hint") or ld.get("service_line")
+    # Track = the lead's resolved service_line (deterministic posting→specialty
+    # track, track_resolver) — what the lead IS. The search-term hint (how we
+    # FOUND it) is only a null-safety fallback. (Mirror of src/talentdb.py; keep
+    # in sync. ADR 2026-08-19-deterministic-track-resolver.)
+    track = ld.get("service_line") or pg.get("service_line_hint")
     track_code = _track_code(track)
     pid = p.get("id")
 
