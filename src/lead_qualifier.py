@@ -33,7 +33,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
-from src import job_boards, lead_config, lead_store
+from src import job_boards, lead_config, lead_store, track_resolver
 from src.settings import settings
 
 log = logging.getLogger("hvsi.leads.qualifier")
@@ -188,9 +188,13 @@ def parse_verdict(raw: dict, posting: dict, model: str | None) -> dict | None:
 
     confidence = _clamp01(raw.get("confidence"))
     band, band_rank = lead_store.band_for(confidence)
-    service_line = raw.get("service_line")
-    if service_line not in lead_config.service_lines():
-        service_line = None
+    # The model's track is kept ONLY as a fallback for the generic front-office
+    # split (MA/Scheduler/Scribe) — a real judgment. The specialty track is a
+    # deterministic lookup and overrides it (track_resolver.track_for); a null/
+    # invalid model track drops to the search hint. (ADR 2026-08-19-...resolver.)
+    model_track = raw.get("service_line")
+    if model_track not in lead_config.service_lines():
+        model_track = None
     provider_count = raw.get("provider_count")
 
     employer_type = _one_of(raw.get("practice_type"), EMPLOYER_TYPES)
@@ -214,11 +218,9 @@ def parse_verdict(raw: dict, posting: dict, model: str | None) -> dict | None:
         "employer_type": employer_type,
         "role_suitable": bool(role_suitable) if role_suitable is not None else None,
         "work_mode": _one_of(raw.get("work_mode"), WORK_MODES),
-        # Fall back to the search term's track so a kept lead is never
-        # untracked — the operator filters by track, and a null hides it.
-        "service_line": service_line or (
-            posting.get("service_line_hint") if decision == "keep" else None
-        ),
+        # Track: posting specialty (deterministic) -> model's track (generic split)
+        # -> search hint. A discard carries no track. (track_resolver.track_for.)
+        "service_line": track_resolver.track_for(posting, model_track) if decision == "keep" else None,
         "provider_count": provider_count if isinstance(provider_count, int) else None,
         "draft": str(raw["draft"])[:8000] if raw.get("draft") else None,
         "model": model,

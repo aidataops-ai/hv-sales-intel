@@ -201,11 +201,12 @@ def build_fields(
     company = p.get("name") or pg.get("employer_name")
     first_name, last_name = _split_owner_name(p.get("owner_name"))
     phone_primary, phone_alt = _phones(p)
-    # The posting hint (search-term → roles.json mapping) is the ground-truth
-    # track and wins; the lead's qualifier-assigned service_line is the fallback.
-    # The qualifier reassigns ~30% of tracks, fogging the real search track, so
-    # the hint is authoritative here.
-    track = pg.get("service_line_hint") or ld.get("service_line")
+    # Track = what the lead IS. The lead's `service_line` is the deterministic
+    # posting→specialty track (track_resolver, resolved at qualify time), and it
+    # wins. The `service_line_hint` (how we FOUND it — the search term) is only a
+    # null-safety fallback; it is NOT what we sell, and shipping it is what put
+    # chiro leads under the Dental track. (ADR 2026-08-19-deterministic-track-resolver.)
+    track = ld.get("service_line") or pg.get("service_line_hint")
     track_code = _track_code(track)
     pid = p.get("id")
 
