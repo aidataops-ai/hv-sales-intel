@@ -426,3 +426,20 @@ async def test_import_lead_receiver_error_is_soft_not_ok():
     assert result["ok"] is False
     assert result["status"] == "error"
     assert "Cannot create lead." in result["message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("no_email", [
+    {"owner_email": None, "email": None},          # nothing at all
+    {"owner_email": "Not Found", "email": None},   # placeholder scrubs to None
+])
+async def test_import_lead_skips_and_never_posts_when_no_email(no_email):
+    fake = _FakeClient(_FakeResp({"ok": True, "status": "ok", "localEntityId": 1}))
+    with patch("src.talentdb.settings") as s:
+        s.talentdb_webhook_url = "https://x/api/salesforce/webhook"
+        s.talentdb_webhook_secret = "topsecret"
+        with patch("src.talentdb.httpx.AsyncClient", return_value=fake):
+            result = await talentdb.import_lead(_practice(**no_email), _posting())
+    assert result["ok"] is False
+    assert result["status"] == "skipped_no_email"
+    assert fake.sent == {}  # the guard fires BEFORE any POST

@@ -98,6 +98,13 @@ def _scrub_email(value):
     return value
 
 
+def _postable_email(practice: dict | None) -> str | None:
+    """The contact email we'd send (owner_email, else email), scrubbed of
+    placeholders. None means the lead has no real email — do NOT post it."""
+    p = practice or {}
+    return _scrub_email(p.get("owner_email") or p.get("email"))
+
+
 def _org_size_bucket(value) -> str | None:
     """Integer headcount → the receiver's organization_size picklist bucket."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -219,7 +226,7 @@ def build_fields(
         "LastName": last_name or company,           # falls back to company
         "FirstName": first_name,                    # from owner_name; omit if none
         "Title": p.get("owner_title"),              # contact's role (Clay enrichment)
-        "Email": _scrub_email(p.get("owner_email") or p.get("email")),
+        "Email": _postable_email(p),
         "Phone": phone_primary,
         "alternate_phone": phone_alt,
         "Country": "USA",                           # ISO alpha-3, hardcoded for now
@@ -340,6 +347,15 @@ async def import_lead(
                     bool(settings.talentdb_webhook_secret))
         return {"ok": False, "status": "not_configured",
                 "message": "Talent-DB webhook is not configured."}
+
+    # Email guard: a lead with no real contact email is not actionable for sales —
+    # don't post it. ok=False so the caller does NOT set the export marker; it can
+    # be sent later once an email lands. (Mirror of scripts/talentdb_export.py.)
+    if not _postable_email(practice):
+        log.info("[talentdb.skip] no_email company=%r",
+                 (practice or {}).get("name"))
+        return {"ok": False, "status": "skipped_no_email",
+                "message": "No contact email — not posted."}
 
     envelope = build_envelope(practice, posting, lead)
     raw = _serialize(envelope)
