@@ -25,6 +25,10 @@ BILLING GUARD (on by default): any lead whose posting was sourced via a billing
 keyword (search_term contains "billing") is SKIPPED and never exported. Override
 with --allow-billing.
 
+EMAIL GUARD (always on): a lead with no real contact email (owner_email/email
+missing or a placeholder like "Not Found") is SKIPPED and never exported — an
+emailless lead is not actionable for outreach. No override.
+
 Safety: DRY RUN by default (prints the first envelope, sends nothing); live needs
 --yes. Refuses a STAGING destination unless --allow-staging. Already-exported
 leads are skipped (resumable) unless --resend; each success stamps
@@ -189,6 +193,13 @@ def _scrub_email(value):
     return value
 
 
+def _postable_email(practice: dict | None) -> str | None:
+    """The contact email we'd send (owner_email, else email), scrubbed of
+    placeholders. None means the lead has no real email — do NOT post it."""
+    p = practice or {}
+    return _scrub_email(p.get("owner_email") or p.get("email"))
+
+
 def _omit_missing(fields: dict) -> dict:
     """Drop keys with no value. None and "" are "no value"; 0 / False / {} stay."""
     return {k: v for k, v in fields.items() if v is not None and v != ""}
@@ -220,7 +231,7 @@ def build_fields(practice: dict | None, posting: dict | None, lead: dict | None 
         "LastName": last_name or company,           # falls back to company
         "FirstName": first_name,                    # from owner_name; omit if none
         "Title": p.get("owner_title"),
-        "Email": _scrub_email(p.get("owner_email") or p.get("email")),
+        "Email": _postable_email(p),
         "Phone": phone_primary,
         "alternate_phone": phone_alt,
         "Country": "USA",                           # ISO alpha-3, hardcoded for now
@@ -443,6 +454,12 @@ async def run(leadset: str, company_id: str, *, dry_run: bool, allow_staging: bo
         if lead and lead.get("talentdb_exported_at") and not resend:
             states["already_exported"] += 1
             continue
+        # Email guard: a lead with no real contact email isn't actionable for
+        # sales — don't post it. Last gate before send, so it counts only leads
+        # that pass every other check. (Mirror of src/talentdb.py import_lead.)
+        if not _postable_email(practice):
+            states["no_email"] += 1
+            continue
 
         env = build_envelope(practice, posting, lead)
         company = env["fields"].get("Company")
@@ -483,6 +500,7 @@ async def run(leadset: str, company_id: str, *, dry_run: bool, allow_staging: bo
         time.sleep(delay)
 
     skip_line = (f"skipped: billing={states['skip_billing']} no_practice={states['no_practice']} "
+                 f"no_email={states['no_email']} "
                  f"already_exported={states['already_exported']} missing_posting={states['missing_posting']} "
                  f"resolve_error={states['resolve_error']}")
     if dry_run:
