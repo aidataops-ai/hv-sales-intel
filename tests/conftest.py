@@ -1,4 +1,24 @@
+import sys
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_clay_capture_writes(tmp_path, monkeypatch):
+    """Never let a test append to the repo-root Clay capture file.
+
+    The Clay webhook writes every authenticated body to
+    `clay-webhook-captures.jsonl` while we map Clay's real field names. Any
+    test that POSTs to that endpoint would otherwise bury the live payloads
+    the file exists to collect. Only redirects when the API module is already
+    imported, so no test pays an import for this.
+    """
+    module = sys.modules.get("api.index")
+    if module is not None:
+        monkeypatch.setattr(
+            module, "_CLAY_CAPTURE_PATH", tmp_path / "clay-webhook-captures.jsonl",
+            raising=False,
+        )
 
 
 @pytest.fixture(autouse=True)

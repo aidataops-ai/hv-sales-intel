@@ -3,11 +3,12 @@ import json
 import logging
 import sys
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 
 # ----- Logging setup (must happen before module imports below) -----
@@ -90,6 +91,7 @@ def _with_actor_name(practice: dict, user: dict) -> dict:
     if not practice.get("last_touched_by_name"):
         practice["last_touched_by_name"] = user.get("name")
     return practice
+from src import contacts as contact_store
 from src.clay import trigger_enrichment
 from src.email_gen import generate_email_draft
 from src.email_poll import poll_replies
@@ -1709,6 +1711,13 @@ def get_single(place_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Practice not found")
     result = _attach_lead_url(row)
     result["exported"] = _practice_exported(user["company_id"], row.get("id"))
+    # Every person Clay has sent for this practice. The flat `owner_*` columns
+    # still carry the primary one (mirrored by the webhook) for the consumers
+    # that never learned about the table; detail is the one view that shows all
+    # of them. Fail-soft — [] if the migration has not been applied.
+    result["contacts"] = (
+        contact_store.list_contacts_for_practice(row["id"]) if row.get("id") else []
+    )
     return result
 
 
@@ -2247,6 +2256,29 @@ class ClayWebhookPayload(BaseModel):
     # "1,200" or "50-100"); coerced to an int below so a bad value never rejects
     # the whole enrichment callback.
     organization_size: int | str | None = None
+    # Per-person shape: Clay now POSTs once per contact on a practice instead of
+    # once per practice, so these arrive alongside the same place_id several
+    # times over. All optional — a callback carries either shape, never both by
+    # design, and the old one is still in flight until Clay's tables cut over.
+    first_name: str | None = None
+    last_name: str | None = None
+    url: str | None = None  # the person's LinkedIn profile
+    work_email: str | None = None
+    personal_email: str | None = None
+    title: str | None = None
+
+
+_NEW_SHAPE_KEYS = ("first_name", "last_name", "url", "work_email", "personal_email", "title")
+
+
+def _is_new_shape(body: ClayWebhookPayload) -> bool:
+    """True when the callback carries a per-person field.
+
+    Any one of them is enough: Clay routinely finds a name and nothing else.
+    A hybrid payload (owner_* *and* first_name) takes the new branch — the
+    per-person columns are the ones we now keep, and the mirror writes the
+    owner_* columns anyway."""
+    return any((getattr(body, key) or "").strip() for key in _NEW_SHAPE_KEYS)
 
 
 def _coerce_org_size(value) -> int | None:
@@ -2270,25 +2302,127 @@ def _coerce_org_size(value) -> int | None:
     return None
 
 
+def _handle_contact_payload(body: ClayWebhookPayload, existing: dict) -> dict:
+    """One person from Clay: store the row, then mirror the primary contact.
+
+    The contact lands in `practice_contacts` (fail-soft — an unapplied
+    migration returns None rather than 500ing at Clay, which retries hard),
+    and whichever contact `pick_primary` chooses across *all* of the
+    practice's people is flattened back onto `practices.owner_*` so the
+    Talent-DB push, scriptgen, the CSV export and the list UI keep reading
+    what they always read.
+    """
+    contact = {
+        "first_name": body.first_name,
+        "last_name": body.last_name,
+        "title": body.title,
+        "linkedin_url": body.url,
+        "work_email": body.work_email,
+        "personal_email": body.personal_email,
+    }
+    cleaned = contact_store.clean_contact(contact)
+    has_contact = any(
+        cleaned.get(key) for key in
+        ("first_name", "last_name", "work_email", "personal_email", "linkedin_url")
+    )
+
+    # Logged on every callback: Clay's real field mapping is only knowable from
+    # what it actually posts, and this is the line to grep for after a deploy.
+    log.info("[clay.webhook.contact] place_id=%s contact=%s", body.place_id, cleaned)
+
+    pid = existing.get("id")
+    saved = contact_store.upsert_contact(pid, contact) if pid and has_contact else None
+    all_contacts = contact_store.list_contacts_for_practice(pid) if pid else []
+    # Table not there yet (or the write failed): mirror what just arrived so the
+    # practice still gets its owner_* columns while the migration catches up.
+    if saved is None and has_contact and not all_contacts:
+        all_contacts = [cleaned]
+
+    fields: dict = {}
+    primary = contact_store.pick_primary(all_contacts)
+    if primary and contact_store.should_mirror(primary, existing):
+        fields.update(contact_store.owner_mirror_fields(primary))
+
+    org_size = _coerce_org_size(body.organization_size)
+    if org_size is not None:
+        fields["organization_size"] = org_size
+
+    # A second, empty callback for a practice Clay already found somebody at
+    # must not downgrade it back to "failed".
+    found = (
+        has_contact
+        or bool(all_contacts)
+        or existing.get("enrichment_status") == "enriched"
+    )
+    fields["enrichment_status"] = "enriched" if found else "failed"
+    fields["enriched_at"] = datetime.now(timezone.utc).isoformat()
+
+    update_practice_fields(body.place_id, fields, touched_by=None)
+    if found:
+        add_tags(body.place_id, ["ENRICHED"])
+    return {"ok": True}
+
+
+# Every authenticated callback is appended here as JSONL while we learn Clay's
+# real field names — the model only sees the keys it declares, and the ones it
+# drops are exactly the ones we need to see. Contains prospect PII, so it is
+# gitignored; delete it once the mapping is confirmed.
+_CLAY_CAPTURE_PATH = Path(__file__).resolve().parents[1] / "clay-webhook-captures.jsonl"
+
+
+def _capture_clay_body(body) -> None:
+    """Append one raw callback to the capture file. Never raises: a full disk
+    or a read-only filesystem must not cost us an enrichment."""
+    try:
+        line = json.dumps(
+            {"ts": datetime.now(timezone.utc).isoformat(), "body": body}, default=str
+        )
+        with open(_CLAY_CAPTURE_PATH, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception as e:
+        log.warning("[clay.webhook.capture.error] %s: %s", type(e).__name__, str(e)[:200])
+
+
 @app.post("/api/webhooks/clay")
 def clay_webhook(
-    body: ClayWebhookPayload,
+    body: dict = Body(...),
     x_clay_secret: str | None = Header(default=None, alias="X-Clay-Secret"),
 ):
+    """Clay's enrichment callback, in either of two shapes.
+
+    The request is taken as a raw dict rather than bound straight to
+    `ClayWebhookPayload` so the *unrecognized* keys survive long enough to be
+    logged: Clay's column names are set on their side and a silently dropped
+    field looks exactly like a field Clay never sent. Validation happens a few
+    lines down and still rejects a body with no `place_id`.
+    """
     if not app_settings.clay_inbound_secret or x_clay_secret != app_settings.clay_inbound_secret:
         raise HTTPException(401, "Invalid secret")
 
-    existing = get_practice(body.place_id)
+    # Only after the secret check — an unauthenticated caller's body is never
+    # logged or written to disk.
+    log.info("[clay.webhook.raw] %s", json.dumps(body, default=str))
+    _capture_clay_body(body)
+
+    try:
+        payload = ClayWebhookPayload.model_validate(body)
+    except ValidationError as e:
+        raise HTTPException(422, f"Invalid payload: {e}")
+
+    existing = get_practice(payload.place_id)
     if not existing:
         raise HTTPException(404, "Practice not found")
 
+    if _is_new_shape(payload):
+        return _handle_contact_payload(payload, existing)
+
     fields: dict = {}
     for key in ("owner_name", "owner_email", "owner_phone", "owner_title", "owner_linkedin"):
-        value = getattr(body, key)
+        value = getattr(payload, key)
         if value is not None and value != "":
             fields[key] = value
 
-    org_size = _coerce_org_size(body.organization_size)
+    org_size = _coerce_org_size(payload.organization_size)
     if org_size is not None:
         fields["organization_size"] = org_size
 
@@ -2296,9 +2430,9 @@ def clay_webhook(
     fields["enrichment_status"] = "enriched" if has_any_contact else "failed"
     fields["enriched_at"] = datetime.now(timezone.utc).isoformat()
 
-    update_practice_fields(body.place_id, fields, touched_by=None)
+    update_practice_fields(payload.place_id, fields, touched_by=None)
     if has_any_contact:
-        add_tags(body.place_id, ["ENRICHED"])
+        add_tags(payload.place_id, ["ENRICHED"])
     return {"ok": True}
 
 

@@ -56,6 +56,9 @@ export interface Practice {
   enrichment_status: "pending" | "enriched" | "failed" | null
   enriched_at: string | null
 
+  // Multi-contact enrichment (Clay). Optional: only the detail endpoint returns it.
+  contacts?: Contact[]
+
   // Tags + assignment
   tags: string[]
   assigned_to: string | null
@@ -69,6 +72,20 @@ export interface Practice {
 
   // Computed read-time: newest linked posting already exported to Talent-DB.
   exported?: boolean
+}
+
+export interface Contact {
+  id: number
+  practice_id: number
+  first_name: string | null
+  last_name: string | null
+  title: string | null
+  linkedin_url: string | null
+  work_email: string | null
+  personal_email: string | null
+  source: string
+  created_at: string | null
+  updated_at: string | null
 }
 
 export interface EmailMessage {
