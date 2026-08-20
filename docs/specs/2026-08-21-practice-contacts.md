@@ -15,7 +15,7 @@ The same webhook, `POST /api/webhooks/clay`, now fires once per contact with:
 ```json
 {"place_id": "...", "first_name": "...", "last_name": "...",
  "url": "https://linkedin.com/in/...", "work_email": "...",
- "personal_email": "...", "title": "..."}
+ "personal_email": "...", "phone": "...", "title": "..."}
 ```
 
 Today that webhook writes the flat `owner_name` / `owner_email` / `owner_phone`

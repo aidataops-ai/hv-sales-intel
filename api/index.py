@@ -2265,10 +2265,11 @@ class ClayWebhookPayload(BaseModel):
     url: str | None = None  # the person's LinkedIn profile
     work_email: str | None = None
     personal_email: str | None = None
+    phone: str | None = None
     title: str | None = None
 
 
-_NEW_SHAPE_KEYS = ("first_name", "last_name", "url", "work_email", "personal_email", "title")
+_NEW_SHAPE_KEYS = ("first_name", "last_name", "url", "work_email", "personal_email", "phone", "title")
 
 
 def _is_new_shape(body: ClayWebhookPayload) -> bool:
@@ -2319,6 +2320,7 @@ def _handle_contact_payload(body: ClayWebhookPayload, existing: dict) -> dict:
         "linkedin_url": body.url,
         "work_email": body.work_email,
         "personal_email": body.personal_email,
+        "phone": body.phone,
     }
     cleaned = contact_store.clean_contact(contact)
     has_contact = any(

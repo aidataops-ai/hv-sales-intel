@@ -226,13 +226,20 @@ def test_owner_mirror_fields_falls_back_to_the_personal_email():
     assert fields["owner_email"] == "ada@gmail.com"
 
 
-def test_owner_mirror_fields_never_writes_owner_phone():
+def test_owner_mirror_fields_mirrors_contact_phone_into_owner_phone():
     fields = owner_mirror_fields({
         "first_name": "Ada", "work_email": "ada@clinic.com",
-        "phone": "555-0100", "owner_phone": "555-0100",
+        "phone": "555-0100",
+    })
+    assert fields["owner_phone"] == "555-0100"
+    assert "phone" not in fields  # only owner_* keys come back
+
+
+def test_owner_mirror_fields_omits_owner_phone_when_contact_has_none():
+    fields = owner_mirror_fields({
+        "first_name": "Ada", "work_email": "ada@clinic.com",
     })
     assert "owner_phone" not in fields
-    assert "phone" not in fields
 
 
 # ---------------------------------------------------------------------------

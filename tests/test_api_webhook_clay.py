@@ -285,6 +285,7 @@ def test_webhook_new_shape_stores_contact_and_mirrors_owner_columns():
         "first_name": "Jane", "last_name": "Smith", "title": "Office Manager",
         "linkedin_url": "https://linkedin.com/in/janesmith",
         "work_email": "jane@hfd.com", "personal_email": "jane@gmail.com",
+        "phone": "+1 727 555 0134",
     }
     store = _fake_contact_store(saved=stored, listed=[stored])
 
@@ -297,6 +298,7 @@ def test_webhook_new_shape_stores_contact_and_mirrors_owner_columns():
             "url": "https://linkedin.com/in/janesmith",
             "work_email": "jane@hfd.com",
             "personal_email": "jane@gmail.com",
+            "phone": "+1 727 555 0134",
         },
         existing,
         store,
@@ -314,6 +316,7 @@ def test_webhook_new_shape_stores_contact_and_mirrors_owner_columns():
         "first_name": "Jane", "last_name": "Smith", "title": "Office Manager",
         "linkedin_url": "https://linkedin.com/in/janesmith",
         "work_email": "jane@hfd.com", "personal_email": "jane@gmail.com",
+        "phone": "+1 727 555 0134",
     }
 
     # Mirrored onto the legacy columns every other consumer still reads.
@@ -321,7 +324,7 @@ def test_webhook_new_shape_stores_contact_and_mirrors_owner_columns():
     assert captured["owner_title"] == "Office Manager"
     assert captured["owner_linkedin"] == "https://linkedin.com/in/janesmith"
     assert captured["owner_email"] == "jane@hfd.com"  # work beats personal
-    assert "owner_phone" not in captured  # the per-person payload has no phone
+    assert captured["owner_phone"] == "+1 727 555 0134"  # direct dial mirrors too
     assert captured["enrichment_status"] == "enriched"
     assert "enriched_at" in captured
     assert tagged == [("abc", ["ENRICHED"])]

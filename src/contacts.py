@@ -6,7 +6,7 @@ a practice can carry an office manager, an owner and a hiring lead at once. This
 module owns the row-per-person table those calls land in:
 
     practice_contacts(practice_id, first_name, last_name, title,
-                      linkedin_url, work_email, personal_email,
+                      linkedin_url, work_email, personal_email, phone,
                       source, dedupe_key, created_at, updated_at)
     unique (practice_id, dedupe_key)
 
@@ -44,7 +44,7 @@ TABLE = "practice_contacts"
 # an unknown key would fail the insert on a column that does not exist.
 CONTACT_FIELDS = (
     "first_name", "last_name", "title",
-    "linkedin_url", "work_email", "personal_email",
+    "linkedin_url", "work_email", "personal_email", "phone",
 )
 
 DEFAULT_SOURCE = "clay"
@@ -248,9 +248,9 @@ def owner_mirror_fields(primary: dict) -> dict:
 
     Only non-empty keys come back — the Clay webhook's convention is that an
     absent key leaves the existing column alone, so emitting None would blank
-    data we are not trying to change. `owner_phone` is never included: Clay's
-    per-person payload has no phone number, and the practice's own phone lives
-    in `practices.phone`.
+    data we are not trying to change. `owner_phone` mirrors the contact's
+    direct `phone` when present; the practice's own office line stays in
+    `practices.phone` either way.
     """
     primary = primary or {}
     fields: dict = {}
@@ -269,6 +269,10 @@ def owner_mirror_fields(primary: dict) -> dict:
     linkedin = _text(primary.get("linkedin_url"))
     if linkedin:
         fields["owner_linkedin"] = linkedin
+
+    phone = _text(primary.get("phone"))
+    if phone:
+        fields["owner_phone"] = phone
 
     email = contact_email(primary)
     if email:

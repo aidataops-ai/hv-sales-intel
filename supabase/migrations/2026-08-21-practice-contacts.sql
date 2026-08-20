@@ -5,7 +5,7 @@
 -- WHY: Clay is switching from one callback per practice to one callback per
 -- PERSON — the same `POST /api/webhooks/clay` now fires once for each contact
 -- with {place_id, first_name, last_name, url (LinkedIn), work_email,
--- personal_email, title}. The flat `owner_*` columns on `practices` can hold
+-- personal_email, phone, title}. The flat `owner_*` columns on `practices` can hold
 -- exactly one contact, so today the second callback overwrites the first and
 -- the practice ends up with whichever person happened to arrive last. This
 -- table is where the other people go.
@@ -65,12 +65,20 @@ create table if not exists practice_contacts (
   linkedin_url   text,
   work_email     text,
   personal_email text,
+  phone          text,
   source         text not null default 'clay',
   dedupe_key     text not null,   -- app-computed; src/contacts.py::contact_dedupe_key
   created_at     timestamptz not null default now(),
   updated_at     timestamptz not null default now(),
   unique (practice_id, dedupe_key)
 );
+
+-- ---------------------------------------------------------------
+-- 1b) phone — added the same day, after the first live apply: Clay's
+-- per-person payload carries a `phone` key as well. `if not exists` keeps
+-- this file re-runnable whether or not the create above already had it.
+-- ---------------------------------------------------------------
+alter table practice_contacts add column if not exists phone text;
 
 comment on table practice_contacts is
   'One row per person Clay returns for a practice. Shared across tenants like '

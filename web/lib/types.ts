@@ -83,6 +83,7 @@ export interface Contact {
   linkedin_url: string | null
   work_email: string | null
   personal_email: string | null
+  phone: string | null
   source: string
   created_at: string | null
   updated_at: string | null

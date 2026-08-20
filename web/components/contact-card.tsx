@@ -1,6 +1,6 @@
 "use client"
 
-import { Mail, ExternalLink, User } from "lucide-react"
+import { Mail, ExternalLink, Phone, User } from "lucide-react"
 import type { Contact } from "@/lib/types"
 
 interface ContactCardProps {
@@ -42,6 +42,20 @@ export default function ContactCard({ contact }: ContactCardProps) {
 
       {contact.work_email && <EmailRow email={contact.work_email} label="Work" />}
       {contact.personal_email && <EmailRow email={contact.personal_email} label="Personal" />}
+
+      {contact.phone && (
+        <div className="flex items-center gap-1.5 mt-1.5">
+          <a
+            href={`tel:${contact.phone}`}
+            onClick={(e) => e.stopPropagation()}
+            className="inline-flex items-center gap-1 text-[11px] text-gray-600 dark:text-[#d9d9d9] hover:text-teal-700 dark:hover:text-teal-400"
+            title={contact.phone}
+          >
+            <Phone className="w-3 h-3 shrink-0" />
+            <span className="truncate max-w-[160px]">{contact.phone}</span>
+          </a>
+        </div>
+      )}
 
       {contact.linkedin_url && (
         <div className="flex items-center gap-2 mt-1.5">

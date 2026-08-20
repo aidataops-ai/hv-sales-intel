@@ -642,12 +642,16 @@ create table if not exists practice_contacts (
   linkedin_url   text,
   work_email     text,
   personal_email text,
+  phone          text,
   source         text not null default 'clay',
   dedupe_key     text not null,   -- app-computed; src/contacts.py::contact_dedupe_key
   created_at     timestamptz not null default now(),
   updated_at     timestamptz not null default now(),
   unique (practice_id, dedupe_key)
 );
+
+-- phone landed after the first apply of the 2026-08-21 migration.
+alter table practice_contacts add column if not exists phone text;
 
 comment on table practice_contacts is
   'One row per person Clay returns for a practice. Shared across tenants like '
