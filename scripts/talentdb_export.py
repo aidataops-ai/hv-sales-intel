@@ -492,7 +492,7 @@ def _load_ids(path: str) -> list[int]:
 
 async def run(leadset: str, company_id: str, *, dry_run: bool, allow_staging: bool,
               limit: int | None, delay: float, resend: bool, mark: bool,
-              allow_billing: bool, resend_contacts: bool = False) -> None:
+              allow_billing: bool) -> None:
     url = settings.talentdb_webhook_url
     secret = settings.talentdb_webhook_secret
     if not (url and secret):
@@ -559,10 +559,9 @@ async def run(leadset: str, company_id: str, *, dry_run: bool, allow_staging: bo
 
         # People already POSTed for this lead. Consulted even under `--resend`
         # — re-entering a finished lead to catch a LATE-ARRIVING contact must
-        # not duplicate the ones that already shipped. `--resend-contacts` is
-        # the separate escape hatch that does re-post them.
+        # not duplicate the ones that already shipped.
         already: set = set()
-        if eligible and lead and not resend_contacts:
+        if eligible and lead:
             already = contact_store.list_exported_contact_ids(lead["id"])
 
         # `recipients`: [None] means the one legacy owner_* lead.
@@ -646,7 +645,7 @@ async def run(leadset: str, company_id: str, *, dry_run: bool, allow_staging: bo
     with open(log_path, "w") as fp:
         json.dump({"run_at": stamp, "destination": host, "company_id": company_id,
                    "leadset": leadset, "leads": sent, "posts_ok": ok, "posts_failed": failed,
-                   "marked": mark, "resend": resend, "resend_contacts": resend_contacts,
+                   "marked": mark, "resend": resend,
                    "billing_guard": not allow_billing,
                    "skipped": dict(states), "tracks": dict(tracks), "results": results}, fp, indent=2)
     # ok/failed count POSTs (= Talent-DB leads); `leads` counts OUR leads, which
@@ -672,9 +671,6 @@ def main() -> None:
     ap.add_argument("--resend", action="store_true",
                     help="also send leads already marked exported; contacts already sent "
                          "are still skipped, so this is the late-arriving-contact tool")
-    ap.add_argument("--resend-contacts", action="store_true",
-                    help="also re-POST contacts already recorded in talentdb_contact_exports "
-                         "(duplicates them on the receiver — implies nothing about --resend)")
     ap.add_argument("--no-mark", action="store_true",
                     help="do NOT set talentdb_exported_at or the per-contact markers on success")
     ap.add_argument("--allow-billing", action="store_true",
@@ -687,8 +683,8 @@ def main() -> None:
 
     asyncio.run(run(args.leadset, company_id, dry_run=not args.yes,
                     allow_staging=args.allow_staging, limit=args.limit, delay=args.delay,
-                    resend=args.resend, mark=not args.no_mark, allow_billing=args.allow_billing,
-                    resend_contacts=args.resend_contacts))
+                    resend=args.resend, mark=not args.no_mark,
+                    allow_billing=args.allow_billing))
 
 
 if __name__ == "__main__":

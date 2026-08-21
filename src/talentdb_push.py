@@ -30,11 +30,11 @@ ours, and it takes two markers because a fan-out can half-succeed:
   posts only the one that failed. Without it, "retry the lead" would mean
   "duplicate the two that worked".
 
-`resend_contacts=True` re-enters a lead ignoring nothing but the contact
-markers' skip — i.e. it re-posts people already sent. Leaving it False while
-re-entering an already-marked lead (what the scripts' `--resend` does) is the
-**late-arriving-contact** path: Clay finds a fourth person a week later, the
-re-run posts that person and nobody else.
+Re-entering an already-marked lead (what the scripts' `--resend` does) still
+consults the contact markers — Clay finds a fourth person a week later, the
+re-run posts that person and nobody else. There is deliberately no "re-post
+people already sent" knob: the receiver has no upsert key, so such a knob
+could only manufacture duplicates.
 
 Contact markers are only consulted and written when there is a `lead` to key
 them to. A practice pushed with no lead row (the practice-detail button on a
@@ -93,7 +93,6 @@ async def push_lead_fanout(
     company_id: str | None,
     *,
     mark: bool = True,
-    resend_contacts: bool = False,
 ) -> dict:
     """Push this lead once per eligible contact; return one combined result.
 
@@ -119,7 +118,7 @@ async def push_lead_fanout(
 
     lead_id = (lead or {}).get("id")
     already = set()
-    if lead_id and not resend_contacts:
+    if lead_id:
         already = contacts.list_exported_contact_ids(lead_id)
 
     log.info("[talentdb_push.fanout] practice=%s lead=%s contacts=%d "

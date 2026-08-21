@@ -66,7 +66,7 @@ _DEFAULT = object()   # "the fixture", so an explicit None can mean None
 
 
 async def _push(rows, *, replies=None, exported=None, lead=_DEFAULT,
-                practice=_DEFAULT, mark=True, resend_contacts=False):
+                practice=_DEFAULT, mark=True):
     """Drive `push_lead_fanout` with the whole data layer stubbed out.
 
     Returns (result, recorder, marked_leads, marked_contacts) — the last two
@@ -89,7 +89,7 @@ async def _push(rows, *, replies=None, exported=None, lead=_DEFAULT,
             _practice() if practice is _DEFAULT else practice,
             _posting(),
             _lead() if lead is _DEFAULT else lead,
-            "apex", mark=mark, resend_contacts=resend_contacts)
+            "apex", mark=mark)
     return result, recorder, marked_leads, marked_contacts
 
 
@@ -199,19 +199,6 @@ async def test_a_fully_exported_lead_re_entered_posts_nobody_but_stays_ok():
     assert rec.calls == []
     assert result["ok"] is True
     assert result["sent"] == 0
-    assert leads == [("apex", 900)]
-
-
-@pytest.mark.asyncio
-async def test_resend_contacts_reposts_people_already_sent():
-    """`resend_contacts=True` means do NOT skip — the recovery escape hatch."""
-    rows = [_contact(1), _contact(2)]
-    result, rec, leads, contacts = await _push(rows, exported={1, 2},
-                                               resend_contacts=True)
-
-    assert rec.contact_ids == [1, 2]
-    assert result["sent"] == 2
-    assert contacts == [(900, 1), (900, 2)]
     assert leads == [("apex", 900)]
 
 

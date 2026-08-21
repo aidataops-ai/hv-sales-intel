@@ -201,10 +201,9 @@ re-send is a duplicate, not an update. Dedup is entirely ours:
 `--resend` (scripts) re-enters an already-marked lead but **still consults the
 contact markers**, which makes it the answer to parked question 3: when Clay
 finds a fourth person a week after the first three shipped, `--resend` posts
-that person and nobody else. `--resend-contacts` (and `resend_contacts=True` on
-`push_lead_fanout`) is the separate escape hatch that re-posts people already
-sent — it duplicates them on the receiver, so it exists for recovery, not for
-routine use.
+that person and nobody else. There is deliberately no knob that re-posts a
+person already sent — the receiver has no upsert key, so it could only create
+duplicates.
 
 Contact markers are only read and written when there **is** a lead row to key
 them to. A practice pushed with no linked posting fans out every time, exactly
