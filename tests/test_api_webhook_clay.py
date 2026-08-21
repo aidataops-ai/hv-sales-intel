@@ -192,6 +192,33 @@ def test_webhook_flips_to_failed_when_no_owner_fields():
     assert "owner_name" not in captured
 
 
+def test_webhook_empty_callback_never_downgrades_an_enriched_practice():
+    """Clay's "found nobody" callback is an empty payload that lands on THIS
+    (legacy) branch — it must not flip an already-enriched practice to
+    'failed'. The missing guard here hid 121 pushable practices during the
+    2026-08-21 re-enrichment campaign."""
+    existing = {"place_id": "abc", "name": "Test", "enrichment_status": "enriched"}
+    captured = {}
+
+    def fake_update(place_id, fields, touched_by=None):
+        captured.update(fields)
+        return {**existing, **fields}
+
+    with patch("api.index.app_settings") as s:
+        s.clay_inbound_secret = "shhh"
+        with patch("api.index.get_practice", return_value=existing):
+            with patch("api.index.update_practice_fields", side_effect=fake_update):
+                client = TestClient(app)
+                resp = client.post(
+                    "/api/webhooks/clay",
+                    json={"place_id": "abc"},
+                    headers={"X-Clay-Secret": "shhh"},
+                )
+
+    assert resp.status_code == 200
+    assert captured["enrichment_status"] == "enriched"
+
+
 def test_webhook_partial_payload_only_writes_present_fields():
     existing = {"place_id": "abc", "name": "Test", "owner_phone": "+17130000000"}
     captured = {}

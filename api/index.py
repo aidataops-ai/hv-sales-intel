@@ -2432,7 +2432,13 @@ def clay_webhook(
         fields["organization_size"] = org_size
 
     has_any_contact = any(k in fields for k in ("owner_name", "owner_email", "owner_phone"))
-    fields["enrichment_status"] = "enriched" if has_any_contact else "failed"
+    # Same no-downgrade rule as the per-contact branch: Clay's "found nobody"
+    # callback arrives as an EMPTY payload and lands here, and an empty
+    # re-enrichment must not flip an already-enriched practice to 'failed'
+    # (that hid 121 pushable practices during the 2026-08-21 campaign — see
+    # docs/runbooks/enrichment-status-repair-20260822.sql).
+    found = has_any_contact or existing.get("enrichment_status") == "enriched"
+    fields["enrichment_status"] = "enriched" if found else "failed"
     fields["enriched_at"] = datetime.now(timezone.utc).isoformat()
 
     update_practice_fields(payload.place_id, fields, touched_by=None)
