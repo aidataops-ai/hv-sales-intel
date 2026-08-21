@@ -1,4 +1,37 @@
+import sys
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _no_clay_capture_writes(tmp_path, monkeypatch):
+    """Never let a test append to the repo-root Clay capture file.
+
+    The Clay webhook writes every authenticated body to
+    `clay-webhook-captures.jsonl` while we map Clay's real field names. Any
+    test that POSTs to that endpoint would otherwise bury the live payloads
+    the file exists to collect. Only redirects when the API module is already
+    imported, so no test pays an import for this.
+    """
+    module = sys.modules.get("api.index")
+    if module is not None:
+        monkeypatch.setattr(
+            module, "_CLAY_CAPTURE_PATH", tmp_path / "clay-webhook-captures.jsonl",
+            raising=False,
+        )
+
+
+@pytest.fixture(autouse=True)
+def _no_talentdb_capture_writes(tmp_path, monkeypatch):
+    """Same rule for the Talent-DB response capture: fake test responses must
+    never land in the repo-root `talentdb-response-captures.jsonl` the live
+    debugging relies on."""
+    module = sys.modules.get("src.talentdb")
+    if module is not None:
+        monkeypatch.setattr(
+            module, "_RESPONSE_CAPTURE_PATH",
+            tmp_path / "talentdb-response-captures.jsonl", raising=False,
+        )
 
 
 @pytest.fixture(autouse=True)

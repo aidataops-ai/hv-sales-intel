@@ -608,3 +608,127 @@ comment on function public.prune_discarded_posting_descriptions(int) is
 
 revoke all on function public.prune_discarded_posting_descriptions(int) from public;
 grant execute on function public.prune_discarded_posting_descriptions(int) to service_role;
+
+-- =============================================================================
+-- practice_contacts — multiple contacts per practice (added 2026-08-21)
+--
+-- Mirrors supabase/migrations/2026-08-21-practice-contacts.sql; that file
+-- carries the full rationale. In short: Clay now calls the webhook once per
+-- PERSON, and the flat `owner_*` columns on `practices` hold only one contact,
+-- so the second callback would overwrite the first.
+--
+-- SHARED table (no company_id) for the same reason `practices` is — a contact
+-- is a fact about the business, not about the tenant that enriched it. It
+-- COEXISTS with `practices.website_contacts` (AI-extracted from the website by
+-- src/analyzer.py, different provenance) and does not replace `practices.owner_*`,
+-- which the webhook now maintains as a mirror of the primary contact so every
+-- existing consumer keeps working.
+--
+-- Identity is (practice_id, dedupe_key) as a plain UNIQUE CONSTRAINT — the key
+-- is computed in src/contacts.py::contact_dedupe_key (normalized-LinkedIn ->
+-- work_email -> personal_email -> normalized-name) because PostgREST
+-- `on_conflict` upserts cannot arbitrate partial unique indexes. The constraint
+-- doubles as the FK-side index on `practice_id` (leading column).
+--
+-- See docs/specs/2026-08-21-practice-contacts.md.
+-- =============================================================================
+
+create table if not exists practice_contacts (
+  id             bigserial primary key,
+  practice_id    bigint not null references practices(id) on delete cascade,
+  first_name     text,
+  last_name      text,
+  title          text,
+  linkedin_url   text,
+  work_email     text,
+  personal_email text,
+  phone          text,
+  source         text not null default 'clay',
+  dedupe_key     text not null,   -- app-computed; src/contacts.py::contact_dedupe_key
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now(),
+  unique (practice_id, dedupe_key)
+);
+
+-- phone landed after the first apply of the 2026-08-21 migration.
+alter table practice_contacts add column if not exists phone text;
+
+comment on table practice_contacts is
+  'One row per person Clay returns for a practice. Shared across tenants like '
+  '`practices`. Identity is (practice_id, dedupe_key), the key computed in '
+  'src/contacts.py::contact_dedupe_key. Coexists with the AI-extracted '
+  'practices.website_contacts; practices.owner_* mirrors the primary contact. '
+  'See docs/specs/2026-08-21-practice-contacts.md.';
+
+alter table practice_contacts enable row level security;
+
+drop policy if exists "practice_contacts_authenticated_read" on practice_contacts;
+create policy "practice_contacts_authenticated_read"
+  on practice_contacts for select
+  using ((select auth.role()) = 'authenticated' or (select auth.role()) = 'service_role');
+
+-- =============================================================================
+-- talentdb_contact_exports — per-contact Talent-DB push marker (added 2026-08-21)
+--
+-- Mirrors supabase/migrations/2026-08-21-talentdb-contact-exports.sql; that file
+-- carries the full rationale. In short: the Talent-DB push fans out to one lead
+-- per contact, and `company_job_leads.talentdb_exported_at` (one timestamp per
+-- (company, posting)) cannot record that two of three people were accepted and
+-- the third timed out. This table records each person we actually sent.
+--
+-- The lead-level marker stays THE gate and is set only when EVERY eligible
+-- contact succeeded; this table lets a retry re-enter a partially-failed lead
+-- and post only the people still missing. It is also what makes `--resend` the
+-- late-arriving-contact tool: it re-enters a finished lead but still skips
+-- everyone already sent.
+--
+-- No company_id — `lead_id` is already per-(company, posting), so the RLS
+-- policy checks membership one hop away through company_job_leads.
+--
+-- See docs/specs/2026-08-21-practice-contacts.md.
+-- =============================================================================
+
+create table if not exists talentdb_contact_exports (
+  id          bigserial primary key,
+  lead_id     bigint not null references company_job_leads(id) on delete cascade,
+  contact_id  bigint not null references practice_contacts(id) on delete cascade,
+  td_lead_id  text,
+  exported_at timestamptz not null default now(),
+  unique (lead_id, contact_id)
+);
+
+-- The unique constraint indexes (lead_id, …); contact_id would otherwise be an
+-- unindexed FK and its cascade delete a sequential scan.
+create index if not exists idx_tce_contact on talentdb_contact_exports (contact_id);
+
+-- td_lead_id landed after the first apply of the 2026-08-21 migration.
+-- Talent-DB's own record id for this (lead, contact) POST, echoed back on a
+-- re-post so the receiver updates instead of minting a second record. `text`
+-- because the source response field is still TBD (deliberately NOT
+-- localEntityId) — see src/talentdb.py::_td_lead_id_from_response.
+alter table talentdb_contact_exports add column if not exists td_lead_id text;
+
+comment on table talentdb_contact_exports is
+  'One row per (company_job_leads.id, practice_contacts.id) already POSTed to '
+  'Talent-DB. Partial-failure and resend safety for the per-contact fan-out; '
+  'company_job_leads.talentdb_exported_at remains the lead-level gate and is '
+  'set only when every eligible contact succeeded. '
+  'See docs/specs/2026-08-21-practice-contacts.md.';
+
+comment on column talentdb_contact_exports.td_lead_id is
+  'Talent-DB''s record id for this (lead, contact) POST, echoed back on a '
+  're-post so the receiver updates instead of duplicating. NULL = never had '
+  'one, and the field is then omitted from the payload. Which response field '
+  'it comes from is TBD (NOT localEntityId); see '
+  'src/talentdb.py::_td_lead_id_from_response.';
+
+alter table talentdb_contact_exports enable row level security;
+
+drop policy if exists "tenant_isolation_contact_exports" on talentdb_contact_exports;
+create policy "tenant_isolation_contact_exports"
+  on talentdb_contact_exports for select
+  using (lead_id in (
+    select l.id from company_job_leads l
+    where l.company_id in (select company_id from company_members
+                           where user_id = (select auth.uid()))
+  ));

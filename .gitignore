@@ -14,3 +14,8 @@ ICP Documents/
 
 # Leadset working files (build_leadset / run_enrich_push generate these per run)
 leadset-*.json
+
+# Raw Clay webhook callbacks captured while mapping their field names.
+# Contains prospect PII — never commit.
+clay-webhook-captures.jsonl
+talentdb-response-captures.jsonl

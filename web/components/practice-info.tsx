@@ -8,6 +8,7 @@ import { parseJsonArray } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import CallButton from "./call-button"
 import OwnerMiniCard from "./owner-mini-card"
+import ContactCard from "./contact-card"
 
 function StarRating({ rating }: { rating: number | null }) {
   if (!rating) return null
@@ -126,9 +127,15 @@ export default function PracticeInfo({
       )}
 
       <div>
-        <h4 className="text-xs font-semibold text-gray-700 dark:text-[#d9d9d9] mb-1">Contact Details</h4>
+        <h4 className="text-xs font-semibold text-gray-700 dark:text-[#d9d9d9] mb-1">Contact Info</h4>
         {practice.enrichment_status === "pending" ? (
           <p className="text-xs text-gray-400 dark:text-gray-500">Enriching Contact info…</p>
+        ) : practice.contacts && practice.contacts.length > 0 ? (
+          <div className="space-y-2 mt-2">
+            {practice.contacts.map((c) => (
+              <ContactCard key={c.id} contact={c} />
+            ))}
+          </div>
         ) : practice.owner_name || practice.owner_email || practice.owner_phone ? (
           <OwnerMiniCard practice={practice} />
         ) : (

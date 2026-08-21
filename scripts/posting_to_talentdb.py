@@ -17,7 +17,8 @@ step calls the same module the API endpoint calls:
        Email draft                        → email_gen.generate_email_draft    (OpenAI openai_model)
                                             → storage.update_practice_fields
     6. Trigger owner enrichment           → clay.trigger_enrichment           (Clay webhook, async write-back)
-    7. Push the signed Lead               → talentdb.import_lead              (HMAC POST to the webhook)
+    7. Push the signed Lead(s)            → talentdb_push.push_lead_fanout    (one HMAC POST per contact)
+                                            → talentdb.import_lead per person
                                             → lead_store.mark_lead_exported
 
 Ordering note: the app generates the playbook + email AFTER the analysis because
@@ -77,7 +78,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from src import lead_qualifier, lead_store, talentdb
+from src import lead_qualifier, lead_store, talentdb, talentdb_push
 from src.email_gen import generate_email_draft
 from src.analyzer import analyze_practice
 from src.job_boards import normalise_employer
@@ -196,7 +197,8 @@ async def run(
         if skip_webhook:
             print(f"  7. SKIP webhook (--skip-webhook) — lead kept in-system, NOT sent to Talent-DB")
         else:
-            print(f"  7. talentdb.import_lead → {dest_host} (signed POST) → mark_lead_exported")
+            print(f"  7. talentdb_push.push_lead_fanout → {dest_host} "
+                  f"(one signed POST per contact) → mark_lead_exported")
         print("\n[dry-run] No calls made. Re-run with --yes to execute live.")
         return
 
@@ -361,12 +363,15 @@ async def run(
     # script / email fields, and re-fetch the lead row for provider_count.
     practice = get_practice(place_id)
     lead_row = lead_store.find_lead_by_posting(company_id, posting_id) or lead_row
-    result = await talentdb.import_lead(practice, posting, lead_row)
+    # Same call the button makes: one Talent-DB lead per reachable contact on
+    # the practice (or the single legacy owner_* lead when there are none), and
+    # it owns both markers — per-contact, plus the lead-level one once every
+    # eligible contact was accepted.
+    result = await talentdb_push.push_lead_fanout(practice, posting, lead_row,
+                                                  company_id)
     if result.get("ok"):
-        if lead_row:
-            lead_store.mark_lead_exported(company_id, lead_row["id"])
-        print(f"[7/7] Talent-DB accepted → localEntityId={result.get('local_entity_id')} "
-              f"(marker set)")
+        print(f"[7/7] Talent-DB accepted {result.get('sent')} lead(s) → "
+              f"localEntityId={result.get('local_entity_id')} (marker set)")
     else:
         print(f"[7/7] Talent-DB rejected → status={result.get('status')} "
               f"message={result.get('message')} (marker NOT set — safe to retry)")
