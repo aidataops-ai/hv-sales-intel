@@ -692,6 +692,7 @@ create table if not exists talentdb_contact_exports (
   id          bigserial primary key,
   lead_id     bigint not null references company_job_leads(id) on delete cascade,
   contact_id  bigint not null references practice_contacts(id) on delete cascade,
+  td_lead_id  text,
   exported_at timestamptz not null default now(),
   unique (lead_id, contact_id)
 );
@@ -700,12 +701,26 @@ create table if not exists talentdb_contact_exports (
 -- unindexed FK and its cascade delete a sequential scan.
 create index if not exists idx_tce_contact on talentdb_contact_exports (contact_id);
 
+-- td_lead_id landed after the first apply of the 2026-08-21 migration.
+-- Talent-DB's own record id for this (lead, contact) POST, echoed back on a
+-- re-post so the receiver updates instead of minting a second record. `text`
+-- because the source response field is still TBD (deliberately NOT
+-- localEntityId) — see src/talentdb.py::_td_lead_id_from_response.
+alter table talentdb_contact_exports add column if not exists td_lead_id text;
+
 comment on table talentdb_contact_exports is
   'One row per (company_job_leads.id, practice_contacts.id) already POSTed to '
   'Talent-DB. Partial-failure and resend safety for the per-contact fan-out; '
   'company_job_leads.talentdb_exported_at remains the lead-level gate and is '
   'set only when every eligible contact succeeded. '
   'See docs/specs/2026-08-21-practice-contacts.md.';
+
+comment on column talentdb_contact_exports.td_lead_id is
+  'Talent-DB''s record id for this (lead, contact) POST, echoed back on a '
+  're-post so the receiver updates instead of duplicating. NULL = never had '
+  'one, and the field is then omitted from the payload. Which response field '
+  'it comes from is TBD (NOT localEntityId); see '
+  'src/talentdb.py::_td_lead_id_from_response.';
 
 alter table talentdb_contact_exports enable row level security;
 

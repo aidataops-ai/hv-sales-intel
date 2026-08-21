@@ -45,7 +45,12 @@ TWO MARKERS, because a fan-out can half-succeed. `talentdb_exported_at` on the
 lead is stamped only when EVERY eligible contact was accepted, so a lead with a
 failed contact stays in the universe and gets retried; each accepted contact is
 recorded in `talentdb_contact_exports (lead_id, contact_id)`, and the retry
-skips those people so it posts only what is missing. That also makes `--resend`
+skips those people so it posts only what is missing. Each such row also carries
+`td_lead_id` — Talent-DB's own record id for that (lead, contact) pair, sent
+back whenever the pair is posted again so their side updates instead of minting
+a second record. Nothing writes a non-NULL id yet: the extraction point,
+`_td_lead_id_from_response` below, returns None until the response field that
+carries the id is named. That also makes `--resend`
 the LATE-ARRIVING-CONTACT tool: it re-enters a finished lead but still skips
 everyone already sent, so only the new person goes out.
 
@@ -224,6 +229,26 @@ def _text(value):
     return value
 
 
+def _td_lead_id_from_response(data: dict) -> str | None:
+    """Talent-DB's own record id for the Lead this response just created."""
+    ###########################################################################
+    # TBD — WHICH RESPONSE FIELD CARRIES THE ID IS NOT YET SPECIFIED.
+    #
+    # It is deliberately NOT `localEntityId` (per explicit user instruction),
+    # so this returns None until the real field name is known. Fill it in HERE
+    # and in src/talentdb.py::_td_lead_id_from_response — the two must stay in
+    # sync. Whatever this returns is stored on the (lead, contact) marker row
+    # and sent back the next time that pair is posted, so the receiver updates
+    # instead of duplicating.
+    #
+    #     return _text(data.get("<the field name>"))
+    #
+    # Returning None keeps today's behaviour exactly: nothing is stored, and
+    # `td_lead_id` is omitted from every payload.
+    ###########################################################################
+    return None
+
+
 def _contact_email(contact: dict | None) -> str | None:
     """Any real address on this contact — the per-person analogue of
     `_postable_email`. None means we cannot reach them: do NOT post them."""
@@ -264,13 +289,17 @@ def _omit_missing(fields: dict) -> dict:
 
 
 def build_fields(practice: dict | None, posting: dict | None, lead: dict | None = None,
-                 contact: dict | None = None) -> dict:
+                 contact: dict | None = None, td_lead_id: str | None = None) -> dict:
     """Map a practice (+ its linked posting + lead) onto the Talent-DB `fields`.
 
     With a `contact` (one `practice_contacts` row) the person block comes from
     that person instead of the practice's flat `owner_*` mirror, so N contacts
     produce N identical-but-for-the-person leads. With no `contact` the mapping
     is byte-identical to what it always was.
+
+    `td_lead_id` is Talent-DB's own record id for a (lead, contact) pair we have
+    posted before; sending it back turns a re-post into an update on their side.
+    Omitted entirely when we have none.
     """
     p = practice or {}
     pg = posting or {}
@@ -290,6 +319,9 @@ def build_fields(practice: dict | None, posting: dict | None, lead: dict | None 
     fields = {
         # Our practice id — the receiver's stable link back to our record.
         "source_practice_id": str(pid) if pid is not None else None,
+        # THEIR id for this exact (lead, contact) pair, when we have posted it
+        # before — the upsert key we otherwise lack. Omitted when we have none.
+        "td_lead_id": td_lead_id or None,
 
         # --- Contact + company (PascalCase) ---
         "Company": company,                         # required
@@ -355,12 +387,12 @@ def build_fields(practice: dict | None, posting: dict | None, lead: dict | None 
 
 
 def build_envelope(practice: dict | None, posting: dict | None, lead: dict | None = None,
-                   contact: dict | None = None) -> dict:
+                   contact: dict | None = None, td_lead_id: str | None = None) -> dict:
     """The full request body: objectType + operation + fields."""
     return {
         "objectType": "Lead",
         "operation": "upsert",
-        "fields": build_fields(practice, posting, lead, contact),
+        "fields": build_fields(practice, posting, lead, contact, td_lead_id),
     }
 
 
@@ -375,13 +407,16 @@ def _sign(raw: bytes, secret: str) -> str:
 
 
 async def post_lead(practice, posting, lead, *, url: str, secret: str,
-                    contact: dict | None = None) -> dict:
+                    contact: dict | None = None, td_lead_id: str | None = None) -> dict:
     """Sign the exact bytes and POST them. Returns a normalized result dict.
 
     One POST per call. `contact` sends that person's lead; the fan-out over a
-    practice's contacts is the send loop in `run()`.
+    practice's contacts is the send loop in `run()`. `td_lead_id` in / out are
+    the two halves of one loop: pass the id stored for this (lead, contact) pair
+    so the receiver updates that record, and store the id off the response for
+    next time.
     """
-    envelope = build_envelope(practice, posting, lead, contact)
+    envelope = build_envelope(practice, posting, lead, contact, td_lead_id)
     raw = _serialize(envelope)
     headers = {"Content-Type": "application/json", "X-HV-Signature": _sign(raw, secret)}
     async with httpx.AsyncClient(timeout=20) as client:
@@ -389,7 +424,7 @@ async def post_lead(practice, posting, lead, *, url: str, secret: str,
             resp = await client.post(url, headers=headers, content=raw)  # SAME bytes we signed
         except httpx.HTTPError as e:
             return {"ok": False, "status": "network_error", "message": str(e),
-                    "local_entity_id": None, "http_status": None}
+                    "local_entity_id": None, "td_lead_id": None, "http_status": None}
     try:
         data = resp.json()
     except Exception:  # noqa: BLE001
@@ -398,6 +433,7 @@ async def post_lead(practice, posting, lead, *, url: str, secret: str,
     message = data.get("message") or (None if ok else (resp.text or "").strip()[:500] or None)
     return {"ok": ok, "status": data.get("status") or ("ok" if resp.is_success else "error"),
             "message": message, "local_entity_id": data.get("localEntityId"),
+            "td_lead_id": _td_lead_id_from_response(data),
             "http_status": resp.status_code, "fields": len(envelope["fields"])}
 
 
@@ -557,12 +593,16 @@ async def run(leadset: str, company_id: str, *, dry_run: bool, allow_staging: bo
             states["no_email"] += 1
             continue
 
-        # People already POSTed for this lead. Consulted even under `--resend`
-        # — re-entering a finished lead to catch a LATE-ARRIVING contact must
-        # not duplicate the ones that already shipped.
-        already: set = set()
+        # People already POSTed for this lead, as `{contact_id: td_lead_id}`.
+        # The keys are the skip list — consulted even under `--resend`, because
+        # re-entering a finished lead to catch a LATE-ARRIVING contact must not
+        # duplicate the ones that already shipped. The values are Talent-DB's
+        # own id for a pair, sent back whenever a pair IS re-posted so their
+        # side updates instead of minting a second record.
+        exports: dict = {}
         if eligible and lead:
-            already = contact_store.list_exported_contact_ids(lead["id"])
+            exports = contact_store.list_contact_exports(lead["id"])
+        already: set = set(exports)
 
         # `recipients`: [None] means the one legacy owner_* lead.
         recipients: list = list(eligible) or [None]
@@ -578,7 +618,7 @@ async def run(leadset: str, company_id: str, *, dry_run: bool, allow_staging: bo
             for c in recipients:
                 cid = (c or {}).get("id")
                 verb = "would SKIP (already sent)" if cid in already else "would send"
-                fields = build_fields(practice, posting, lead, c)
+                fields = build_fields(practice, posting, lead, c, exports.get(cid))
                 print(f"[export] [{sent}] {verb} {company!r} → {_who(c)} "
                       f"track={track} fields={len(fields)}  (row {i}/{n})", flush=True)
             if not preview_shown:
@@ -599,14 +639,19 @@ async def run(leadset: str, company_id: str, *, dry_run: bool, allow_staging: bo
             entry = {"idx": sent, "posting_id": pid, "company": company,
                      "contact_id": cid, "at": datetime.now(timezone.utc).isoformat()}
             try:
+                # Their id for this pair if we hold one — always None on this
+                # path's own terms (a pair we hold an id for is a pair we skip),
+                # but the plumbing belongs here for every flow that re-posts one.
                 result = await post_lead(practice, posting, lead, url=url, secret=secret,
-                                         contact=c)
+                                         contact=c, td_lead_id=exports.get(cid))
                 entry.update(ok=result["ok"], status=result["status"], message=result["message"],
-                             local_entity_id=result["local_entity_id"], http_status=result["http_status"])
+                             local_entity_id=result["local_entity_id"],
+                             td_lead_id=result.get("td_lead_id"), http_status=result["http_status"])
                 if result["ok"]:
                     ok += 1
                     if mark and lead and cid:
-                        contact_store.mark_contact_exported(lead["id"], cid)
+                        contact_store.mark_contact_exported(
+                            lead["id"], cid, td_lead_id=result.get("td_lead_id"))
                     print(f"[export] [{sent}] OK   {company!r} → {_who(c)} localEntityId="
                           f"{result['local_entity_id']} fields={result.get('fields')}  (row {i}/{n})", flush=True)
                 else:

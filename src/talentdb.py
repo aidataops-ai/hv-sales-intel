@@ -229,11 +229,34 @@ def _contact_person_fields(contact: dict, practice: dict, company) -> dict:
     }
 
 
+def _td_lead_id_from_response(data: dict) -> str | None:
+    """Talent-DB's own record id for the Lead this response just created."""
+    ###########################################################################
+    # TBD — WHICH RESPONSE FIELD CARRIES THE ID IS NOT YET SPECIFIED.
+    #
+    # It is deliberately NOT `localEntityId` (per explicit user instruction),
+    # so this returns None until the real field name is known. Fill it in HERE
+    # — this is the extraction point; `import_lead` puts whatever this returns
+    # onto its result as `td_lead_id`, `talentdb_push` stores that on the
+    # (lead, contact) marker row, and a later post of the same pair sends it
+    # back so the receiver updates instead of duplicating. The standalone
+    # exporter carries the same placeholder
+    # (scripts/talentdb_export.py::_td_lead_id_from_response) — keep in sync.
+    #
+    #     return _text(data.get("<the field name>"))
+    #
+    # Returning None keeps today's behaviour exactly: nothing is stored, and
+    # `td_lead_id` is omitted from every payload.
+    ###########################################################################
+    return None
+
+
 def build_fields(
     practice: dict | None,
     posting: dict | None,
     lead: dict | None = None,
     contact: dict | None = None,
+    td_lead_id: str | None = None,
 ) -> dict:
     """Map a practice (+ its linked posting + lead) onto the Talent-DB `fields`.
 
@@ -248,6 +271,11 @@ def build_fields(
     untouched, so N contacts produce N identical-but-for-the-person leads. With
     no `contact` the mapping is exactly what it always was — that is the path a
     practice with zero contact rows still takes.
+
+    `td_lead_id` is Talent-DB's own record id for a (lead, contact) pair we have
+    posted before. Sending it back is what turns a re-post into an update on
+    their side instead of a second record; we have no id for a pair we have
+    never sent, and the key is then omitted entirely rather than sent empty.
     """
     p = practice or {}
     pg = posting or {}
@@ -268,6 +296,9 @@ def build_fields(
     fields = {
         # Our practice id — the receiver's stable link back to our record.
         "source_practice_id": str(pid) if pid is not None else None,
+        # THEIR id for this exact (lead, contact) pair, when we have posted it
+        # before — the upsert key we otherwise lack. Omitted when we have none.
+        "td_lead_id": td_lead_id or None,
 
         # --- Contact + company (PascalCase) ---
         "Company": company,                         # required
@@ -339,7 +370,7 @@ def build_fields(
 # Canonical column order for the signals CSV export — the exact `fields` keys the
 # webhook sends, so an exported CSV round-trips into a Talent-DB CSV import.
 CSV_COLUMNS = [
-    "source_practice_id",
+    "source_practice_id", "td_lead_id",
     # Contact + company
     "Company", "LastName", "FirstName", "Title", "Email", "work_email", "Phone",
     "alternate_phone", "Country", "City", "State", "Website", "linkedin_url",
@@ -362,6 +393,7 @@ def build_envelope(
     posting: dict | None,
     lead: dict | None = None,
     contact: dict | None = None,
+    td_lead_id: str | None = None,
 ) -> dict:
     """The full request body: `objectType` + `operation` + `fields`.
 
@@ -372,7 +404,7 @@ def build_envelope(
     return {
         "objectType": "Lead",
         "operation": "upsert",
-        "fields": build_fields(practice, posting, lead, contact),
+        "fields": build_fields(practice, posting, lead, contact, td_lead_id),
     }
 
 
@@ -394,16 +426,22 @@ async def import_lead(
     posting: dict | None,
     lead: dict | None = None,
     contact: dict | None = None,
+    td_lead_id: str | None = None,
 ) -> dict:
     """POST one signed Lead to Talent-DB. Fail-soft: never raises.
 
     Returns a normalized dict: {ok, status, message, local_entity_id,
-    http_status}. `ok` is True only when the receiver accepted the record;
-    callers use it to decide whether to set the export marker.
+    td_lead_id, http_status}. `ok` is True only when the receiver accepted the
+    record; callers use it to decide whether to set the export marker.
 
     `contact` sends this person's lead instead of the practice's `owner_*` one.
     One POST per call either way — the fan-out over a practice's contacts lives
     in `src/talentdb_push.py`, which calls this once per person.
+
+    `td_lead_id` in / `td_lead_id` out are the two halves of the same loop: pass
+    the id we stored for this (lead, contact) pair and the receiver updates that
+    record; the id read off the response (`_td_lead_id_from_response`) is what
+    the caller stores for next time.
     """
     if not is_configured():
         log.warning("[talentdb.skip] not_configured url=%s secret=%s",
@@ -433,7 +471,7 @@ async def import_lead(
         return {"ok": False, "status": "skipped_no_email",
                 "message": "No contact email — not posted."}
 
-    envelope = build_envelope(practice, posting, lead, contact)
+    envelope = build_envelope(practice, posting, lead, contact, td_lead_id)
     raw = _serialize(envelope)
     headers = {
         "Content-Type": "application/json",
@@ -476,5 +514,9 @@ async def import_lead(
         "status": data.get("status") or ("ok" if resp.is_success else "error"),
         "message": message,
         "local_entity_id": data.get("localEntityId"),
+        # Their id for this record, to store on the (lead, contact) marker and
+        # send back next time. None until the source field is named — see
+        # `_td_lead_id_from_response`.
+        "td_lead_id": _td_lead_id_from_response(data),
         "http_status": resp.status_code,
     }

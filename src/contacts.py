@@ -231,8 +231,9 @@ def list_contacts_for_practice(practice_id: int) -> list[dict]:
 # Talent-DB per-contact export markers
 #
 # The push fans out to one Talent-DB lead per contact, so "already exported" is
-# a fact about a (lead, person) pair, not about the lead alone. These two read
-# and write `talentdb_contact_exports`; the lead-level
+# a fact about a (lead, person) pair, not about the lead alone — and so is
+# Talent-DB's own record id for that pair (`td_lead_id`, echoed back on a
+# re-post). These read and write `talentdb_contact_exports`; the lead-level
 # `company_job_leads.talentdb_exported_at` stays the gate and is set only when
 # every eligible contact on the lead succeeded. See src/talentdb_push.py.
 # ---------------------------------------------------------------------------
@@ -240,36 +241,54 @@ def list_contacts_for_practice(practice_id: int) -> list[dict]:
 EXPORTS_TABLE = "talentdb_contact_exports"
 
 
-def list_exported_contact_ids(lead_id: int) -> set[int]:
-    """The contacts already POSTed for this lead — the retry's skip list.
+def list_contact_exports(lead_id: int) -> dict[int, str | None]:
+    """`{contact_id: td_lead_id}` for every contact already POSTed for this lead.
+
+    Two answers in one read, because the fan-out needs both: the KEYS are the
+    retry's skip list, and the VALUES are Talent-DB's own record id for that
+    (lead, contact) pair — echoed back when a pair is posted again so the
+    receiver updates instead of duplicating. A None value means the pair is
+    exported but we never captured an id (which is every row today; see
+    `talentdb._td_lead_id_from_response`).
 
     Fail-soft like everything else here: an unapplied migration returns an empty
-    set, which degrades the fan-out to "send everyone" rather than blocking it.
+    dict, which degrades the fan-out to "send everyone" rather than blocking it.
     """
     client = _client()
     if not client or not lead_id:
-        return set()
+        return {}
 
     try:
         result = (
             client.table(EXPORTS_TABLE)
-            .select("contact_id")
+            .select("contact_id, td_lead_id")
             .eq("lead_id", lead_id)
             .execute()
         )
     except Exception as e:
         log.warning("[contacts.exports.list.error] lead=%s %s: %s",
                     lead_id, type(e).__name__, str(e)[:200])
-        return set()
+        return {}
 
-    return {row["contact_id"] for row in (result.data or []) if row.get("contact_id")}
+    return {row["contact_id"]: row.get("td_lead_id")
+            for row in (result.data or []) if row.get("contact_id")}
 
 
-def mark_contact_exported(lead_id: int, contact_id: int) -> None:
+def list_exported_contact_ids(lead_id: int) -> set[int]:
+    """Just the skip list — `list_contact_exports` without the ids."""
+    return set(list_contact_exports(lead_id))
+
+
+def mark_contact_exported(lead_id: int, contact_id: int,
+                          td_lead_id: str | None = None) -> None:
     """Record that this contact's Talent-DB lead was accepted.
 
-    Upserts on `(lead_id, contact_id)` so a `--resend` that re-posts the same
-    person refreshes the row instead of failing on the unique constraint.
+    Upserts on `(lead_id, contact_id)` so re-posting the same person refreshes
+    the row instead of failing on the unique constraint. `td_lead_id` is written
+    ONLY when truthy: a later marker write that captured no id must not blank
+    the id we already hold, because that id is the only thing that lets a
+    re-post update the receiver's record instead of duplicating it.
+
     Fail-soft: a failed mark logs and returns — the POST already happened, and
     losing the marker costs a duplicate on a later retry, not the send.
     """
@@ -278,6 +297,8 @@ def mark_contact_exported(lead_id: int, contact_id: int) -> None:
         return
 
     row = {"lead_id": lead_id, "contact_id": contact_id, "exported_at": _now()}
+    if td_lead_id:
+        row["td_lead_id"] = td_lead_id
     try:
         (
             client.table(EXPORTS_TABLE)

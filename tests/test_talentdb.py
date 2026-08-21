@@ -376,6 +376,82 @@ def test_csv_columns_carry_the_new_keys_in_place():
     cols = talentdb.CSV_COLUMNS
     assert cols[cols.index("Email") + 1] == "work_email"
     assert cols[cols.index("Website") + 1] == "linkedin_url"
+    assert cols[cols.index("source_practice_id") + 1] == "td_lead_id"
+
+
+# --------------------------------------------------------------------------- #
+# td_lead_id — Talent-DB's own id for a (lead, contact) pair we posted before
+# --------------------------------------------------------------------------- #
+
+def test_td_lead_id_is_sent_when_we_have_one():
+    """Sending their id back is what turns a re-post into an update on their
+    side instead of a second record."""
+    fields = talentdb.build_fields(_practice(), _posting(), _lead(), _contact(),
+                                   "TD-123")
+    assert fields["td_lead_id"] == "TD-123"
+    env = talentdb.build_envelope(_practice(), _posting(), _lead(), _contact(),
+                                  "TD-123")
+    assert env["fields"]["td_lead_id"] == "TD-123"
+
+
+@pytest.mark.parametrize("nothing", [None, ""])
+def test_td_lead_id_is_omitted_when_we_have_none(nothing):
+    """A pair we have never posted has no id — omit the key, never send it
+    empty. This is every payload today."""
+    fields = talentdb.build_fields(_practice(), _posting(), _lead(), _contact(),
+                                   nothing)
+    assert "td_lead_id" not in fields
+    # ...and on the legacy owner_* path, which takes no id at all.
+    assert "td_lead_id" not in talentdb.build_fields(_practice(), _posting(), _lead())
+
+
+def test_td_lead_id_extraction_is_an_unwired_placeholder():
+    """`_td_lead_id_from_response` is the single point where the receiver's id
+    is read. It returns None until the response field is named — deliberately
+    NOT localEntityId — so nothing is stored and nothing is echoed back yet."""
+    assert talentdb._td_lead_id_from_response({"localEntityId": 482}) is None
+    assert talentdb._td_lead_id_from_response({}) is None
+
+
+@pytest.mark.asyncio
+async def test_import_lead_result_carries_the_extracted_td_lead_id():
+    fake = _FakeClient(_FakeResp({"ok": True, "status": "ok", "localEntityId": 482}))
+    with patch("src.talentdb.settings") as s:
+        s.talentdb_webhook_url = "https://x/api/salesforce/webhook"
+        s.talentdb_webhook_secret = "topsecret"
+        with patch("src.talentdb.httpx.AsyncClient", return_value=fake):
+            with patch("src.talentdb._td_lead_id_from_response",
+                       return_value="TD-777"):
+                result = await talentdb.import_lead(_practice(), _posting())
+    assert result["td_lead_id"] == "TD-777"
+    # The placeholder as it actually ships hands back None, not localEntityId.
+    assert result["local_entity_id"] == 482
+
+
+@pytest.mark.asyncio
+async def test_import_lead_td_lead_id_is_none_with_the_shipped_placeholder():
+    fake = _FakeClient(_FakeResp({"ok": True, "status": "ok", "localEntityId": 482}))
+    with patch("src.talentdb.settings") as s:
+        s.talentdb_webhook_url = "https://x/api/salesforce/webhook"
+        s.talentdb_webhook_secret = "topsecret"
+        with patch("src.talentdb.httpx.AsyncClient", return_value=fake):
+            result = await talentdb.import_lead(_practice(), _posting())
+    assert result["td_lead_id"] is None
+    assert "td_lead_id" not in json.loads(fake.sent["content"])["fields"]
+
+
+@pytest.mark.asyncio
+async def test_import_lead_forwards_a_stored_td_lead_id_into_the_payload():
+    fake = _FakeClient(_FakeResp({"ok": True, "status": "ok", "localEntityId": 1}))
+    with patch("src.talentdb.settings") as s:
+        s.talentdb_webhook_url = "https://x/api/salesforce/webhook"
+        s.talentdb_webhook_secret = "topsecret"
+        with patch("src.talentdb.httpx.AsyncClient", return_value=fake):
+            await talentdb.import_lead(_practice(), _posting(), _lead(),
+                                       contact=_contact(), td_lead_id="TD-123")
+    posted = json.loads(fake.sent["content"])["fields"]
+    assert posted["td_lead_id"] == "TD-123"
+    assert posted["FirstName"] == "Ada"      # still that person's lead
 
 
 def test_contact_fields_keep_the_csv_column_order():

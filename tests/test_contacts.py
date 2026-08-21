@@ -1,11 +1,16 @@
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src import contacts
 from src.contacts import (
     clean_contact,
     contact_dedupe_key,
     contact_email,
+    list_contact_exports,
     list_contacts_for_practice,
+    list_exported_contact_ids,
+    mark_contact_exported,
     owner_mirror_fields,
     pick_primary,
     should_mirror,
@@ -397,3 +402,86 @@ def test_list_contacts_then_pick_primary_round_trip():
         "owner_title": "Owner",
         "owner_email": "bo@clinic.com",
     }
+
+
+# ---------------------------------------------------------------------------
+# Talent-DB per-contact export markers
+# ---------------------------------------------------------------------------
+
+
+def test_list_contact_exports_maps_contact_id_to_td_lead_id():
+    rows = [{"contact_id": 7, "td_lead_id": "TD-123"},
+            {"contact_id": 9, "td_lead_id": None}]
+    client, table = _mock_client(rows=rows)
+    with patch("src.contacts._client", return_value=client):
+        assert list_contact_exports(900) == {7: "TD-123", 9: None}
+
+    assert client.table.call_args.args[0] == "talentdb_contact_exports"
+    table.eq.assert_called_once_with("lead_id", 900)
+    assert table.select.call_args.args[0] == "contact_id, td_lead_id"
+
+
+def test_list_exported_contact_ids_is_just_the_keys():
+    """The skip list and the id map are one read — a lead's contacts are few."""
+    rows = [{"contact_id": 7, "td_lead_id": "TD-123"},
+            {"contact_id": 9, "td_lead_id": None}]
+    client, _ = _mock_client(rows=rows)
+    with patch("src.contacts._client", return_value=client):
+        assert list_exported_contact_ids(900) == {7, 9}
+
+
+def test_list_contact_exports_is_fail_soft():
+    """An unapplied migration degrades the fan-out to "send everyone", which is
+    a duplicate at worst — never a blocked push."""
+    client, _ = _mock_client(
+        raises=Exception('relation "talentdb_contact_exports" does not exist'))
+    with patch("src.contacts._client", return_value=client):
+        assert list_contact_exports(900) == {}
+        assert list_exported_contact_ids(900) == set()
+    with patch("src.contacts._client", return_value=None):
+        assert list_contact_exports(900) == {}
+    client, _ = _mock_client(rows=[{"contact_id": 7}])
+    with patch("src.contacts._client", return_value=client):
+        assert list_contact_exports(None) == {}
+
+
+def test_mark_contact_exported_upserts_on_the_pair():
+    client, table = _mock_client(rows=[{"id": 1}])
+    with patch("src.contacts._client", return_value=client):
+        mark_contact_exported(900, 7)
+
+    row = table.upsert.call_args.args[0]
+    assert row["lead_id"] == 900
+    assert row["contact_id"] == 7
+    assert row["exported_at"]
+    assert table.upsert.call_args.kwargs["on_conflict"] == "lead_id,contact_id"
+
+
+def test_mark_contact_exported_stores_a_td_lead_id_when_given():
+    client, table = _mock_client(rows=[{"id": 1}])
+    with patch("src.contacts._client", return_value=client):
+        mark_contact_exported(900, 7, td_lead_id="TD-123")
+    assert table.upsert.call_args.args[0]["td_lead_id"] == "TD-123"
+
+
+@pytest.mark.parametrize("empty", [None, "", 0])
+def test_mark_contact_exported_never_blanks_a_stored_td_lead_id(empty):
+    """A later marker write that captured no id must leave the key out of the
+    upsert entirely — sending NULL would erase the only thing that lets a
+    re-post update the receiver's record instead of duplicating it."""
+    client, table = _mock_client(rows=[{"id": 1}])
+    with patch("src.contacts._client", return_value=client):
+        mark_contact_exported(900, 7, td_lead_id=empty)
+    assert "td_lead_id" not in table.upsert.call_args.args[0]
+
+
+def test_mark_contact_exported_is_fail_soft_and_needs_both_ids():
+    client, _ = _mock_client(
+        raises=Exception('relation "talentdb_contact_exports" does not exist'))
+    with patch("src.contacts._client", return_value=client):
+        mark_contact_exported(900, 7)          # must not raise
+    client, table = _mock_client(rows=[{"id": 1}])
+    with patch("src.contacts._client", return_value=client):
+        mark_contact_exported(None, 7)
+        mark_contact_exported(900, None)
+    table.upsert.assert_not_called()

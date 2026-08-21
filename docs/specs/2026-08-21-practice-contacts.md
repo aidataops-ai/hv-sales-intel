@@ -161,8 +161,9 @@ the N leads.
 | `alternate_phone` | `practice.phone` | the office line; omitted when identical to `Phone` |
 
 Both new keys are in `talentdb.CSV_COLUMNS` too (`work_email` after `Email`,
-`linkedin_url` after `Website`), so an exported CSV still round-trips into a
-TalentDB CSV import.
+`linkedin_url` after `Website`, alongside `td_lead_id` after
+`source_practice_id`), so an exported CSV still round-trips into a TalentDB CSV
+import.
 
 `practices.owner_phone` is **not** consulted on the contact path. It is a mirror
 of *some* contact, and mixing it in would put person A's number on person B's
@@ -208,6 +209,30 @@ duplicates.
 Contact markers are only read and written when there **is** a lead row to key
 them to. A practice pushed with no linked posting fans out every time, exactly
 as it is already exempt from the lead-level marker.
+
+### `td_lead_id` — the upsert key we never had
+
+`talentdb_contact_exports.td_lead_id` holds **TalentDB's own record id for that
+(lead, contact) pair**, read off the webhook response and stored next to the
+marker. Whenever the same pair is posted again the stored id goes out in the
+payload as the `td_lead_id` field, so the receiver **updates that record instead
+of minting a second one** — the closest thing to an upsert key on a contract
+that has none. A pair we have never sent has no id, and the field is then
+**omitted from the payload entirely** rather than sent empty.
+
+Threaded through as an optional argument everywhere the person is:
+`build_fields` / `build_envelope` / `import_lead` in `src/talentdb.py`, the
+inline mirror in `scripts/talentdb_export.py`, and both directions of
+`push_lead_fanout` (read the stored id in, store the response's id out via
+`contacts.mark_contact_exported(..., td_lead_id=…)`). A marker write that
+captured no id **leaves the column alone** rather than nulling it — losing a
+stored id would silently turn the next re-post back into a duplicate.
+
+**The source response field is TBD.** It is deliberately *not* `localEntityId`.
+Extraction is therefore a single placeholder that currently returns None —
+`src/talentdb.py::_td_lead_id_from_response`, mirrored in
+`scripts/talentdb_export.py` — so today nothing is stored and nothing is echoed,
+and naming the field is a one-line change in those two functions.
 
 ### Explicitly unchanged
 

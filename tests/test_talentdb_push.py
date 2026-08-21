@@ -43,18 +43,25 @@ def _contact(cid: int, **overrides) -> dict:
 
 class _Recorder:
     """Stands in for `talentdb.import_lead` — records every call, replies from
-    a queue of (ok, status) so a partial failure is easy to stage."""
+    a queue of (ok, status) so a partial failure is easy to stage. `td_id` is
+    the id the fake receiver hands back, i.e. what the real
+    `talentdb._td_lead_id_from_response` would have extracted."""
 
-    def __init__(self, replies=None):
+    def __init__(self, replies=None, td_id=None):
         self.calls: list[dict | None] = []
+        self.sent_td_ids: list = []
         self._replies = list(replies or [])
+        self._td_id = td_id
 
-    async def __call__(self, practice, posting, lead, contact=None):
+    async def __call__(self, practice, posting, lead, contact=None,
+                       td_lead_id=None):
         self.calls.append(contact)
+        self.sent_td_ids.append(td_lead_id)
         ok, status = self._replies.pop(0) if self._replies else (True, "ok")
         return {"ok": ok, "status": status,
                 "message": None if ok else "receiver said no",
                 "local_entity_id": len(self.calls) if ok else None,
+                "td_lead_id": self._td_id if ok else None,
                 "http_status": 200}
 
     @property
@@ -65,24 +72,29 @@ class _Recorder:
 _DEFAULT = object()   # "the fixture", so an explicit None can mean None
 
 
-async def _push(rows, *, replies=None, exported=None, lead=_DEFAULT,
-                practice=_DEFAULT, mark=True):
+async def _push(rows, *, replies=None, exported=None, td_id=None,
+                lead=_DEFAULT, practice=_DEFAULT, mark=True):
     """Drive `push_lead_fanout` with the whole data layer stubbed out.
 
-    Returns (result, recorder, marked_leads, marked_contacts) — the last two
-    are the two markers, captured as the argument tuples they were called with.
+    `exported` is the stored `{contact_id: td_lead_id}` map; a bare iterable is
+    accepted as "these ids, no stored id". Returns (result, recorder,
+    marked_leads, marked_contacts) — the last two are the two markers, captured
+    as the argument tuples they were called with.
     """
-    recorder = _Recorder(replies)
+    if not isinstance(exported, dict):
+        exported = {cid: None for cid in (exported or ())}
+    recorder = _Recorder(replies, td_id=td_id)
     marked_leads: list[tuple] = []
     marked_contacts: list[tuple] = []
 
     with patch("src.talentdb_push.talentdb.import_lead", recorder), \
          patch("src.talentdb_push.contacts.list_contacts_for_practice",
                return_value=rows), \
-         patch("src.talentdb_push.contacts.list_exported_contact_ids",
-               return_value=set(exported or ())), \
+         patch("src.talentdb_push.contacts.list_contact_exports",
+               return_value=exported), \
          patch("src.talentdb_push.contacts.mark_contact_exported",
-               side_effect=lambda lid, cid: marked_contacts.append((lid, cid))), \
+               side_effect=lambda lid, cid, td_lead_id=None:
+                   marked_contacts.append((lid, cid, td_lead_id))), \
          patch("src.talentdb_push.lead_store.mark_lead_exported",
                side_effect=lambda cid, lid: marked_leads.append((cid, lid))):
         result = await talentdb_push.push_lead_fanout(
@@ -125,7 +137,7 @@ async def test_three_contacts_become_three_posts_all_marked():
     assert result["ok"] is True
     assert result["status"] == "ok"
     assert result["sent"] == 3
-    assert contacts == [(900, 1), (900, 2), (900, 3)]
+    assert contacts == [(900, 1, None), (900, 2, None), (900, 3, None)]
     assert leads == [("apex", 900)]               # clean sweep → lead marker set
 
 
@@ -169,7 +181,7 @@ async def test_partial_failure_marks_the_successes_but_not_the_lead():
         rows, replies=[(True, "ok"), (False, "error"), (True, "ok")])
 
     assert rec.contact_ids == [1, 2, 3]           # the failure stops nothing
-    assert contacts == [(900, 1), (900, 3)]       # only the accepted ones
+    assert contacts == [(900, 1, None), (900, 3, None)]       # only the accepted ones
     assert leads == []                            # NOT a clean sweep
     assert result["ok"] is True                   # something landed
     assert result["status"] == "error"            # first failure surfaces
@@ -186,7 +198,7 @@ async def test_already_exported_contact_is_skipped_without_a_post():
     assert result["ok"] is True
     assert result["sent"] == 1                    # skipped ≠ sent
     assert [r["status"] for r in result["results"]] == ["already_exported", "ok"]
-    assert contacts == [(900, 2)]
+    assert contacts == [(900, 2, None)]
     # Every eligible contact is now accounted for → the lead is finished.
     assert leads == [("apex", 900)]
 
@@ -248,3 +260,90 @@ async def test_a_missing_practice_takes_the_legacy_path():
     result, rec, leads, contacts = await _push([], practice=None)
     assert rec.calls == [None]
     assert result["sent"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# td_lead_id — Talent-DB's id for a (lead, contact) pair, stored and echoed
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.asyncio
+async def test_success_stores_the_response_td_lead_id_on_the_marker():
+    """Whatever `_td_lead_id_from_response` extracted goes onto the pair's
+    marker row, so the next post of that pair can send it back."""
+    rows = [_contact(1), _contact(2)]
+    result, rec, leads, contacts = await _push(rows, td_id="TD-777")
+
+    assert contacts == [(900, 1, "TD-777"), (900, 2, "TD-777")]
+
+
+@pytest.mark.asyncio
+async def test_no_id_in_the_response_marks_the_pair_without_one():
+    """Today's shipped behaviour: the placeholder returns None, the pair is
+    still marked exported, and `mark_contact_exported` leaves the column alone
+    rather than blanking it."""
+    rows = [_contact(1)]
+    result, rec, leads, contacts = await _push(rows, td_id=None)
+
+    assert contacts == [(900, 1, None)]
+
+
+@pytest.mark.asyncio
+async def test_a_new_pair_is_posted_with_no_td_lead_id():
+    """Nothing stored → nothing echoed → `build_fields` omits the key."""
+    rows = [_contact(1), _contact(2)]
+    result, rec, leads, contacts = await _push(rows, exported={})
+
+    assert rec.contact_ids == [1, 2]
+    assert rec.sent_td_ids == [None, None]
+
+
+@pytest.mark.asyncio
+async def test_a_pair_we_hold_an_id_for_is_skipped_not_re_posted():
+    """The skip is unconditional on the marker's KEYS, so a stored id is never
+    reached through this path — it is the plumbing for flows that do re-post a
+    pair. What matters here is that holding an id does not cause a POST."""
+    rows = [_contact(1), _contact(2)]
+    result, rec, leads, contacts = await _push(
+        rows, exported={1: "TD-123"})
+
+    assert rec.contact_ids == [2]                 # person 1 not re-POSTed
+    assert rec.sent_td_ids == [None]              # and their id never left
+    assert result["sent"] == 1
+
+
+@pytest.mark.asyncio
+async def test_the_td_lead_id_kwarg_is_looked_up_by_contact_id():
+    """The plumbing itself: for every contact it posts, the fan-out looks the
+    id up in the exports map *under that contact's id* and hands the result to
+    `import_lead`.
+
+    A stored id is unreachable through this path by construction — the skip is
+    unconditional on the map's keys, so a pair we hold an id for is never
+    re-posted here. That is why this asserts the lookup rather than a non-None
+    kwarg; the value only becomes non-None for a caller that re-posts a pair.
+    """
+    class _WatchedExports(dict):
+        def __init__(self, *a):
+            super().__init__(*a)
+            self.gets: list = []
+
+        def get(self, key, default=None):
+            self.gets.append(key)
+            return super().get(key, default)
+
+    rows = [_contact(1), _contact(2)]
+    exports = _WatchedExports()
+    recorder = _Recorder()
+
+    with patch("src.talentdb_push.talentdb.import_lead", recorder), \
+         patch("src.talentdb_push.contacts.list_contacts_for_practice",
+               return_value=rows), \
+         patch("src.talentdb_push.contacts.list_contact_exports",
+               return_value=exports), \
+         patch("src.talentdb_push.contacts.mark_contact_exported"), \
+         patch("src.talentdb_push.lead_store.mark_lead_exported"):
+        await talentdb_push.push_lead_fanout(
+            _practice(), _posting(), _lead(), "apex")
+
+    assert exports.gets == [1, 2]            # looked up per contact, in order
+    assert recorder.sent_td_ids == [None, None]   # nothing stored → nothing sent

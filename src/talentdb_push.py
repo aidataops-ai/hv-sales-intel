@@ -28,7 +28,12 @@ ours, and it takes two markers because a fan-out can half-succeed:
 * `talentdb_contact_exports (lead_id, contact_id)` — the **per-person record**
   inside that lead. The retry above skips the people already accepted, so it
   posts only the one that failed. Without it, "retry the lead" would mean
-  "duplicate the two that worked".
+  "duplicate the two that worked". Its `td_lead_id` column holds Talent-DB's
+  own id for that pair, read off the response and sent back whenever the pair
+  is posted again, so such a post updates their record instead of minting a
+  second one. Nothing writes a non-NULL id yet: the extraction point,
+  `talentdb._td_lead_id_from_response`, returns None until the response field
+  is named.
 
 Re-entering an already-marked lead (what the scripts' `--resend` does) still
 consults the contact markers — Clay finds a fourth person a week later, the
@@ -117,9 +122,11 @@ async def push_lead_fanout(
                 "results": [result]}
 
     lead_id = (lead or {}).get("id")
-    already = set()
-    if lead_id:
-        already = contacts.list_exported_contact_ids(lead_id)
+    # `{contact_id: td_lead_id}` — the keys are the skip list, the values are
+    # Talent-DB's id for a pair we have posted before. Empty for a lead-less
+    # push, which is why those fan out in full and send no `td_lead_id`.
+    exports: dict = contacts.list_contact_exports(lead_id) if lead_id else {}
+    already = set(exports)
 
     log.info("[talentdb_push.fanout] practice=%s lead=%s contacts=%d "
              "eligible=%d already_sent=%d",
@@ -137,14 +144,20 @@ async def push_lead_fanout(
                             "contact_id": contact_id})
             continue
 
+        # Their id for this pair if we hold one, so a re-post updates rather
+        # than duplicates. Always None on the path above's own terms — a pair we
+        # hold an id for is a pair we skip — but the plumbing has to be here for
+        # every flow that DOES re-post a pair.
         result = await talentdb.import_lead(practice, posting, lead,
-                                            contact=contact)
+                                            contact=contact,
+                                            td_lead_id=exports.get(contact_id))
         result = {**result, "contact_id": contact_id}
         results.append(result)
         if result.get("ok"):
             sent += 1
             if mark and lead_id and contact_id:
-                contacts.mark_contact_exported(lead_id, contact_id)
+                contacts.mark_contact_exported(
+                    lead_id, contact_id, td_lead_id=result.get("td_lead_id"))
         else:
             all_ok = False
 
