@@ -170,7 +170,7 @@ of *some* contact, and mixing it in would put person A's number on person B's
 lead. Blank strings are trimmed to None and dropped by `_omit_missing`, so an
 absent field is an absent key, never `""`.
 
-### Eligibility, and the zero-contact fallback
+### Eligibility — and the retirement of the zero-contact fallback
 
 A contact with **neither** a personal nor a work email (placeholders scrubbed by
 `_scrub_email`) is skipped — the per-person form of the existing "no email →
@@ -183,11 +183,18 @@ lead, and the practice office line does not count — that number belongs to the
 practice, not the person.
 
 If the eligible set is **empty** — no contact rows at all, or none reachable —
-the push falls back to the **legacy single lead** from `practices.owner_*`,
-guarded by `_postable_email` exactly as before. That path is byte-identical to
-what shipped before this change, which answers parked question 1: a
-personal-email-only contact *is* pushed, and a contact with no email at all is
-not, but their absence never silently drops the lead.
+**nothing goes out**. The original design fell back to the legacy single lead
+from `practices.owner_*`; that fallback was **retired on 2026-08-22** (user
+decision, citing the "inception" incident): practices enriched under the
+pre-contact configuration are already in the sales team's hands, and
+re-posting their `owner_*` mirror would hand the same person out a second
+time. `push_lead_fanout` returns `status="skipped_no_contacts"` (surfaced by
+the Import-Lead buttons as a `talentdb_warning`), writes no marker, and the
+lead stays visibly un-exported; `scripts/talentdb_export.py` counts the same
+case as `no_eligible_contact`. This supersedes the earlier answer to parked
+question 1: a personal-email-only contact *is* still pushed, but a lead whose
+practice has no eligible contact is now deliberately dropped from every push
+path — endpoints, scripts, and the scheduled `leads-enrich` workflow alike.
 
 ### Dedupe: two markers, because a fan-out can half-succeed
 

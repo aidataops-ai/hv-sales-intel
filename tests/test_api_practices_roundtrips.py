@@ -220,11 +220,22 @@ def test_import_lead_fetches_the_full_posting_only_when_it_sends(monkeypatch):
 
     sent: dict = {}
 
-    async def fake_import(practice, posting, lead):
+    async def fake_import(practice, posting, lead, contact=None, td_lead_id=None):
         sent["posting"] = posting
         sent["lead"] = lead
         return {"ok": True, "status": "created"}
 
+    # One eligible contact so the fan-out sends — legacy owner_* singles are
+    # retired (2026-08-22), a contact-less practice would send nothing.
+    monkeypatch.setattr(
+        "src.talentdb_push.contacts.list_contacts_for_practice",
+        lambda pid: [{"id": 1, "first_name": "Pat", "last_name": "Lee",
+                      "work_email": "pat@acme.com", "personal_email": None,
+                      "phone": "+13125550001"}])
+    monkeypatch.setattr("src.talentdb_push.contacts.list_contact_exports",
+                        lambda lid: {})
+    monkeypatch.setattr("src.talentdb_push.contacts.mark_contact_exported",
+                        lambda lid, cid, td_lead_id=None: None)
     monkeypatch.setattr(lead_store, "get_posting", fake_get_posting)
     monkeypatch.setattr(
         lead_store, "newest_lead_for_practice",
@@ -255,10 +266,17 @@ def test_import_lead_sends_a_practice_with_no_linked_posting(monkeypatch):
 
     sent: dict = {}
 
-    async def fake_import(practice, posting, lead):
+    async def fake_import(practice, posting, lead, contact=None, td_lead_id=None):
         sent["posting"] = posting
         return {"ok": True, "status": "created"}
 
+    # One eligible contact so the fan-out sends — legacy owner_* singles are
+    # retired (2026-08-22), a contact-less practice would send nothing.
+    monkeypatch.setattr(
+        "src.talentdb_push.contacts.list_contacts_for_practice",
+        lambda pid: [{"id": 1, "first_name": "Pat", "last_name": "Lee",
+                      "work_email": "pat@acme.com", "personal_email": None,
+                      "phone": "+13125550001"}])
     monkeypatch.setattr(lead_store, "get_posting", boom)
     monkeypatch.setattr(lead_store, "newest_lead_for_practice", lambda c, p: None)
     monkeypatch.setattr("src.talentdb.import_lead", fake_import)

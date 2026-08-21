@@ -149,44 +149,41 @@ async def test_three_contacts_become_three_posts_all_marked():
 
 
 @pytest.mark.asyncio
-async def test_no_contacts_sends_the_single_legacy_lead():
+async def test_no_contacts_sends_nothing_the_legacy_lead_is_retired():
+    """User decision 2026-08-22: pre-contact-era practices are already in the
+    sales team's hands — the owner_* single lead never goes out."""
     result, rec, leads, contacts = await _push([])
 
-    assert rec.calls == [None]                    # no contact= → owner_* mapping
-    assert result["ok"] is True
-    assert result["sent"] == 1
-    assert contacts == []                         # nothing per-person to record
-    assert leads == [("apex", 900)]
+    assert rec.calls == []                        # not one POST
+    assert result["ok"] is False
+    assert result["status"] == "skipped_no_contacts"
+    assert result["sent"] == 0
+    assert contacts == []
+    assert leads == []                            # stays visibly un-exported
 
 
 @pytest.mark.asyncio
-async def test_contacts_with_no_email_at_all_fall_back_to_the_legacy_lead():
-    """Unreachable people must not turn a sendable lead into zero POSTs."""
+async def test_contacts_with_no_email_at_all_send_nothing():
+    """An emptied eligible set is the same as no contacts: no legacy fallback."""
     rows = [_contact(1, work_email=None, personal_email=None),
             _contact(2, work_email="Not Found", personal_email=None)]
     result, rec, leads, contacts = await _push(rows)
 
-    assert rec.calls == [None]
-    assert result["sent"] == 1
-    assert leads == [("apex", 900)]
+    assert rec.calls == []
+    assert result["status"] == "skipped_no_contacts"
+    assert result["sent"] == 0
+    assert leads == []
 
 
 @pytest.mark.asyncio
-async def test_contacts_with_no_phone_fall_back_to_the_legacy_lead():
-    """Same shape as the no-email case: phone-less people are ineligible, and
-    if that empties the set the one legacy owner_* lead goes out instead."""
+async def test_contacts_with_no_phone_send_nothing():
+    """Phone-less people are ineligible, and emptying the set does NOT revive
+    the legacy owner_* lead."""
     rows = [_contact(1, phone=None), _contact(2, phone=None)]
     result, rec, leads, contacts = await _push(rows)
 
-    assert rec.calls == [None]
-    assert result["sent"] == 1
-    assert leads == [("apex", 900)]
-
-
-@pytest.mark.asyncio
-async def test_legacy_lead_failure_leaves_the_marker_clear():
-    result, rec, leads, contacts = await _push([], replies=[(False, "error")])
-    assert result["ok"] is False
+    assert rec.calls == []
+    assert result["status"] == "skipped_no_contacts"
     assert result["sent"] == 0
     assert leads == []
 
@@ -245,13 +242,6 @@ async def test_mark_false_writes_neither_marker():
 
 
 @pytest.mark.asyncio
-async def test_mark_false_on_the_legacy_path_writes_nothing_either():
-    result, rec, leads, contacts = await _push([], mark=False)
-    assert rec.calls == [None]
-    assert leads == []
-
-
-@pytest.mark.asyncio
 async def test_no_lead_row_fans_out_without_touching_any_marker():
     """A practice with no linked posting has nothing to dedup on — the same
     exemption the lead-level marker already has."""
@@ -275,10 +265,11 @@ async def test_result_carries_the_first_local_entity_id_and_every_result():
 
 
 @pytest.mark.asyncio
-async def test_a_missing_practice_takes_the_legacy_path():
+async def test_a_missing_practice_with_no_contacts_sends_nothing():
     result, rec, leads, contacts = await _push([], practice=None)
-    assert rec.calls == [None]
-    assert result["sent"] == 1
+    assert rec.calls == []
+    assert result["status"] == "skipped_no_contacts"
+    assert result["sent"] == 0
 
 
 # --------------------------------------------------------------------------- #

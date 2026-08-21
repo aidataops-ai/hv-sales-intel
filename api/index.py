@@ -2146,10 +2146,12 @@ async def import_lead_practice_endpoint(
     """Push a practice (+ its newest linked job posting) to Talent-DB as Lead(s).
 
     One-way and fire-and-forget. Fans out to one Talent-DB lead per contact on
-    the practice (`talentdb_push.push_lead_fanout`); a practice with no contact
-    rows sends the single legacy `owner_*` lead. Deduped per (company, posting):
-    a posting already fully exported is not re-sent. Practices with no linked
-    posting are always sendable (there is nothing to dedup on).
+    the practice (`talentdb_push.push_lead_fanout`); a practice with no
+    eligible contact sends nothing — the legacy `owner_*` single lead is
+    retired (2026-08-22), surfaced as a `talentdb_warning`. Deduped per
+    (company, posting): a posting already fully exported is not re-sent.
+    Practices with no linked posting are always sendable (there is nothing to
+    dedup on).
     """
     from src import lead_store, talentdb_push
 
@@ -3488,8 +3490,9 @@ async def import_lead_signal_endpoint(
     """Push a signals lead (its posting + linked practice) to Talent-DB.
 
     Fans out to one Talent-DB lead per contact on the practice
-    (`talentdb_push.push_lead_fanout`); a practice with no contact rows sends
-    the single legacy `owner_*` lead. The lead IS a (company, posting) row, so
+    (`talentdb_push.push_lead_fanout`); a practice with no eligible contact
+    sends nothing — the legacy `owner_*` single lead is retired (2026-08-22),
+    surfaced as a `talentdb_warning`. The lead IS a (company, posting) row, so
     its `talentdb_exported_at` marker is the dedup key: a lead already fully
     exported is not re-sent. Fail-soft.
     """

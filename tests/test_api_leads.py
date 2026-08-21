@@ -307,10 +307,21 @@ def test_signal_import_does_not_refetch_the_embedded_posting(
     })
     monkeypatch.setattr("api.index.get_practice", lambda p: {"id": 1, "name": "Acme"})
     monkeypatch.setattr(lead_store, "mark_lead_exported", lambda c, i: None)
+    # One eligible contact so the fan-out sends — legacy owner_* singles are
+    # retired (2026-08-22), a contact-less practice would send nothing.
+    monkeypatch.setattr(
+        "src.talentdb_push.contacts.list_contacts_for_practice",
+        lambda pid: [{"id": 1, "first_name": "Pat", "last_name": "Lee",
+                      "work_email": "pat@acme.com", "personal_email": None,
+                      "phone": "+13125550001"}])
+    monkeypatch.setattr("src.talentdb_push.contacts.list_contact_exports",
+                        lambda lid: {})
+    monkeypatch.setattr("src.talentdb_push.contacts.mark_contact_exported",
+                        lambda lid, cid, td_lead_id=None: None)
 
     sent: dict = {}
 
-    async def fake_import(practice, posting, lead):
+    async def fake_import(practice, posting, lead, contact=None, td_lead_id=None):
         sent["posting"] = posting
         return {"ok": True, "status": "created"}
 

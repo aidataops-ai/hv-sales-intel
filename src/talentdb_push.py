@@ -8,11 +8,12 @@ posting, scoring and track data, differing only in the person (see
 Import-Lead endpoints, the ad-hoc push scripts — goes through
 `push_lead_fanout`, so "how many leads is this" is answered in one place.
 
-**A practice with no contact rows keeps the old behaviour exactly**: one lead
-built from the `practices.owner_*` mirror, guarded by `_postable_email`. So does
-a practice whose contacts are all unreachable — a person with neither a personal
-nor a work email cannot be mailed, is skipped, and if that empties the eligible
-set the legacy single lead goes out instead of nothing.
+**A practice with no eligible contact sends nothing.** The pre-contact
+configuration's single `owner_*` lead is retired (user decision, 2026-08-22):
+practices enriched before the multi-contact flow are already in the sales
+team's hands, and re-posting their `owner_*` mirror would hand the same person
+out a second time. `push_lead_fanout` returns `status="skipped_no_contacts"`,
+writes no marker, and the lead stays visibly un-exported.
 
 ## The two markers
 
@@ -115,14 +116,19 @@ async def push_lead_fanout(
     rows = contacts.list_contacts_for_practice((practice or {}).get("id"))
     eligible = eligible_contacts(rows)
 
-    # No reachable person → the legacy single lead from the owner_* mirror,
-    # `_postable_email` guard and all. This is the untouched pre-fan-out path.
+    # No eligible contact → nothing goes out. The legacy owner_* single lead
+    # is retired (user decision 2026-08-22): pre-contact-era practices are
+    # already being worked by the sales team, and re-posting their owner_*
+    # mirror would hand the same person out twice. No marker is written, so
+    # the lead stays visibly un-exported.
     if not eligible:
-        result = await talentdb.import_lead(practice, posting, lead)
-        if result.get("ok") and mark and lead:
-            lead_store.mark_lead_exported(company_id, lead["id"])
-        return {**result, "sent": 1 if result.get("ok") else 0,
-                "results": [result]}
+        log.info("[talentdb_push.fanout] practice=%s lead=%s contacts=%d "
+                 "eligible=0 → skipped_no_contacts",
+                 (practice or {}).get("id"), (lead or {}).get("id"), len(rows))
+        return {"ok": False, "status": "skipped_no_contacts",
+                "message": "no eligible contact (email + direct phone); "
+                           "legacy owner_* sends are retired",
+                "local_entity_id": None, "sent": 0, "results": []}
 
     lead_id = (lead or {}).get("id")
     # `{contact_id: td_lead_id}` — the keys are the skip list, the values are

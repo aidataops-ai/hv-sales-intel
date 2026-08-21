@@ -11,9 +11,10 @@ new payload: one Talent-DB lead per eligible contact (email AND direct phone,
 per the 2026-08-22 phone gate), per-person FirstName/LastName/Title,
 Email=personal, work_email, linkedin_url, Phone=contact direct,
 alternate_phone=practice office line, `td_lead_id` echoed for pairs we hold an
-id for, and the legacy single owner_* lead when a practice has no eligible
-contacts. Markers (lead-level + per-contact + td_lead_id) are written by the
-orchestrator on success.
+id for. A practice with no eligible contact sends NOTHING — the legacy single
+owner_* lead is retired (user decision 2026-08-22: pre-contact-era practices
+are already being worked by the sales team). Markers (lead-level +
+per-contact + td_lead_id) are written by the orchestrator on success.
 
 Practices currently `pending` are skipped — their Clay re-enrichment is in
 flight and their leads should go out with contacts, not before them (the
@@ -37,7 +38,6 @@ from urllib.parse import urlparse
 from src import talentdb_push
 from src.settings import settings
 from src.storage import _get_client
-from src.talentdb import _postable_email
 from src import contacts as contact_store
 
 _PAGE = 1000
@@ -71,14 +71,20 @@ def _is_billing(posting: dict | None) -> bool:
     return "billing" in ((posting or {}).get("search_term") or "").lower()
 
 
-def fetch_pool(client, since: str) -> list[tuple[dict, dict, dict]]:
+def fetch_pool(client, since: str,
+               until: str | None = None) -> list[tuple[dict, dict, dict]]:
     """(lead, posting, practice) triples for the ready pool, lead-id order."""
-    leads = _paged(
+    q = (
         client.table("company_job_leads").select("*")
         .eq("decision", "keep")
         .is_("talentdb_exported_at", "null")
         .gte("created_at", since)
     )
+    if until:
+        # Freeze the pool: leads captured after the cutoff don't creep into a
+        # campaign that was counted (and re-enriched) against a fixed set.
+        q = q.lt("created_at", until)
+    leads = _paged(q)
     postings = _by_id(client, "job_postings",
                       [l["posting_id"] for l in leads if l.get("posting_id")])
     practices = _by_id(client, "practices",
@@ -95,20 +101,21 @@ def fetch_pool(client, since: str) -> list[tuple[dict, dict, dict]]:
     return pool
 
 
-async def run(since: str, company_id: str, *, live: bool, limit: int | None,
-              delay: float, mark: bool, allow_billing: bool) -> None:
+async def run(since: str, until: str | None, company_id: str, *, live: bool,
+              limit: int | None, delay: float, mark: bool,
+              allow_billing: bool) -> None:
     host = urlparse(settings.talentdb_webhook_url or "").netloc
     if live and not host:
         sys.exit("ABORT: TALENTDB_WEBHOOK_URL not configured.")
     client = _get_client()
-    pool = fetch_pool(client, since)
+    pool = fetch_pool(client, since, until)
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     print(f"[push] {len(pool)} ready lead(s) since {since} → {host or '(dry)'}"
           f"{'' if live else '  (DRY RUN)'}")
 
     states: dict[str, int] = {"pending_practice": 0, "not_enriched": 0,
-                              "billing": 0, "no_contact_or_email": 0}
+                              "billing": 0, "no_eligible_contact": 0}
     results = []
     pushed = posts_ok = posts_failed = 0
     for lead, posting, practice in pool:
@@ -128,13 +135,14 @@ async def run(since: str, company_id: str, *, live: bool, limit: int | None,
 
         rows = contact_store.list_contacts_for_practice(practice.get("id"))
         eligible = talentdb_push.eligible_contacts(rows)
-        if not eligible and not _postable_email(practice):
-            states["no_contact_or_email"] += 1
+        # Legacy owner_* singles are retired (user decision 2026-08-22) —
+        # contact-era leads only; see src/talentdb_push.push_lead_fanout.
+        if not eligible:
+            states["no_eligible_contact"] += 1
             continue
 
-        n = len(eligible) or 1
-        label = (f"{n} contact lead(s)" if eligible
-                 else "1 legacy owner_* lead")
+        n = len(eligible)
+        label = f"{n} contact lead(s)"
         if not live:
             pushed += 1
             print(f"  [{pushed}] DRY  lead={lead['id']} {name} → {label}")
@@ -160,7 +168,8 @@ async def run(since: str, company_id: str, *, live: bool, limit: int | None,
                                         for r in result.get("results", [])]})
         time.sleep(delay)
 
-    summary = {"run_at": stamp, "since": since, "destination": host,
+    summary = {"run_at": stamp, "since": since, "until": until,
+               "destination": host,
                "company_id": company_id, "pool": len(pool),
                "leads_pushed": pushed, "posts_ok": posts_ok,
                "posts_failed": posts_failed, "marked": mark and live,
@@ -179,6 +188,9 @@ def main() -> None:
         description="Push ready leads to Talent-DB via the per-contact fan-out.")
     ap.add_argument("--since", default="2026-08-18",
                     help="lead created_at cutoff (default: 2026-08-18)")
+    ap.add_argument("--until", default=None,
+                    help="upper lead created_at cutoff — freezes the pool to "
+                         "the campaign's fixed set")
     ap.add_argument("--company-id", default=None,
                     help="tenant (default: settings.lead_company_id)")
     ap.add_argument("--limit", type=int, default=None,
@@ -196,8 +208,8 @@ def main() -> None:
     company_id = args.company_id or settings.lead_company_id
     if not company_id:
         sys.exit("No company_id — pass --company-id or set LEAD_COMPANY_ID.")
-    asyncio.run(run(args.since, company_id, live=args.yes, limit=args.limit,
-                    delay=args.delay, mark=not args.no_mark,
+    asyncio.run(run(args.since, args.until, company_id, live=args.yes,
+                    limit=args.limit, delay=args.delay, mark=not args.no_mark,
                     allow_billing=args.allow_billing))
 
 

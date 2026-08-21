@@ -28,13 +28,15 @@ with --allow-billing.
 PER-CONTACT FAN-OUT: a practice with N `practice_contacts` rows becomes N
 Talent-DB leads — same company/posting/scoring envelope, a different person
 mapped into FirstName/LastName/Title/Email/work_email/linkedin_url/Phone each
-time. A practice with no contact rows (or none we can reach) sends the single
-legacy lead built from `practices.owner_*`, exactly as before.
+time. A practice with no contact rows (or none we can reach) sends NOTHING:
+the legacy single lead built from `practices.owner_*` is retired (user
+decision 2026-08-22) — pre-contact-era practices are already being worked by
+the sales team, and re-posting their owner_* mirror would hand the same
+person out twice.
 
-EMAIL GUARD (always on): a lead with no real contact email (owner_email/email
-missing or a placeholder like "Not Found") is SKIPPED and never exported — an
-emailless lead is not actionable for outreach. No override. Per contact the same
-rule applies to that person: neither a work nor a personal email → not posted.
+EMAIL GUARD (always on): per contact — a person with neither a work nor a
+personal email (missing or a placeholder like "Not Found") is not posted; a
+person without a direct phone is not posted either (phone gate, 2026-08-22).
 
 Safety: DRY RUN by default (prints the first envelope, sends nothing); live needs
 --yes. Refuses a STAGING destination unless --allow-staging. Already-exported
@@ -574,8 +576,7 @@ async def run(leadset: str, company_id: str, *, dry_run: bool, allow_staging: bo
             states["already_exported"] += 1
             continue
 
-        # Who this lead goes to. N reachable contacts → N Talent-DB leads; none
-        # → the single legacy owner_* lead, `_postable_email` guard and all.
+        # Who this lead goes to. N reachable contacts → N Talent-DB leads.
         contact_rows = contact_store.list_contacts_for_practice(practice.get("id"))
         with_email = [c for c in contact_rows if _contact_email(c)]
         # Phone gate (user decision 2026-08-22): a contact with no direct
@@ -583,12 +584,12 @@ async def run(leadset: str, company_id: str, *, dry_run: bool, allow_staging: bo
         eligible = [c for c in with_email if str(c.get("phone") or "").strip()]
         states["contacts_no_email"] += len(contact_rows) - len(with_email)
         states["contacts_no_phone"] += len(with_email) - len(eligible)
-        # Email guard: a lead with no real contact email isn't actionable for
-        # sales — don't post it. Last gate before send, so it counts only leads
-        # that pass every other check. On the fan-out path the same question is
-        # asked per person above. (Mirror of src/talentdb.py import_lead.)
-        if not eligible and not _postable_email(practice):
-            states["no_email"] += 1
+        # No eligible contact → nothing goes out. The legacy owner_* single
+        # lead is retired (user decision 2026-08-22): pre-contact-era
+        # practices are already being worked by the sales team, and re-posting
+        # their owner_* mirror would hand the same person out twice.
+        if not eligible:
+            states["no_eligible_contact"] += 1
             continue
 
         # People already POSTed for this lead, as `{contact_id: td_lead_id}`.
@@ -598,12 +599,11 @@ async def run(leadset: str, company_id: str, *, dry_run: bool, allow_staging: bo
         # own id for a pair, sent back whenever a pair IS re-posted so their
         # side updates instead of minting a second record.
         exports: dict = {}
-        if eligible and lead:
+        if lead:
             exports = contact_store.list_contact_exports(lead["id"])
         already: set = set(exports)
 
-        # `recipients`: [None] means the one legacy owner_* lead.
-        recipients: list = list(eligible) or [None]
+        recipients: list = list(eligible)
         base = build_envelope(practice, posting, lead)["fields"]
         company = base.get("Company")
         track = (base.get("interested_tracks") or ["(unmapped)"])[0]
@@ -674,7 +674,8 @@ async def run(leadset: str, company_id: str, *, dry_run: bool, allow_staging: bo
             _mark_exported(company_id, lead["id"])
 
     skip_line = (f"skipped: billing={states['skip_billing']} no_practice={states['no_practice']} "
-                 f"no_email={states['no_email']} contacts_no_email={states['contacts_no_email']} "
+                 f"no_eligible_contact={states['no_eligible_contact']} "
+                 f"contacts_no_email={states['contacts_no_email']} "
                  f"contacts_no_phone={states['contacts_no_phone']} "
                  f"contact_already_exported={states['contact_already_exported']} "
                  f"already_exported={states['already_exported']} missing_posting={states['missing_posting']} "
