@@ -177,6 +177,11 @@ A contact with **neither** a personal nor a work email (placeholders scrubbed by
 don't post" rule. `contacts.contact_email` is the truthiness test only; which
 address lands in `Email` is the table above, not that function.
 
+A contact with **no direct phone** is also skipped (`skipped_no_phone`; user
+decision 2026-08-22): a person the SDRs cannot call is not worth a Talent-DB
+lead, and the practice office line does not count — that number belongs to the
+practice, not the person.
+
 If the eligible set is **empty** — no contact rows at all, or none reachable —
 the push falls back to the **legacy single lead** from `practices.owner_*`,
 guarded by `_postable_email` exactly as before. That path is byte-identical to

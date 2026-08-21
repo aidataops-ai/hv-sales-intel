@@ -674,6 +674,24 @@ async def test_import_lead_skips_a_contact_we_cannot_reach(no_email):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("no_phone", [{"phone": None}, {"phone": "   "}])
+async def test_import_lead_skips_a_contact_without_a_phone(no_phone):
+    """Phone gate (user decision 2026-08-22): an emailable contact with no
+    direct number is not posted. The practice office line must NOT rescue it —
+    that number belongs to the practice, not the person."""
+    fake = _FakeClient(_FakeResp({"ok": True, "status": "ok", "localEntityId": 1}))
+    with patch("src.talentdb.settings") as s:
+        s.talentdb_webhook_url = "https://x/api/salesforce/webhook"
+        s.talentdb_webhook_secret = "topsecret"
+        with patch("src.talentdb.httpx.AsyncClient", return_value=fake):
+            result = await talentdb.import_lead(
+                _practice(), _posting(), _lead(), contact=_contact(**no_phone))
+    assert result["ok"] is False
+    assert result["status"] == "skipped_no_phone"
+    assert fake.sent == {}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("one_email", [
     {"personal_email": None},   # work only
     {"work_email": None},       # personal only

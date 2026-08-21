@@ -577,8 +577,12 @@ async def run(leadset: str, company_id: str, *, dry_run: bool, allow_staging: bo
         # Who this lead goes to. N reachable contacts → N Talent-DB leads; none
         # → the single legacy owner_* lead, `_postable_email` guard and all.
         contact_rows = contact_store.list_contacts_for_practice(practice.get("id"))
-        eligible = [c for c in contact_rows if _contact_email(c)]
-        states["contacts_no_email"] += len(contact_rows) - len(eligible)
+        with_email = [c for c in contact_rows if _contact_email(c)]
+        # Phone gate (user decision 2026-08-22): a contact with no direct
+        # phone is not posted. (Mirror of src/talentdb_push.eligible_contacts.)
+        eligible = [c for c in with_email if str(c.get("phone") or "").strip()]
+        states["contacts_no_email"] += len(contact_rows) - len(with_email)
+        states["contacts_no_phone"] += len(with_email) - len(eligible)
         # Email guard: a lead with no real contact email isn't actionable for
         # sales — don't post it. Last gate before send, so it counts only leads
         # that pass every other check. On the fan-out path the same question is
@@ -671,6 +675,7 @@ async def run(leadset: str, company_id: str, *, dry_run: bool, allow_staging: bo
 
     skip_line = (f"skipped: billing={states['skip_billing']} no_practice={states['no_practice']} "
                  f"no_email={states['no_email']} contacts_no_email={states['contacts_no_email']} "
+                 f"contacts_no_phone={states['contacts_no_phone']} "
                  f"contact_already_exported={states['contact_already_exported']} "
                  f"already_exported={states['already_exported']} missing_posting={states['missing_posting']} "
                  f"resolve_error={states['resolve_error']}")

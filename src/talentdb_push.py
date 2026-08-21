@@ -57,15 +57,18 @@ log = logging.getLogger("hvsi.talentdb_push")
 
 
 def eligible_contacts(rows: list[dict] | None) -> list[dict]:
-    """The contacts we can actually mail, in the order they arrived.
+    """The contacts we can actually work, in the order they arrived.
 
-    A contact with neither a personal nor a work email (placeholders scrubbed)
-    is dropped — the same rule as the legacy path's "no email → don't post",
-    applied per person. `contacts.contact_email` is the truthiness test only;
-    which address ends up in the `Email` field is `talentdb`'s business, and it
-    is deliberately not this one.
+    Two per-person gates, both required:
+    - an email (personal or work, placeholders scrubbed) — the same rule as
+      the legacy path's "no email → don't post";
+    - a direct phone — a contact the SDRs cannot call is not worth a
+      Talent-DB lead (user decision, 2026-08-22).
+    `contacts.contact_email` is the truthiness test only; which address ends
+    up in the `Email` field is `talentdb`'s business, not this one.
     """
-    return [c for c in (rows or []) if contacts.contact_email(c)]
+    return [c for c in (rows or [])
+            if contacts.contact_email(c) and str(c.get("phone") or "").strip()]
 
 
 def _summarize(results: list[dict], sent: int) -> dict:

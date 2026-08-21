@@ -36,7 +36,7 @@ def _lead(**overrides) -> dict:
 def _contact(cid: int, **overrides) -> dict:
     base = {"id": cid, "first_name": f"Person{cid}", "last_name": "Smith",
             "work_email": f"p{cid}@acme.com", "personal_email": None,
-            "phone": None, "title": None, "linkedin_url": None}
+            "phone": f"+1312555{cid:04d}", "title": None, "linkedin_url": None}
     base.update(overrides)
     return base
 
@@ -119,6 +119,13 @@ def test_eligible_drops_only_the_unreachable_and_keeps_arrival_order():
     assert [c["id"] for c in talentdb_push.eligible_contacts(rows)] == [1, 2]
 
 
+def test_eligible_requires_a_direct_phone_too():
+    """Phone gate (user decision 2026-08-22): emailable but phone-less people
+    are not worth a Talent-DB lead."""
+    rows = [_contact(1), _contact(2, phone=None), _contact(3, phone="   ")]
+    assert [c["id"] for c in talentdb_push.eligible_contacts(rows)] == [1]
+
+
 def test_eligible_of_nothing_is_empty():
     assert talentdb_push.eligible_contacts(None) == []
     assert talentdb_push.eligible_contacts([]) == []
@@ -157,6 +164,18 @@ async def test_contacts_with_no_email_at_all_fall_back_to_the_legacy_lead():
     """Unreachable people must not turn a sendable lead into zero POSTs."""
     rows = [_contact(1, work_email=None, personal_email=None),
             _contact(2, work_email="Not Found", personal_email=None)]
+    result, rec, leads, contacts = await _push(rows)
+
+    assert rec.calls == [None]
+    assert result["sent"] == 1
+    assert leads == [("apex", 900)]
+
+
+@pytest.mark.asyncio
+async def test_contacts_with_no_phone_fall_back_to_the_legacy_lead():
+    """Same shape as the no-email case: phone-less people are ineligible, and
+    if that empties the set the one legacy owner_* lead goes out instead."""
+    rows = [_contact(1, phone=None), _contact(2, phone=None)]
     result, rec, leads, contacts = await _push(rows)
 
     assert rec.calls == [None]

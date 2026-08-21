@@ -482,6 +482,14 @@ async def import_lead(
                      (practice or {}).get("name"), contact.get("id"))
             return {"ok": False, "status": "skipped_no_email",
                     "message": "Contact has no email — not posted."}
+        # Phone gate (user decision 2026-08-22): a contact the SDRs cannot
+        # call is not posted as a lead. The practice office line does not
+        # count here — this is about the person's own number.
+        if not str(contact.get("phone") or "").strip():
+            log.info("[talentdb.skip] no_phone company=%r contact=%s",
+                     (practice or {}).get("name"), contact.get("id"))
+            return {"ok": False, "status": "skipped_no_phone",
+                    "message": "Contact has no phone — not posted."}
     elif not _postable_email(practice):
         log.info("[talentdb.skip] no_email company=%r",
                  (practice or {}).get("name"))
