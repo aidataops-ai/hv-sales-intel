@@ -340,11 +340,19 @@ def test_contact_alternate_phone_deduped_against_the_contact_phone():
     assert "alternate_phone" not in fields
 
 
-def test_contact_with_only_a_work_email_omits_email_and_sends_work_email():
+def test_contact_with_one_email_fills_both_keys_with_it():
+    """Fallback both ways (user decision 2026-08-22): a one-email contact
+    never ships an empty email slot."""
     fields = talentdb.build_fields(_practice(), _posting(), _lead(),
                                    _contact(personal_email=None))
-    assert "Email" not in fields                    # omit-missing drops it
+    assert fields["Email"] == "ada@acme.com"        # work fills the gap
     assert fields["work_email"] == "ada@acme.com"
+
+    fields = talentdb.build_fields(_practice(), _posting(), _lead(),
+                                   _contact(work_email=None,
+                                            personal_email="ada@gmail.com"))
+    assert fields["Email"] == "ada@gmail.com"
+    assert fields["work_email"] == "ada@gmail.com"  # personal fills the gap
 
 
 def test_contact_email_placeholders_are_scrubbed_on_both_keys():

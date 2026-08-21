@@ -154,8 +154,8 @@ the N leads.
 | `FirstName` | `contact.first_name` | |
 | `LastName` | `contact.last_name` | falls back to the company name, as the legacy path does — the receiver requires it |
 | `Title` | `contact.title` | |
-| `Email` | `contact.`**`personal_email`** | deliberate: the personal address is what the `Email` field carries |
-| `work_email` | `contact.work_email` | **new key**, snake_case like the other custom fields |
+| `Email` | `contact.personal_email` **or** `work_email` | personal preferred, work as fallback (2026-08-22) — a one-email contact fills both keys |
+| `work_email` | `contact.work_email` **or** `personal_email` | **new key**, snake_case; work preferred, personal as fallback |
 | `linkedin_url` | `contact.linkedin_url` | **new key** |
 | `Phone` | `contact.phone` | the person's direct line |
 | `alternate_phone` | `practice.phone` | the office line; omitted when identical to `Phone` |

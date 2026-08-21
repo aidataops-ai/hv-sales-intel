@@ -257,8 +257,10 @@ def _contact_person_fields(contact: dict, practice: dict, company) -> dict:
     """The person block for ONE contact — the fan-out's whole delta.
 
     Everything else in the envelope is a fact about the practice/posting and is
-    identical across the N leads a practice's N contacts produce. `Email` is the
-    PERSONAL address (the work one ships separately as `work_email`), `Phone` is
+    identical across the N leads a practice's N contacts produce. `Email`
+    prefers the PERSONAL address and falls back to work; `work_email` prefers
+    work and falls back to personal (user decision 2026-08-22) — a one-email
+    contact fills both keys. `Phone` is
     the person's direct line and `alternate_phone` the practice's office line,
     deduped. `practices.owner_phone` is deliberately not consulted here: it is a
     mirror of *some* contact, and mixing it in would put person A's number on
@@ -267,12 +269,14 @@ def _contact_person_fields(contact: dict, practice: dict, company) -> dict:
     """
     phone = _text(contact.get("phone"))
     office = _text(practice.get("phone"))
+    personal = _scrub_email(_text(contact.get("personal_email")))
+    work = _scrub_email(_text(contact.get("work_email")))
     return {
         "FirstName": _text(contact.get("first_name")),
         "LastName": _text(contact.get("last_name")) or company,
         "Title": _text(contact.get("title")),
-        "Email": _scrub_email(_text(contact.get("personal_email"))),
-        "work_email": _scrub_email(_text(contact.get("work_email"))),
+        "Email": personal or work,
+        "work_email": work or personal,
         "linkedin_url": _text(contact.get("linkedin_url")),
         "Phone": phone,
         "alternate_phone": office if office and office != phone else None,

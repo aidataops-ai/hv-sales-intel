@@ -224,10 +224,11 @@ def _contact_person_fields(contact: dict, practice: dict, company) -> dict:
     identical across the N leads a practice's N contacts produce; these are the
     keys that differ. Deliberate choices, not oversights:
 
-    * `Email` is the contact's **personal_email**, not the work address. The
-      work address still ships, under its own `work_email` key, so the receiver
-      has both and can pick — this is the user's call about which one the
-      Talent-DB `Email` field should hold.
+    * `Email` prefers the contact's **personal_email** and falls back to the
+      work address; `work_email` prefers the work address and falls back to
+      personal (user decision 2026-08-22). A one-email contact therefore fills
+      BOTH keys with that address — the receiver's forms never show an empty
+      email slot for a person we could reach.
     * `Phone` is the person's direct line and `alternate_phone` the practice's
       office line, deduped when Clay handed us the office number as the
       person's. The practice's `owner_phone` is NOT consulted: it is a mirror of
@@ -238,12 +239,14 @@ def _contact_person_fields(contact: dict, practice: dict, company) -> dict:
     """
     phone = _text(contact.get("phone"))
     office = _text(practice.get("phone"))
+    personal = _scrub_email(_text(contact.get("personal_email")))
+    work = _scrub_email(_text(contact.get("work_email")))
     return {
         "FirstName": _text(contact.get("first_name")),
         "LastName": _text(contact.get("last_name")) or company,
         "Title": _text(contact.get("title")),
-        "Email": _scrub_email(_text(contact.get("personal_email"))),
-        "work_email": _scrub_email(_text(contact.get("work_email"))),
+        "Email": personal or work,
+        "work_email": work or personal,
         "linkedin_url": _text(contact.get("linkedin_url")),
         "Phone": phone,
         "alternate_phone": office if office and office != phone else None,
