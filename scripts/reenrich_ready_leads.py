@@ -44,7 +44,14 @@ from src.models import Practice
 from src.storage import _get_client, update_practice_fields
 
 # Columns Clay's outbound payload needs, plus id/status for selection.
-_FIELDS = "id, place_id, name, website, city, state, phone, enrichment_status"
+_FIELDS = ("id, place_id, name, website, city, state, phone, "
+           "enrichment_status, enriched_at")
+
+# Practices attempted under the multi-contact flow on/after this date that
+# came back 'failed' (Clay found nobody) are NOT retried — retrying a
+# minutes-old failure burns Clay rows for nothing. Failures older than this
+# are from the one-contact era and deserve one attempt under the new flow.
+_NEW_FLOW_START = "2026-08-21"
 
 # Observed 2026-08-21: 200 contacts across 122 contacted practices.
 _AVG_CONTACTS = 1.64
@@ -115,6 +122,9 @@ def fetch_targets(since: str, include_contacted: bool) -> list[dict]:
         for row in res.data or []:
             if row.get("enrichment_status") == "pending":
                 continue  # trigger already in flight
+            if (row.get("enrichment_status") == "failed"
+                    and (row.get("enriched_at") or "") >= _NEW_FLOW_START):
+                continue  # already attempted under the new flow: Clay found nobody
             if row["id"] in contacted:
                 continue
             targets.append(row)
