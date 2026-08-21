@@ -74,17 +74,23 @@ def _paged(query_builder):
         page += 1
 
 
-def fetch_targets(since: str, include_contacted: bool) -> list[dict]:
+def fetch_targets(since: str, until: str | None,
+                  include_contacted: bool) -> list[dict]:
     """Practices behind kept, unexported, recent leads — contact-less first."""
     client = _get_client()
 
-    leads = _paged(
+    q = (
         client.table("company_job_leads")
         .select("posting_id")
         .eq("decision", "keep")
         .is_("talentdb_exported_at", "null")
         .gte("created_at", since)
     )
+    if until:
+        # Freeze the pool: leads captured after the cutoff don't creep into a
+        # batch campaign that was sized (and budgeted) against a fixed set.
+        q = q.lt("created_at", until)
+    leads = _paged(q)
     posting_ids = sorted({r["posting_id"] for r in leads if r.get("posting_id")})
 
     practice_ids: set[int] = set()
@@ -133,9 +139,9 @@ def fetch_targets(since: str, include_contacted: bool) -> list[dict]:
     return targets
 
 
-async def run(since: str, limit: int | None, delay: float, live: bool,
-              include_contacted: bool) -> None:
-    targets = fetch_targets(since, include_contacted)
+async def run(since: str, until: str | None, limit: int | None, delay: float,
+              live: bool, include_contacted: bool) -> None:
+    targets = fetch_targets(since, until, include_contacted)
     total = len(targets)
     if limit is not None:
         targets = targets[:limit]
@@ -198,6 +204,9 @@ def main() -> None:
         description="Re-trigger Clay for contact-less practices behind ready leads.")
     ap.add_argument("--since", default="2026-08-18",
                     help="lead created_at cutoff (default: 2026-08-18, the restart)")
+    ap.add_argument("--until", default=None,
+                    help="upper lead created_at cutoff — freezes the pool so newly "
+                         "captured leads don't join a running batch campaign")
     ap.add_argument("--limit", type=int, default=None,
                     help="only trigger the first N practices (credit batching)")
     ap.add_argument("--delay", type=float, default=2.0,
@@ -207,7 +216,7 @@ def main() -> None:
     ap.add_argument("--yes", action="store_true",
                     help="send live (default is a dry run)")
     args = ap.parse_args()
-    asyncio.run(run(args.since, args.limit, args.delay, args.yes,
+    asyncio.run(run(args.since, args.until, args.limit, args.delay, args.yes,
                     args.include_contacted))
 
 
