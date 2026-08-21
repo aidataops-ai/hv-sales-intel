@@ -230,23 +230,17 @@ def _text(value):
 
 
 def _td_lead_id_from_response(data: dict) -> str | None:
-    """Talent-DB's own record id for the Lead this response just created."""
-    ###########################################################################
-    # TBD — WHICH RESPONSE FIELD CARRIES THE ID IS NOT YET SPECIFIED.
-    #
-    # It is deliberately NOT `localEntityId` (per explicit user instruction),
-    # so this returns None until the real field name is known. Fill it in HERE
-    # and in src/talentdb.py::_td_lead_id_from_response — the two must stay in
-    # sync. Whatever this returns is stored on the (lead, contact) marker row
-    # and sent back the next time that pair is posted, so the receiver updates
-    # instead of duplicating.
-    #
-    #     return _text(data.get("<the field name>"))
-    #
-    # Returning None keeps today's behaviour exactly: nothing is stored, and
-    # `td_lead_id` is omitted from every payload.
-    ###########################################################################
-    return None
+    """Talent-DB's own record id for the Lead this response just created.
+
+    Carried in the response's `id` field (NOT `localEntityId`). Coerced to
+    text; absent or blank → None (nothing stored, `td_lead_id` omitted from
+    payloads). Mirror of src/talentdb.py::_td_lead_id_from_response — keep in
+    sync.
+    """
+    value = data.get("id")
+    if value is None:
+        return None
+    return _text(str(value))
 
 
 def _contact_email(contact: dict | None) -> str | None:

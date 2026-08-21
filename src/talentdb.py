@@ -230,25 +230,20 @@ def _contact_person_fields(contact: dict, practice: dict, company) -> dict:
 
 
 def _td_lead_id_from_response(data: dict) -> str | None:
-    """Talent-DB's own record id for the Lead this response just created."""
-    ###########################################################################
-    # TBD — WHICH RESPONSE FIELD CARRIES THE ID IS NOT YET SPECIFIED.
-    #
-    # It is deliberately NOT `localEntityId` (per explicit user instruction),
-    # so this returns None until the real field name is known. Fill it in HERE
-    # — this is the extraction point; `import_lead` puts whatever this returns
-    # onto its result as `td_lead_id`, `talentdb_push` stores that on the
-    # (lead, contact) marker row, and a later post of the same pair sends it
-    # back so the receiver updates instead of duplicating. The standalone
-    # exporter carries the same placeholder
-    # (scripts/talentdb_export.py::_td_lead_id_from_response) — keep in sync.
-    #
-    #     return _text(data.get("<the field name>"))
-    #
-    # Returning None keeps today's behaviour exactly: nothing is stored, and
-    # `td_lead_id` is omitted from every payload.
-    ###########################################################################
-    return None
+    """Talent-DB's own record id for the Lead this response just created.
+
+    Carried in the response's `id` field (NOT `localEntityId` — different
+    thing). Coerced to text in case the receiver mints numeric ids; absent or
+    blank → None, so nothing is stored and `td_lead_id` stays out of every
+    payload. `import_lead` puts this on its result, `talentdb_push` stores it
+    on the (lead, contact) marker row, and a later post of the same pair sends
+    it back so the receiver updates instead of duplicating. Mirror:
+    scripts/talentdb_export.py::_td_lead_id_from_response — keep in sync.
+    """
+    value = data.get("id")
+    if value is None:
+        return None
+    return _text(str(value))
 
 
 def build_fields(

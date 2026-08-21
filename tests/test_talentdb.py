@@ -405,10 +405,13 @@ def test_td_lead_id_is_omitted_when_we_have_none(nothing):
     assert "td_lead_id" not in talentdb.build_fields(_practice(), _posting(), _lead())
 
 
-def test_td_lead_id_extraction_is_an_unwired_placeholder():
-    """`_td_lead_id_from_response` is the single point where the receiver's id
-    is read. It returns None until the response field is named — deliberately
-    NOT localEntityId — so nothing is stored and nothing is echoed back yet."""
+def test_td_lead_id_extraction_reads_the_id_field_only():
+    """`_td_lead_id_from_response` reads the response's `id` — coerced to
+    text, blanks dropped — and deliberately ignores `localEntityId`, which is
+    a different identifier."""
+    assert talentdb._td_lead_id_from_response({"id": 91}) == "91"
+    assert talentdb._td_lead_id_from_response({"id": "TD-482"}) == "TD-482"
+    assert talentdb._td_lead_id_from_response({"id": "  "}) is None
     assert talentdb._td_lead_id_from_response({"localEntityId": 482}) is None
     assert talentdb._td_lead_id_from_response({}) is None
 
