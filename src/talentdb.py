@@ -18,12 +18,33 @@ import hashlib
 import hmac
 import json
 import logging
+from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 
 from src.settings import settings
 
 log = logging.getLogger("hvsi.talentdb")
+
+# Every push response, appended as JSONL while we pin down the receiver's
+# response shape (which field carries their record id, etc.). Local debugging
+# aid — gitignored, like clay-webhook-captures.jsonl.
+_RESPONSE_CAPTURE_PATH = (
+    Path(__file__).resolve().parents[1] / "talentdb-response-captures.jsonl"
+)
+
+
+def _capture_response(http_status: int, body) -> None:
+    """Append one response to the capture file. Never raises."""
+    try:
+        entry = {"ts": datetime.now(timezone.utc).isoformat(),
+                 "http": http_status, "body": body}
+        with open(_RESPONSE_CAPTURE_PATH, "a") as fp:
+            fp.write(json.dumps(entry, default=str) + "\n")
+    except Exception as e:
+        log.warning("[talentdb.capture.error] %s: %s",
+                    type(e).__name__, str(e)[:200])
 
 
 def is_configured() -> bool:
@@ -232,15 +253,16 @@ def _contact_person_fields(contact: dict, practice: dict, company) -> dict:
 def _td_lead_id_from_response(data: dict) -> str | None:
     """Talent-DB's own record id for the Lead this response just created.
 
-    Carried in the response's `id` field (NOT `localEntityId` — different
-    thing). Coerced to text in case the receiver mints numeric ids; absent or
-    blank → None, so nothing is stored and `td_lead_id` stays out of every
-    payload. `import_lead` puts this on its result, `talentdb_push` stores it
-    on the (lead, contact) marker row, and a later post of the same pair sends
-    it back so the receiver updates instead of duplicating. Mirror:
+    Carried in the response's `td_lead_id` field (NOT `localEntityId` — a
+    different identifier, even when the numbers happen to match). Coerced to
+    text since the receiver mints numeric ids; absent or blank → None, so
+    nothing is stored and `td_lead_id` stays out of every payload.
+    `import_lead` puts this on its result, `talentdb_push` stores it on the
+    (lead, contact) marker row, and a later post of the same pair sends it
+    back so the receiver updates instead of duplicating. Mirror:
     scripts/talentdb_export.py::_td_lead_id_from_response — keep in sync.
     """
-    value = data.get("id")
+    value = data.get("td_lead_id")
     if value is None:
         return None
     return _text(str(value))
@@ -490,6 +512,7 @@ async def import_lead(
         data = resp.json()
     except Exception:
         data = {}
+    _capture_response(resp.status_code, data if data else (resp.text or "")[:2000])
     ok = bool(data.get("ok"))
     # Surface the receiver's complaint on any non-success so the warning is
     # actionable (schema validation errors, missing fields, etc.).
@@ -501,8 +524,9 @@ async def import_lead(
                     resp.status_code, data.get("ok"), data.get("status"),
                     (resp.text or "")[:800])
     else:
-        log.info("[talentdb.response] http=%s ok=%s status=%s",
-                 resp.status_code, ok, data.get("status"))
+        log.info("[talentdb.response] http=%s ok=%s status=%s body=%s",
+                 resp.status_code, ok, data.get("status"),
+                 (resp.text or "")[:500])
 
     return {
         "ok": ok,

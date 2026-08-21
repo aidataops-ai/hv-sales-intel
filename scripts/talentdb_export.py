@@ -232,12 +232,12 @@ def _text(value):
 def _td_lead_id_from_response(data: dict) -> str | None:
     """Talent-DB's own record id for the Lead this response just created.
 
-    Carried in the response's `id` field (NOT `localEntityId`). Coerced to
-    text; absent or blank → None (nothing stored, `td_lead_id` omitted from
-    payloads). Mirror of src/talentdb.py::_td_lead_id_from_response — keep in
-    sync.
+    Carried in the response's `td_lead_id` field (NOT `localEntityId`).
+    Coerced to text; absent or blank → None (nothing stored, `td_lead_id`
+    omitted from payloads). Mirror of
+    src/talentdb.py::_td_lead_id_from_response — keep in sync.
     """
-    value = data.get("id")
+    value = data.get("td_lead_id")
     if value is None:
         return None
     return _text(str(value))
