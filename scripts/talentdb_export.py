@@ -25,14 +25,29 @@ BILLING GUARD (on by default): any lead whose posting was sourced via a billing
 keyword (search_term contains "billing") is SKIPPED and never exported. Override
 with --allow-billing.
 
+PER-CONTACT FAN-OUT: a practice with N `practice_contacts` rows becomes N
+Talent-DB leads — same company/posting/scoring envelope, a different person
+mapped into FirstName/LastName/Title/Email/work_email/linkedin_url/Phone each
+time. A practice with no contact rows (or none we can reach) sends the single
+legacy lead built from `practices.owner_*`, exactly as before.
+
 EMAIL GUARD (always on): a lead with no real contact email (owner_email/email
 missing or a placeholder like "Not Found") is SKIPPED and never exported — an
-emailless lead is not actionable for outreach. No override.
+emailless lead is not actionable for outreach. No override. Per contact the same
+rule applies to that person: neither a work nor a personal email → not posted.
 
 Safety: DRY RUN by default (prints the first envelope, sends nothing); live needs
 --yes. Refuses a STAGING destination unless --allow-staging. Already-exported
 leads are skipped (resumable) unless --resend; each success stamps
 `talentdb_exported_at` unless --no-mark.
+
+TWO MARKERS, because a fan-out can half-succeed. `talentdb_exported_at` on the
+lead is stamped only when EVERY eligible contact was accepted, so a lead with a
+failed contact stays in the universe and gets retried; each accepted contact is
+recorded in `talentdb_contact_exports (lead_id, contact_id)`, and the retry
+skips those people so it posts only what is missing. That also makes `--resend`
+the LATE-ARRIVING-CONTACT tool: it re-enters a finished lead but still skips
+everyone already sent, so only the new person goes out.
 
 Usage:
     .venv/bin/python -m scripts.talentdb_export                       # dry run
@@ -56,8 +71,10 @@ from urllib.parse import urlparse
 
 import httpx
 
-# Only shared code we use is for reading OUR OWN rows out of Supabase. The
+# Only shared code we use is for reading OUR OWN rows out of Supabase (the
+# practice's contacts and the per-contact export markers included). The
 # Talent-DB-facing mapping/signing/POST below is all inline.
+from src import contacts as contact_store
 from src.settings import settings
 from src.storage import _get_client, get_practice
 
@@ -200,13 +217,61 @@ def _postable_email(practice: dict | None) -> str | None:
     return _scrub_email(p.get("owner_email") or p.get("email"))
 
 
+def _text(value):
+    """Trimmed string, or None for anything blank. Non-strings pass through."""
+    if isinstance(value, str):
+        return value.strip() or None
+    return value
+
+
+def _contact_email(contact: dict | None) -> str | None:
+    """Any real address on this contact — the per-person analogue of
+    `_postable_email`. None means we cannot reach them: do NOT post them."""
+    c = contact or {}
+    return (_scrub_email(_text(c.get("work_email")))
+            or _scrub_email(_text(c.get("personal_email"))))
+
+
+def _contact_person_fields(contact: dict, practice: dict, company) -> dict:
+    """The person block for ONE contact — the fan-out's whole delta.
+
+    Everything else in the envelope is a fact about the practice/posting and is
+    identical across the N leads a practice's N contacts produce. `Email` is the
+    PERSONAL address (the work one ships separately as `work_email`), `Phone` is
+    the person's direct line and `alternate_phone` the practice's office line,
+    deduped. `practices.owner_phone` is deliberately not consulted here: it is a
+    mirror of *some* contact, and mixing it in would put person A's number on
+    person B's lead. (Mirror of src/talentdb.py::_contact_person_fields; keep in
+    sync.)
+    """
+    phone = _text(contact.get("phone"))
+    office = _text(practice.get("phone"))
+    return {
+        "FirstName": _text(contact.get("first_name")),
+        "LastName": _text(contact.get("last_name")) or company,
+        "Title": _text(contact.get("title")),
+        "Email": _scrub_email(_text(contact.get("personal_email"))),
+        "work_email": _scrub_email(_text(contact.get("work_email"))),
+        "linkedin_url": _text(contact.get("linkedin_url")),
+        "Phone": phone,
+        "alternate_phone": office if office and office != phone else None,
+    }
+
+
 def _omit_missing(fields: dict) -> dict:
     """Drop keys with no value. None and "" are "no value"; 0 / False / {} stay."""
     return {k: v for k, v in fields.items() if v is not None and v != ""}
 
 
-def build_fields(practice: dict | None, posting: dict | None, lead: dict | None = None) -> dict:
-    """Map a practice (+ its linked posting + lead) onto the Talent-DB `fields`."""
+def build_fields(practice: dict | None, posting: dict | None, lead: dict | None = None,
+                 contact: dict | None = None) -> dict:
+    """Map a practice (+ its linked posting + lead) onto the Talent-DB `fields`.
+
+    With a `contact` (one `practice_contacts` row) the person block comes from
+    that person instead of the practice's flat `owner_*` mirror, so N contacts
+    produce N identical-but-for-the-person leads. With no `contact` the mapping
+    is byte-identical to what it always was.
+    """
     p = practice or {}
     pg = posting or {}
     ld = lead or {}
@@ -232,12 +297,17 @@ def build_fields(practice: dict | None, posting: dict | None, lead: dict | None 
         "FirstName": first_name,                    # from owner_name; omit if none
         "Title": p.get("owner_title"),
         "Email": _postable_email(p),
+        # work_email / linkedin_url are the per-contact fan-out's keys. Declared
+        # here, as None, purely to hold their place in the field order — the
+        # legacy path omits them, `contact` fills them in.
+        "work_email": None,
         "Phone": phone_primary,
         "alternate_phone": phone_alt,
         "Country": "USA",                           # ISO alpha-3, hardcoded for now
         "City": p.get("city") or pg.get("city"),
         "State": p.get("state") or pg.get("state"),
         "Website": p.get("website"),
+        "linkedin_url": None,
 
         # --- Classification ---
         "interested_tracks": [track_code] if track_code else None,   # Tracks UUID(s)
@@ -278,15 +348,19 @@ def build_fields(practice: dict | None, posting: dict | None, lead: dict | None 
         "call_script": p.get("call_script"),
         "email_draft": p.get("email_draft"),
     }
+    # Per-contact fan-out: this person replaces the owner_* person block whole.
+    if contact:
+        fields.update(_contact_person_fields(contact, p, company))
     return _omit_missing(fields)
 
 
-def build_envelope(practice: dict | None, posting: dict | None, lead: dict | None = None) -> dict:
+def build_envelope(practice: dict | None, posting: dict | None, lead: dict | None = None,
+                   contact: dict | None = None) -> dict:
     """The full request body: objectType + operation + fields."""
     return {
         "objectType": "Lead",
         "operation": "upsert",
-        "fields": build_fields(practice, posting, lead),
+        "fields": build_fields(practice, posting, lead, contact),
     }
 
 
@@ -300,9 +374,14 @@ def _sign(raw: bytes, secret: str) -> str:
     return "sha256=" + hmac.new(secret.encode("utf-8"), raw, hashlib.sha256).hexdigest()
 
 
-async def post_lead(practice, posting, lead, *, url: str, secret: str) -> dict:
-    """Sign the exact bytes and POST them. Returns a normalized result dict."""
-    envelope = build_envelope(practice, posting, lead)
+async def post_lead(practice, posting, lead, *, url: str, secret: str,
+                    contact: dict | None = None) -> dict:
+    """Sign the exact bytes and POST them. Returns a normalized result dict.
+
+    One POST per call. `contact` sends that person's lead; the fan-out over a
+    practice's contacts is the send loop in `run()`.
+    """
+    envelope = build_envelope(practice, posting, lead, contact)
     raw = _serialize(envelope)
     headers = {"Content-Type": "application/json", "X-HV-Signature": _sign(raw, secret)}
     async with httpx.AsyncClient(timeout=20) as client:
@@ -386,6 +465,16 @@ def _is_billing(posting: dict | None) -> bool:
     return "billing" in ((posting or {}).get("search_term") or "").lower()
 
 
+def _who(contact: dict | None) -> str:
+    """Short label for the person one POST is aimed at, for the streamed log."""
+    if not contact:
+        return "owner_* mirror"
+    name = " ".join(x for x in (_text(contact.get("first_name")),
+                                _text(contact.get("last_name"))) if x)
+    return (f"contact#{contact.get('id')} {name or '(unnamed)'} "
+            f"<{_contact_email(contact) or '—'}>")
+
+
 # ===========================================================================
 # EXPORT LOOP
 # ===========================================================================
@@ -403,7 +492,7 @@ def _load_ids(path: str) -> list[int]:
 
 async def run(leadset: str, company_id: str, *, dry_run: bool, allow_staging: bool,
               limit: int | None, delay: float, resend: bool, mark: bool,
-              allow_billing: bool) -> None:
+              allow_billing: bool, resend_contacts: bool = False) -> None:
     url = settings.talentdb_webhook_url
     secret = settings.talentdb_webhook_secret
     if not (url and secret):
@@ -454,57 +543,101 @@ async def run(leadset: str, company_id: str, *, dry_run: bool, allow_staging: bo
         if lead and lead.get("talentdb_exported_at") and not resend:
             states["already_exported"] += 1
             continue
+
+        # Who this lead goes to. N reachable contacts → N Talent-DB leads; none
+        # → the single legacy owner_* lead, `_postable_email` guard and all.
+        contact_rows = contact_store.list_contacts_for_practice(practice.get("id"))
+        eligible = [c for c in contact_rows if _contact_email(c)]
+        states["contacts_no_email"] += len(contact_rows) - len(eligible)
         # Email guard: a lead with no real contact email isn't actionable for
         # sales — don't post it. Last gate before send, so it counts only leads
-        # that pass every other check. (Mirror of src/talentdb.py import_lead.)
-        if not _postable_email(practice):
+        # that pass every other check. On the fan-out path the same question is
+        # asked per person above. (Mirror of src/talentdb.py import_lead.)
+        if not eligible and not _postable_email(practice):
             states["no_email"] += 1
             continue
 
-        env = build_envelope(practice, posting, lead)
-        company = env["fields"].get("Company")
-        track = (env["fields"].get("interested_tracks") or ["(unmapped)"])[0]
+        # People already POSTed for this lead. Consulted even under `--resend`
+        # — re-entering a finished lead to catch a LATE-ARRIVING contact must
+        # not duplicate the ones that already shipped. `--resend-contacts` is
+        # the separate escape hatch that does re-post them.
+        already: set = set()
+        if eligible and lead and not resend_contacts:
+            already = contact_store.list_exported_contact_ids(lead["id"])
+
+        # `recipients`: [None] means the one legacy owner_* lead.
+        recipients: list = list(eligible) or [None]
+        base = build_envelope(practice, posting, lead)["fields"]
+        company = base.get("Company")
+        track = (base.get("interested_tracks") or ["(unmapped)"])[0]
         tracks[track] += 1
+        # `--limit` and `sent` count OUR leads, not POSTs: one lead admitted
+        # here is len(recipients) Talent-DB leads.
         sent += 1
 
         if dry_run:
-            print(f"[export] [{sent}] would send {company!r} → track={track} "
-                  f"fields={len(env['fields'])}  (row {i}/{n})", flush=True)
+            for c in recipients:
+                cid = (c or {}).get("id")
+                verb = "would SKIP (already sent)" if cid in already else "would send"
+                fields = build_fields(practice, posting, lead, c)
+                print(f"[export] [{sent}] {verb} {company!r} → {_who(c)} "
+                      f"track={track} fields={len(fields)}  (row {i}/{n})", flush=True)
             if not preview_shown:
                 preview_shown = True
                 print("\n[dry-run] first envelope that WOULD be POSTed:")
-                print(json.dumps(env, indent=2, default=str)[:2400], flush=True)
+                print(json.dumps(build_envelope(practice, posting, lead, recipients[0]),
+                                 indent=2, default=str)[:2400], flush=True)
             continue
 
-        entry = {"idx": sent, "posting_id": pid, "company": company,
-                 "at": datetime.now(timezone.utc).isoformat()}
-        try:
-            result = await post_lead(practice, posting, lead, url=url, secret=secret)
-            entry.update(ok=result["ok"], status=result["status"], message=result["message"],
-                         local_entity_id=result["local_entity_id"], http_status=result["http_status"])
-            if result["ok"]:
-                ok += 1
-                if mark and lead:
-                    _mark_exported(company_id, lead["id"])
-                print(f"[export] [{sent}] OK   {company!r} → localEntityId="
-                      f"{result['local_entity_id']} fields={result.get('fields')}  (row {i}/{n})", flush=True)
-            else:
+        lead_all_ok = True
+        for c in recipients:
+            cid = (c or {}).get("id")
+            if cid in already:
+                states["contact_already_exported"] += 1
+                print(f"[export] [{sent}] SKIP {company!r} → {_who(c)} already sent"
+                      f"  (row {i}/{n})", flush=True)
+                continue
+            entry = {"idx": sent, "posting_id": pid, "company": company,
+                     "contact_id": cid, "at": datetime.now(timezone.utc).isoformat()}
+            try:
+                result = await post_lead(practice, posting, lead, url=url, secret=secret,
+                                         contact=c)
+                entry.update(ok=result["ok"], status=result["status"], message=result["message"],
+                             local_entity_id=result["local_entity_id"], http_status=result["http_status"])
+                if result["ok"]:
+                    ok += 1
+                    if mark and lead and cid:
+                        contact_store.mark_contact_exported(lead["id"], cid)
+                    print(f"[export] [{sent}] OK   {company!r} → {_who(c)} localEntityId="
+                          f"{result['local_entity_id']} fields={result.get('fields')}  (row {i}/{n})", flush=True)
+                else:
+                    failed += 1
+                    lead_all_ok = False
+                    print(f"[export] [{sent}] FAIL {company!r} → {_who(c)} {result['status']}: "
+                          f"{result['message']}  (row {i}/{n})", flush=True)
+            except Exception as e:  # noqa: BLE001 — one bad row must not kill the batch
                 failed += 1
-                print(f"[export] [{sent}] FAIL {company!r} → {result['status']}: "
-                      f"{result['message']}  (row {i}/{n})", flush=True)
-        except Exception as e:  # noqa: BLE001 — one bad row must not kill the batch
-            failed += 1
-            entry.update(ok=False, error=f"{type(e).__name__}: {e}")
-            print(f"[export] [{sent}] ERROR {company!r} — {type(e).__name__}: {e}  (row {i}/{n})", flush=True)
-        results.append(entry)
-        time.sleep(delay)
+                lead_all_ok = False
+                entry.update(ok=False, error=f"{type(e).__name__}: {e}")
+                print(f"[export] [{sent}] ERROR {company!r} → {_who(c)} — "
+                      f"{type(e).__name__}: {e}  (row {i}/{n})", flush=True)
+            results.append(entry)
+            time.sleep(delay)
+
+        # The lead-level marker closes only on a clean sweep — a lead with a
+        # failed contact stays in the universe so the next run re-enters it, and
+        # the contact markers above keep that re-entry from duplicating the
+        # people who already landed.
+        if lead_all_ok and mark and lead:
+            _mark_exported(company_id, lead["id"])
 
     skip_line = (f"skipped: billing={states['skip_billing']} no_practice={states['no_practice']} "
-                 f"no_email={states['no_email']} "
+                 f"no_email={states['no_email']} contacts_no_email={states['contacts_no_email']} "
+                 f"contact_already_exported={states['contact_already_exported']} "
                  f"already_exported={states['already_exported']} missing_posting={states['missing_posting']} "
                  f"resolve_error={states['resolve_error']}")
     if dry_run:
-        print(f"\n[dry-run] eligible previewed: {sent}   {skip_line}", flush=True)
+        print(f"\n[dry-run] leads previewed: {sent}   {skip_line}", flush=True)
         print("[dry-run] nothing sent. Re-run with --yes to POST live.", flush=True)
         return
 
@@ -512,10 +645,13 @@ async def run(leadset: str, company_id: str, *, dry_run: bool, allow_staging: bo
     log_path = f"docs/runbooks/talentdb-export-{stamp}.log.json"
     with open(log_path, "w") as fp:
         json.dump({"run_at": stamp, "destination": host, "company_id": company_id,
-                   "leadset": leadset, "sent": sent, "ok": ok, "failed": failed,
-                   "marked": mark, "resend": resend, "billing_guard": not allow_billing,
+                   "leadset": leadset, "leads": sent, "posts_ok": ok, "posts_failed": failed,
+                   "marked": mark, "resend": resend, "resend_contacts": resend_contacts,
+                   "billing_guard": not allow_billing,
                    "skipped": dict(states), "tracks": dict(tracks), "results": results}, fp, indent=2)
-    print(f"\n[export] done: ok={ok} failed={failed} sent={sent}   {skip_line}", flush=True)
+    # ok/failed count POSTs (= Talent-DB leads); `leads` counts OUR leads, which
+    # fan out to one POST per reachable contact.
+    print(f"\n[export] done: posts ok={ok} failed={failed} from leads={sent}   {skip_line}", flush=True)
     print(f"[export] track spread: {dict(tracks)}", flush=True)
     print(f"[export] log → {log_path}", flush=True)
 
@@ -528,11 +664,19 @@ def main() -> None:
     ap.add_argument("--company-id", default=None, help="tenant (default: settings.lead_company_id)")
     ap.add_argument("--yes", action="store_true", help="send live (default is a dry run)")
     ap.add_argument("--allow-staging", action="store_true", help="permit a staging destination")
-    ap.add_argument("--limit", type=int, default=None, help="only send the first N eligible rows")
-    ap.add_argument("--delay", type=float, default=2.0, help="seconds between POSTs (default: 2)")
-    ap.add_argument("--resend", action="store_true", help="also send leads already marked exported")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="only send the first N eligible LEADS (not POSTs — one lead "
+                         "fans out to one Talent-DB lead per reachable contact)")
+    ap.add_argument("--delay", type=float, default=2.0,
+                    help="seconds between POSTs, contact-level included (default: 2)")
+    ap.add_argument("--resend", action="store_true",
+                    help="also send leads already marked exported; contacts already sent "
+                         "are still skipped, so this is the late-arriving-contact tool")
+    ap.add_argument("--resend-contacts", action="store_true",
+                    help="also re-POST contacts already recorded in talentdb_contact_exports "
+                         "(duplicates them on the receiver — implies nothing about --resend)")
     ap.add_argument("--no-mark", action="store_true",
-                    help="do NOT set talentdb_exported_at on success")
+                    help="do NOT set talentdb_exported_at or the per-contact markers on success")
     ap.add_argument("--allow-billing", action="store_true",
                     help="disable the billing guard (billing is skipped by default)")
     args = ap.parse_args()
@@ -543,7 +687,8 @@ def main() -> None:
 
     asyncio.run(run(args.leadset, company_id, dry_run=not args.yes,
                     allow_staging=args.allow_staging, limit=args.limit, delay=args.delay,
-                    resend=args.resend, mark=not args.no_mark, allow_billing=args.allow_billing))
+                    resend=args.resend, mark=not args.no_mark, allow_billing=args.allow_billing,
+                    resend_contacts=args.resend_contacts))
 
 
 if __name__ == "__main__":

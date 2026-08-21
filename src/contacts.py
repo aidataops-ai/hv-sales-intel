@@ -1,4 +1,4 @@
-"""Per-practice people — the `practice_contacts` table and nothing else.
+"""Per-practice people — the `practice_contacts` table and its export markers.
 
 Clay used to hand us exactly one contact per practice, which we flattened into
 the `practices.owner_*` columns. It now POSTs one webhook call *per person*, so
@@ -16,10 +16,16 @@ practice, not about who is selling to it. Per-company opinions (disposition,
 notes, assignment) live in the per-company tables and stay there.
 
 **The legacy flat columns stay.** `practices.owner_name/_title/_linkedin/_email`
-are still what the UI, the CSV export and the Talent-DB push read, so the
-primary contact is mirrored back onto them (`pick_primary` →
-`owner_mirror_fields`). `should_mirror` is the guard that keeps a
-personal-email-only contact from clobbering a real `owner_email`.
+are still what the UI and the CSV export read, and they are the Talent-DB push's
+fallback for a practice with no contact rows at all, so the primary contact is
+mirrored back onto them (`pick_primary` → `owner_mirror_fields`).
+`should_mirror` is the guard that keeps a personal-email-only contact from
+clobbering a real `owner_email`.
+
+**One Talent-DB lead per person.** The push fans out over these rows
+(`src/talentdb_push.py`), so "already exported" becomes a fact about a (lead,
+person) pair — `list_exported_contact_ids` / `mark_contact_exported` below own
+the `talentdb_contact_exports` table that records it.
 
 **Everything that touches the database is fail-soft.** The table arrives with a
 migration, and a webhook is not the place to discover the migration has not been
@@ -219,6 +225,68 @@ def list_contacts_for_practice(practice_id: int) -> list[dict]:
             break
         page += 1
     return rows
+
+
+# ---------------------------------------------------------------------------
+# Talent-DB per-contact export markers
+#
+# The push fans out to one Talent-DB lead per contact, so "already exported" is
+# a fact about a (lead, person) pair, not about the lead alone. These two read
+# and write `talentdb_contact_exports`; the lead-level
+# `company_job_leads.talentdb_exported_at` stays the gate and is set only when
+# every eligible contact on the lead succeeded. See src/talentdb_push.py.
+# ---------------------------------------------------------------------------
+
+EXPORTS_TABLE = "talentdb_contact_exports"
+
+
+def list_exported_contact_ids(lead_id: int) -> set[int]:
+    """The contacts already POSTed for this lead — the retry's skip list.
+
+    Fail-soft like everything else here: an unapplied migration returns an empty
+    set, which degrades the fan-out to "send everyone" rather than blocking it.
+    """
+    client = _client()
+    if not client or not lead_id:
+        return set()
+
+    try:
+        result = (
+            client.table(EXPORTS_TABLE)
+            .select("contact_id")
+            .eq("lead_id", lead_id)
+            .execute()
+        )
+    except Exception as e:
+        log.warning("[contacts.exports.list.error] lead=%s %s: %s",
+                    lead_id, type(e).__name__, str(e)[:200])
+        return set()
+
+    return {row["contact_id"] for row in (result.data or []) if row.get("contact_id")}
+
+
+def mark_contact_exported(lead_id: int, contact_id: int) -> None:
+    """Record that this contact's Talent-DB lead was accepted.
+
+    Upserts on `(lead_id, contact_id)` so a `--resend` that re-posts the same
+    person refreshes the row instead of failing on the unique constraint.
+    Fail-soft: a failed mark logs and returns — the POST already happened, and
+    losing the marker costs a duplicate on a later retry, not the send.
+    """
+    client = _client()
+    if not client or not lead_id or not contact_id:
+        return
+
+    row = {"lead_id": lead_id, "contact_id": contact_id, "exported_at": _now()}
+    try:
+        (
+            client.table(EXPORTS_TABLE)
+            .upsert(row, on_conflict="lead_id,contact_id")
+            .execute()
+        )
+    except Exception as e:
+        log.warning("[contacts.exports.mark.error] lead=%s contact=%s %s: %s",
+                    lead_id, contact_id, type(e).__name__, str(e)[:200])
 
 
 def contact_email(contact: dict) -> str | None:

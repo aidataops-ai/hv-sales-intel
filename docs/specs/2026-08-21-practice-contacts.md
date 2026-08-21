@@ -1,11 +1,18 @@
 # Multi-contact support — Clay per-contact webhook → `practice_contacts` → UI cards (2026-08-21)
 
-**Status:** implemented on `feat/practice-contacts`. Adds
-`supabase/migrations/2026-08-21-practice-contacts.sql` (files-only — the user
-applies it by hand), `src/contacts.py`, a second accepted shape on
-`POST /api/webhooks/clay`, contacts on the practice-detail endpoint, and a
-`ContactCard` on the practice detail page. **Nothing that leaves the app
-changes** — TalentDB push and CSV export are untouched.
+**Status:** implemented on `feat/practice-contacts`, in two phases.
+
+*Phase 1 — ingestion.* `supabase/migrations/2026-08-21-practice-contacts.sql`
+(files-only — the user applies it by hand), `src/contacts.py`, a second accepted
+shape on `POST /api/webhooks/clay`, contacts on the practice-detail endpoint,
+and a `ContactCard` on the practice detail page. Nothing that leaves the app
+changed.
+
+*Phase 2 — the TalentDB per-contact fan-out*, same branch, same day:
+`supabase/migrations/2026-08-21-talentdb-contact-exports.sql`,
+`src/talentdb_push.py`, an optional `contact=` through `src/talentdb.py` and
+`scripts/talentdb_export.py`. See **TalentDB per-contact fan-out** below; the
+CSV export and `scripts/backfill_talentdb.py` stay on the `owner_*` mirror.
 
 ## Why
 
@@ -36,10 +43,10 @@ old columns meaningful** (a mirror) so no consumer has to move yet.
 2. `practice_contacts` stores one row per person.
 3. The practice-detail page grows a "Contact Info" section — one card per person.
 
-**Out — deliberately:** anything that leaves the app. No changes to
-`src/talentdb.py`, `scripts/talentdb_export.py`, or any push path; they keep
-reading `owner_*`. CSV export likewise. See *Future work* for the fan-out that
-is already decided but not built.
+**Out of phase 1, deliberately:** anything that leaves the app — `src/talentdb.py`,
+`scripts/talentdb_export.py` and the CSV export all kept reading `owner_*`.
+Phase 2 took the push paths (see **TalentDB per-contact fan-out**); the CSV
+export and the backfill script stay on the mirror for good.
 
 ## Decisions
 
@@ -124,29 +131,99 @@ still returns success. A Clay callback must never 500 because of this feature.
 Rollback is `drop table if exists practice_contacts;` — the `owner_*` mirror
 survives it, so the pre-change one-contact behaviour is fully intact.
 
+## TalentDB per-contact fan-out (implemented 2026-08-21)
+
+The product call was already made — **one TalentDB lead per contact** ("3 people
+= 3 leads") — and it is now built, on the same branch. A lead (practice +
+posting) with N reachable contacts becomes N TalentDB leads: same company,
+posting, scoring, track, everything. **Only the person differs.**
+
+The fan-out lives in one place, `src/talentdb_push.py::push_lead_fanout`, which
+every push path calls — both Import-Lead endpoints and the ad-hoc scripts.
+`talentdb.import_lead` still sends exactly one POST; it just takes an optional
+`contact=`.
+
+### The mapping
+
+`talentdb.build_fields(practice, posting, lead, contact=…)` overrides exactly
+this block; every other key in the envelope is unchanged and identical across
+the N leads.
+
+| TalentDB field | Source | Note |
+| --- | --- | --- |
+| `FirstName` | `contact.first_name` | |
+| `LastName` | `contact.last_name` | falls back to the company name, as the legacy path does — the receiver requires it |
+| `Title` | `contact.title` | |
+| `Email` | `contact.`**`personal_email`** | deliberate: the personal address is what the `Email` field carries |
+| `work_email` | `contact.work_email` | **new key**, snake_case like the other custom fields |
+| `linkedin_url` | `contact.linkedin_url` | **new key** |
+| `Phone` | `contact.phone` | the person's direct line |
+| `alternate_phone` | `practice.phone` | the office line; omitted when identical to `Phone` |
+
+Both new keys are in `talentdb.CSV_COLUMNS` too (`work_email` after `Email`,
+`linkedin_url` after `Website`), so an exported CSV still round-trips into a
+TalentDB CSV import.
+
+`practices.owner_phone` is **not** consulted on the contact path. It is a mirror
+of *some* contact, and mixing it in would put person A's number on person B's
+lead. Blank strings are trimmed to None and dropped by `_omit_missing`, so an
+absent field is an absent key, never `""`.
+
+### Eligibility, and the zero-contact fallback
+
+A contact with **neither** a personal nor a work email (placeholders scrubbed by
+`_scrub_email`) is skipped — the per-person form of the existing "no email →
+don't post" rule. `contacts.contact_email` is the truthiness test only; which
+address lands in `Email` is the table above, not that function.
+
+If the eligible set is **empty** — no contact rows at all, or none reachable —
+the push falls back to the **legacy single lead** from `practices.owner_*`,
+guarded by `_postable_email` exactly as before. That path is byte-identical to
+what shipped before this change, which answers parked question 1: a
+personal-email-only contact *is* pushed, and a contact with no email at all is
+not, but their absence never silently drops the lead.
+
+### Dedupe: two markers, because a fan-out can half-succeed
+
+The receiver mints a fresh record per POST (we send no `salesforceId`), so a
+re-send is a duplicate, not an update. Dedup is entirely ours:
+
+- **`company_job_leads.talentdb_exported_at`** — still THE lead-level gate, and
+  still what the endpoints' `already_exported` early-return and the scripts'
+  skip check read. It now means *fully sent*: set only when **every eligible
+  contact was accepted**. Two of three landed → the marker stays NULL, so the
+  lead stays in the un-exported universe and the next run picks it up.
+- **`talentdb_contact_exports (lead_id, contact_id)`** — the per-person record
+  inside that lead (`supabase/migrations/2026-08-21-talentdb-contact-exports.sql`).
+  The retry above skips the people already accepted and posts only the one that
+  failed. Without it, "retry the lead" would mean "duplicate the two that worked".
+
+`--resend` (scripts) re-enters an already-marked lead but **still consults the
+contact markers**, which makes it the answer to parked question 3: when Clay
+finds a fourth person a week after the first three shipped, `--resend` posts
+that person and nobody else. `--resend-contacts` (and `resend_contacts=True` on
+`push_lead_fanout`) is the separate escape hatch that re-posts people already
+sent — it duplicates them on the receiver, so it exists for recovery, not for
+routine use.
+
+Contact markers are only read and written when there **is** a lead row to key
+them to. A practice pushed with no linked posting fans out every time, exactly
+as it is already exempt from the lead-level marker.
+
+### Explicitly unchanged
+
+- **The CSV export** (`GET /api/leads/export`, `api/index.py`) — one row per
+  lead from the `owner_*` mirror. It gains the two new columns but not the
+  fan-out; a CSV is a per-lead artifact and the mirror keeps it correct.
+- **`scripts/backfill_talentdb.py`** — single-row, `owner_*`-based, untouched.
+- **`practices.owner_*` itself** — still mirrored from the primary contact by
+  the Clay webhook, still what the UI, the call script and the email panel read.
+
+Parked open question that remains: the **LinkedIn field name on the receiver**
+is still unconfirmed; we send `linkedin_url` and the receiver drops what it does
+not recognize.
+
 ## Future work
 
-**TalentDB fan-out — decided, deferred.** The user has already made the product
-call: **one TalentDB lead per contact** ("3 people = 3 leads"), each carrying the
-same practice and posting data with the person fields mapped per contact. It is
-out of this change only because this phase touches nothing that leaves the app.
-
-Sketch, for whoever picks it up:
-
-- an optional `contact=` parameter threaded through `talentdb.build_fields` /
-  `import_lead` (note the **duplicate `build_fields`** in
-  `scripts/talentdb_export.py` — dedupe first or they drift);
-- a `talentdb_contact_exports (lead_id, contact_id)` marker table, the
-  per-contact analogue of `company_job_leads.talentdb_exported_at`;
-- a legacy single-lead fallback when a practice has no contact rows.
-
-Parked open questions on that work:
-
-1. **`personal_email` fallback policy** — does a contact with only a personal
-   email get pushed at all?
-2. **LinkedIn field name on the receiver** — unconfirmed.
-3. **Late-arriving contacts** — a person who shows up after the practice's other
-   contacts were already exported.
-
-**Also future:** a recipient picker in the email panel, so outreach can be aimed
-at a chosen contact instead of the mirrored primary.
+**A recipient picker in the email panel**, so outreach can be aimed at a chosen
+contact instead of the mirrored primary.

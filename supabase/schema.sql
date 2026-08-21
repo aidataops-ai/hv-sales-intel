@@ -666,3 +666,54 @@ drop policy if exists "practice_contacts_authenticated_read" on practice_contact
 create policy "practice_contacts_authenticated_read"
   on practice_contacts for select
   using ((select auth.role()) = 'authenticated' or (select auth.role()) = 'service_role');
+
+-- =============================================================================
+-- talentdb_contact_exports — per-contact Talent-DB push marker (added 2026-08-21)
+--
+-- Mirrors supabase/migrations/2026-08-21-talentdb-contact-exports.sql; that file
+-- carries the full rationale. In short: the Talent-DB push fans out to one lead
+-- per contact, and `company_job_leads.talentdb_exported_at` (one timestamp per
+-- (company, posting)) cannot record that two of three people were accepted and
+-- the third timed out. This table records each person we actually sent.
+--
+-- The lead-level marker stays THE gate and is set only when EVERY eligible
+-- contact succeeded; this table lets a retry re-enter a partially-failed lead
+-- and post only the people still missing. It is also what makes `--resend` the
+-- late-arriving-contact tool: it re-enters a finished lead but still skips
+-- everyone already sent.
+--
+-- No company_id — `lead_id` is already per-(company, posting), so the RLS
+-- policy checks membership one hop away through company_job_leads.
+--
+-- See docs/specs/2026-08-21-practice-contacts.md.
+-- =============================================================================
+
+create table if not exists talentdb_contact_exports (
+  id          bigserial primary key,
+  lead_id     bigint not null references company_job_leads(id) on delete cascade,
+  contact_id  bigint not null references practice_contacts(id) on delete cascade,
+  exported_at timestamptz not null default now(),
+  unique (lead_id, contact_id)
+);
+
+-- The unique constraint indexes (lead_id, …); contact_id would otherwise be an
+-- unindexed FK and its cascade delete a sequential scan.
+create index if not exists idx_tce_contact on talentdb_contact_exports (contact_id);
+
+comment on table talentdb_contact_exports is
+  'One row per (company_job_leads.id, practice_contacts.id) already POSTed to '
+  'Talent-DB. Partial-failure and resend safety for the per-contact fan-out; '
+  'company_job_leads.talentdb_exported_at remains the lead-level gate and is '
+  'set only when every eligible contact succeeded. '
+  'See docs/specs/2026-08-21-practice-contacts.md.';
+
+alter table talentdb_contact_exports enable row level security;
+
+drop policy if exists "tenant_isolation_contact_exports" on talentdb_contact_exports;
+create policy "tenant_isolation_contact_exports"
+  on talentdb_contact_exports for select
+  using (lead_id in (
+    select l.id from company_job_leads l
+    where l.company_id in (select company_id from company_members
+                           where user_id = (select auth.uid()))
+  ));

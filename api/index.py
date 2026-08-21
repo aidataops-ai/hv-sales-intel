@@ -2143,13 +2143,15 @@ async def import_lead_practice_endpoint(
     place_id: str,
     user: dict = Depends(get_current_user),
 ):
-    """Push a practice (+ its newest linked job posting) to Talent-DB as a Lead.
+    """Push a practice (+ its newest linked job posting) to Talent-DB as Lead(s).
 
-    One-way and fire-and-forget. Deduped per (company, posting): a posting
-    already exported is not re-sent. Practices with no linked posting are always
-    sendable (there is nothing to dedup on).
+    One-way and fire-and-forget. Fans out to one Talent-DB lead per contact on
+    the practice (`talentdb_push.push_lead_fanout`); a practice with no contact
+    rows sends the single legacy `owner_*` lead. Deduped per (company, posting):
+    a posting already fully exported is not re-sent. Practices with no linked
+    posting are always sendable (there is nothing to dedup on).
     """
-    from src import lead_store, talentdb
+    from src import lead_store, talentdb_push
 
     practice = get_practice(place_id)
     if not practice:
@@ -2179,11 +2181,12 @@ async def import_lead_practice_endpoint(
 
     log.info("[api.import_lead] place_id=%s user=%s posting=%s",
              place_id, user.get("email"), posting_id)
-    result = await talentdb.import_lead(practice, posting, lead_row)
-    if result.get("ok") and lead_row:
-        lead_store.mark_lead_exported(company_id, lead_row["id"])
-    log.info("[api.import_lead.response] place_id=%s ok=%s status=%s",
-             place_id, result.get("ok"), result.get("status"))
+    # The fan-out owns both markers: the per-contact ones and, on a clean sweep,
+    # the lead-level `talentdb_exported_at` the guard above reads.
+    result = await talentdb_push.push_lead_fanout(
+        practice, posting, lead_row, company_id)
+    log.info("[api.import_lead.response] place_id=%s ok=%s status=%s sent=%s",
+             place_id, result.get("ok"), result.get("status"), result.get("sent"))
     return _talentdb_response(result)
 
 
@@ -3478,10 +3481,13 @@ async def import_lead_signal_endpoint(
 ):
     """Push a signals lead (its posting + linked practice) to Talent-DB.
 
-    The lead IS a (company, posting) row, so its `talentdb_exported_at` marker
-    is the dedup key: an already-exported lead is not re-sent. Fail-soft.
+    Fans out to one Talent-DB lead per contact on the practice
+    (`talentdb_push.push_lead_fanout`); a practice with no contact rows sends
+    the single legacy `owner_*` lead. The lead IS a (company, posting) row, so
+    its `talentdb_exported_at` marker is the dedup key: a lead already fully
+    exported is not re-sent. Fail-soft.
     """
-    from src import talentdb
+    from src import talentdb_push
 
     company_id = user["company_id"]
     lead = lead_store.get_lead(company_id, lead_id)
@@ -3505,9 +3511,10 @@ async def import_lead_signal_endpoint(
 
     log.info("[api.lead_import] lead_id=%s user=%s place_id=%s",
              lead_id, user.get("email"), place_id)
-    result = await talentdb.import_lead(practice, posting, lead)
-    if result.get("ok"):
-        lead_store.mark_lead_exported(company_id, lead_id)
-    log.info("[api.lead_import.response] lead_id=%s ok=%s status=%s",
-             lead_id, result.get("ok"), result.get("status"))
+    # The fan-out owns both markers: the per-contact ones and, on a clean sweep,
+    # the lead-level `talentdb_exported_at` the guard above reads.
+    result = await talentdb_push.push_lead_fanout(
+        practice, posting, lead, company_id)
+    log.info("[api.lead_import.response] lead_id=%s ok=%s status=%s sent=%s",
+             lead_id, result.get("ok"), result.get("status"), result.get("sent"))
     return _talentdb_response(result)

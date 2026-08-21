@@ -94,6 +94,23 @@ def _lead(**overrides) -> dict:
     return base
 
 
+def _contact(**overrides) -> dict:
+    """One `practice_contacts` row — deliberately nothing like the practice's
+    `owner_*` values, so a leak from the legacy person block is visible."""
+    base = {
+        "id": 77,
+        "first_name": "Ada",
+        "last_name": "Lovelace",
+        "title": "Office Manager",
+        "work_email": "ada@acme.com",
+        "personal_email": "ada.l@gmail.com",
+        "phone": "+13129998888",
+        "linkedin_url": "https://linkedin.com/in/adalovelace",
+    }
+    base.update(overrides)
+    return base
+
+
 # --------------------------------------------------------------------------- #
 # source (slug) + posting_source (raw) + source_practice_id
 # --------------------------------------------------------------------------- #
@@ -258,6 +275,117 @@ def test_fields_with_no_source_are_omitted():
     fields = talentdb.build_fields(_practice(), _posting(), _lead())
     for absent in ("hiring_timeline", "locations_count"):
         assert absent not in fields
+
+
+# --------------------------------------------------------------------------- #
+# Per-contact fan-out — build_fields(contact=…)
+# --------------------------------------------------------------------------- #
+
+def test_contact_person_block_maps_every_field():
+    """The whole delta between the N leads a practice's N contacts produce."""
+    fields = talentdb.build_fields(_practice(), _posting(), _lead(), _contact())
+    assert fields["FirstName"] == "Ada"
+    assert fields["LastName"] == "Lovelace"
+    assert fields["Title"] == "Office Manager"
+    # Email is the PERSONAL address, deliberately; the work one ships beside it.
+    assert fields["Email"] == "ada.l@gmail.com"
+    assert fields["work_email"] == "ada@acme.com"
+    assert fields["linkedin_url"] == "https://linkedin.com/in/adalovelace"
+    assert fields["Phone"] == "+13129998888"          # the person's direct line
+    assert fields["alternate_phone"] == "+13125550100"  # the practice's office
+
+
+def test_contact_path_does_not_leak_owner_fields():
+    """owner_name / owner_title / owner_email / owner_phone belong to the mirror
+    of *some* contact — none of them may appear on this person's lead."""
+    fields = talentdb.build_fields(_practice(), _posting(), _lead(), _contact())
+    owner_values = {"Jane", "Doe", "jane@acme.com", "front@acme.com",
+                    "+13120000000"}
+    person_values = {fields.get(k) for k in
+                     ("FirstName", "LastName", "Title", "Email", "work_email",
+                      "Phone", "alternate_phone")}
+    assert not (owner_values & person_values)
+
+
+def test_contact_path_keeps_the_shared_envelope_identical():
+    """Everything that is a fact about the practice/posting is untouched."""
+    legacy = talentdb.build_fields(_practice(), _posting(), _lead())
+    fanned = talentdb.build_fields(_practice(), _posting(), _lead(), _contact())
+    person = {"FirstName", "LastName", "Title", "Email", "work_email",
+              "linkedin_url", "Phone", "alternate_phone"}
+    assert {k: v for k, v in legacy.items() if k not in person} == \
+           {k: v for k, v in fanned.items() if k not in person}
+
+
+def test_contact_lastname_falls_back_to_company():
+    fields = talentdb.build_fields(_practice(), _posting(), _lead(),
+                                   _contact(last_name=None))
+    assert fields["LastName"] == "Acme Dental"
+    assert fields["FirstName"] == "Ada"
+    # A blank string is a missing value too, not a name.
+    fields = talentdb.build_fields(_practice(), _posting(), _lead(),
+                                   _contact(last_name="   "))
+    assert fields["LastName"] == "Acme Dental"
+
+
+def test_contact_alternate_phone_deduped_against_the_contact_phone():
+    """Clay sometimes hands back the office line as the person's — send it once."""
+    fields = talentdb.build_fields(_practice(), _posting(), _lead(),
+                                   _contact(phone="+13125550100"))
+    assert fields["Phone"] == "+13125550100"
+    assert "alternate_phone" not in fields
+    # No office line at all → no alternate either.
+    fields = talentdb.build_fields(_practice(phone=None), _posting(), _lead(),
+                                   _contact())
+    assert "alternate_phone" not in fields
+
+
+def test_contact_with_only_a_work_email_omits_email_and_sends_work_email():
+    fields = talentdb.build_fields(_practice(), _posting(), _lead(),
+                                   _contact(personal_email=None))
+    assert "Email" not in fields                    # omit-missing drops it
+    assert fields["work_email"] == "ada@acme.com"
+
+
+def test_contact_email_placeholders_are_scrubbed_on_both_keys():
+    fields = talentdb.build_fields(
+        _practice(), _posting(), _lead(),
+        _contact(personal_email="Not Found", work_email="  N/A "))
+    assert "Email" not in fields
+    assert "work_email" not in fields
+
+
+def test_contact_missing_fields_are_omitted_not_blank():
+    fields = talentdb.build_fields(
+        _practice(), _posting(), _lead(),
+        _contact(title=None, linkedin_url="", phone=None))
+    for absent in ("Title", "linkedin_url", "Phone"):
+        assert absent not in fields
+    assert fields["alternate_phone"] == "+13125550100"   # office still ships
+
+
+def test_no_contact_argument_is_the_legacy_mapping_unchanged():
+    """The zero-contact path must be byte-identical to what shipped before."""
+    assert talentdb.build_fields(_practice(), _posting(), _lead()) == \
+           talentdb.build_fields(_practice(), _posting(), _lead(), None)
+    assert talentdb.build_envelope(_practice(), _posting(), _lead()) == \
+           talentdb.build_envelope(_practice(), _posting(), _lead(), None)
+
+
+def test_csv_columns_carry_the_new_keys_in_place():
+    cols = talentdb.CSV_COLUMNS
+    assert cols[cols.index("Email") + 1] == "work_email"
+    assert cols[cols.index("Website") + 1] == "linkedin_url"
+
+
+def test_contact_fields_keep_the_csv_column_order():
+    """The two new keys hold a declared place in the literal rather than being
+    appended by the update — so the envelope reads in CSV_COLUMNS order and a
+    truncated preview still shows them next to the other person fields."""
+    keys = list(talentdb.build_fields(_practice(), _posting(), _lead(), _contact()))
+    assert keys.index("Email") < keys.index("work_email") < keys.index("Phone")
+    assert keys.index("Website") < keys.index("linkedin_url")
+    assert keys.index("linkedin_url") < keys.index("Industry")
 
 
 # --------------------------------------------------------------------------- #
@@ -443,3 +571,59 @@ async def test_import_lead_skips_and_never_posts_when_no_email(no_email):
     assert result["ok"] is False
     assert result["status"] == "skipped_no_email"
     assert fake.sent == {}  # the guard fires BEFORE any POST
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("no_email", [
+    {"work_email": None, "personal_email": None},            # nothing at all
+    {"work_email": "Not Found", "personal_email": "  N/A "},  # placeholders
+    {"work_email": "", "personal_email": "   "},              # blanks
+])
+async def test_import_lead_skips_a_contact_we_cannot_reach(no_email):
+    """The per-person form of "no email → don't post". The practice's own
+    owner_email is real here and must NOT rescue an unreachable contact."""
+    fake = _FakeClient(_FakeResp({"ok": True, "status": "ok", "localEntityId": 1}))
+    with patch("src.talentdb.settings") as s:
+        s.talentdb_webhook_url = "https://x/api/salesforce/webhook"
+        s.talentdb_webhook_secret = "topsecret"
+        with patch("src.talentdb.httpx.AsyncClient", return_value=fake):
+            result = await talentdb.import_lead(
+                _practice(), _posting(), _lead(), contact=_contact(**no_email))
+    assert result["ok"] is False
+    assert result["status"] == "skipped_no_email"
+    assert fake.sent == {}  # the guard fires BEFORE any POST
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("one_email", [
+    {"personal_email": None},   # work only
+    {"work_email": None},       # personal only
+])
+async def test_import_lead_posts_a_contact_with_either_address(one_email):
+    fake = _FakeClient(_FakeResp({"ok": True, "status": "ok", "localEntityId": 9}))
+    with patch("src.talentdb.settings") as s:
+        s.talentdb_webhook_url = "https://x/api/salesforce/webhook"
+        s.talentdb_webhook_secret = "topsecret"
+        with patch("src.talentdb.httpx.AsyncClient", return_value=fake):
+            result = await talentdb.import_lead(
+                _practice(), _posting(), _lead(), contact=_contact(**one_email))
+    assert result["ok"] is True
+    posted = json.loads(fake.sent["content"])["fields"]
+    assert posted["FirstName"] == "Ada"
+
+
+@pytest.mark.asyncio
+async def test_import_lead_posts_a_contact_even_when_the_practice_has_no_email():
+    """The practice-level `_postable_email` guard is for the legacy path only —
+    a reachable contact does not need the owner_* mirror to be populated."""
+    fake = _FakeClient(_FakeResp({"ok": True, "status": "ok", "localEntityId": 3}))
+    with patch("src.talentdb.settings") as s:
+        s.talentdb_webhook_url = "https://x/api/salesforce/webhook"
+        s.talentdb_webhook_secret = "topsecret"
+        with patch("src.talentdb.httpx.AsyncClient", return_value=fake):
+            result = await talentdb.import_lead(
+                _practice(owner_email=None, email=None), _posting(), _lead(),
+                contact=_contact())
+    assert result["ok"] is True
+    posted = json.loads(fake.sent["content"])["fields"]
+    assert posted["Email"] == "ada.l@gmail.com"
